@@ -1,0 +1,113 @@
+# InstructionX_UIKit
+
+基于 PySide6 的纯 UI 组件库：设计令牌 + 亮/暗双主题、57 个组件、12 个响应式布局预设、52 个动画预设与原生图表引擎。
+
+仓库分为两个职责清晰的部分：
+
+| 目录 | 职责 |
+|---|---|
+| `InstructionX_UIKit/` | **纯 UIKit 包**：零假数据、零 Demo 逻辑、零 UI 演示操作。所有内容（卡片、条目、文案、图表数据）均由调用方通过 API 传入；无内容时布局显示优雅的空占位。 |
+| `demo/` | **独立 Demo 程序**：74+ 演示页，含全部 Playground 调节控件与演示数据。每个演示页顶部有「用法」代码标签，开发者看 Demo 的调用示例即可学会用 Kit 开发出相同效果。 |
+
+## 目录结构
+
+```
+项目根/
+├── InstructionX_UIKit/          # 纯 Kit 包
+│   ├── __init__.py              # 包级导出（__version__ = "1.0.0"）
+│   ├── tokens.py                # 设计令牌（色彩/字体/间距/圆角/阴影/断点/动效 + TokenState）
+│   ├── theme.py                 # ThemeManager + 全局 QSS 生成
+│   ├── icons.py                 # 矢量图标集
+│   ├── components/              # 57 个组件（输入/展示/反馈）
+│   ├── layouts/                 # 12 个响应式布局预设（API 驱动）+ helpers
+│   ├── anim/                    # property.py（28 属性动画）+ painted.py（24 自绘动画）
+│   └── charts/                  # 原生图表引擎（数据驱动；仅含功能性 DEMO_MAP 示意地图）
+├── demo/                        # 独立 Demo 程序
+│   ├── main_window.py           # 主窗口：顶栏 + 导航树 + 页面堆栈
+│   └── pages/                   # 演示页（含 playground.py 调节面板、layout_samples.py 示例数据）
+├── main.py                      # Demo 启动入口
+├── tests/                       # 全部离屏自测（含截图回归）
+├── docs/                        # Design.md（设计规范）/ USAGE.md（使用方法）
+├── requirements.txt
+├── SPEC.md                      # 接口契约（唯一事实来源）
+└── CHART_SPEC.md                # 图表引擎契约
+```
+
+## 安装
+
+```bash
+pip install -r requirements.txt
+# 官方源较慢时可用镜像：
+# pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+```
+
+依赖：`PySide6>=6.6`（含 Addons）与 `qrcode[pil]>=7.4`。
+
+## 快速上手（30 行）
+
+```python
+import sys
+from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
+
+from InstructionX_UIKit.theme import ThemeManager
+from InstructionX_UIKit.components import Button, LineEdit, Statistic, Switch
+from InstructionX_UIKit.layouts import create_card_grid
+
+app = QApplication(sys.argv)
+ThemeManager.instance().apply(app)          # 应用全局主题（默认亮色）
+
+win = QWidget()
+lay = QVBoxLayout(win)
+
+lay.addWidget(Statistic(title="活跃用户", value=24317))
+lay.addWidget(LineEdit(placeholder="请输入关键词"))
+lay.addWidget(Button("确定", variant="primary"))
+lay.addWidget(Switch(checked=True))
+
+# 布局为 API 驱动：内容由调用方传入
+grid = create_card_grid(items=[
+    ("数据看板", "汇总关键指标。", "color.primary.subtle"),
+    ("任务中心", "展示待办与进度。", "color.success.subtle"),
+])
+lay.addWidget(grid, 1)
+
+win.resize(720, 560)
+win.show()
+sys.exit(app.exec())
+```
+
+切换暗色主题（无需重启）：
+
+```python
+tm = ThemeManager.instance()
+tm.set_mode("dark")   # 或 tm.toggle() 亮暗互切
+```
+
+## 启动 Demo
+
+```bash
+python main.py
+```
+
+左侧导航含：设计令牌 / 布局预设（12）/ 组件·输入 / 组件·展示 / 组件·反馈 / 动画·属性（28）/ 动画·自绘（24）/ 基础控件 / 图表。顶栏可随时切换亮 / 暗主题。
+
+## 运行测试
+
+全部测试为离屏自测（无需显示服务器），直接逐个运行，退出码 0 即通过：
+
+```bash
+QT_QPA_PLATFORM=offscreen python tests/test_core.py
+for t in tests/test_*.py; do QT_QPA_PLATFORM=offscreen python "$t" || echo "FAIL $t"; done
+```
+
+截图回归产物输出到 `tests/shots/`。
+
+## 亮色 / 暗色截图
+
+`tests/shots/` 内含各组件、布局、动画、图表的亮 / 暗双主题截图（如 `core_light.png` / `core_dark.png`、`layout_card_grid_1280x800_light.png` 等），可用于快速预览两个主题下的视觉效果；重新运行对应测试即可刷新截图。
+
+## 文档
+
+- `docs/Design.md` — 设计规范（令牌数值、断点、动效、状态矩阵、暗色策略）
+- `docs/USAGE.md` — 使用方法（安装、主题系统、全部组件 / 布局 / 动画 / 图表示例）
+- `SPEC.md` / `CHART_SPEC.md` — 接口契约
