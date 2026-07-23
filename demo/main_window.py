@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 """Demo 主窗口：顶部条 + 左侧导航树 + 右侧 QStackedWidget。
 
-- 顶部条：标题「InstructionX_UIKit」+ 亮 / 暗主题切换 SegmentedControl + 版本标签 v1.0；
+- 顶部条：标题「InstructionX_UIKit」+ 亮 / 暗主题切换 SegmentedControl + 版本标签（取自包级 __version__）；
 - 左侧：QTreeWidget 导航（9 个分类，懒加载子页）；
 - 右侧：QStackedWidget 切换演示页；
 - 顶部条与版本标签为自绘元素，随 theme_changed 实时换肤，无需重启。
 """
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPen
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from InstructionX_UIKit import __version__
 from InstructionX_UIKit.components.segmented import SegmentedControl
 from InstructionX_UIKit.theme import T, ThemeManager
 
@@ -46,10 +47,12 @@ class _TopBar(QWidget):
 class _VersionTag(QWidget):
     """GitHub 式版本标签：圆角胶囊 + 版本号（主题感知自绘）。"""
 
-    def __init__(self, text="v1.0", parent=None):
+    def __init__(self, text=None, parent=None):
         super().__init__(parent)
-        self._text = text
-        self.setFixedSize(52, 24)
+        # 版本号唯一来源：包级 __version__（当前为 alpha 阶段）
+        self._text = text if text is not None else __version__
+        fm = QFontMetricsF(QFont())
+        self.setFixedSize(int(fm.horizontalAdvance(self._text)) + 24, 24)
         ThemeManager.instance().theme_changed.connect(lambda *_: self.update())
 
     def paintEvent(self, event):  # noqa: N802
@@ -124,7 +127,7 @@ class MainWindow(QMainWindow):
         tm.theme_changed.connect(self._on_theme_changed)
         lay.addWidget(self._theme_seg)
 
-        lay.addWidget(_VersionTag("v1.0"))
+        lay.addWidget(_VersionTag())
         return bar
 
     def _on_seg(self, index: int):

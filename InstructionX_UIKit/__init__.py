@@ -32,7 +32,7 @@ from .tokens import (
 )
 from .icons import get_icon, ICON_NAMES
 
-__version__ = "1.0.0"
+__version__ = "alpha-v1.0.0"
 
 __all__ = [
     "__version__",
