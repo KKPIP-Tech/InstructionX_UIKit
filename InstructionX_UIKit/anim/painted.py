@@ -95,8 +95,20 @@ __all__ = [
 
 
 def _theme_refresh(widget) -> None:
-    """主题切换时触发重绘（SPEC §3 自绘组件约定）。"""
-    ThemeManager.instance().theme_changed.connect(lambda *_: widget.update())
+    """主题切换时触发重绘（SPEC §3 自绘组件约定）。
+
+    槽函数带 RuntimeError 守卫：控件被销毁后主题广播仍会触达已连接的
+    lambda（PySide 对 Python 可调用对象不自动断开），守卫避免
+    ``Internal C++ object already deleted`` 噪音（蓝图节点动态删除场景）。
+    """
+
+    def _safe_update(*_):
+        try:
+            widget.update()
+        except RuntimeError:
+            pass
+
+    ThemeManager.instance().theme_changed.connect(_safe_update)
 
 
 def _parse_color(text: str) -> QColor:

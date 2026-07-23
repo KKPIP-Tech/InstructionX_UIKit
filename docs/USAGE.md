@@ -1,6 +1,6 @@
 # USAGE — InstructionX_UIKit 使用方法
 
-> 本文档覆盖安装、快速开始、主题系统、全部 57 个组件、12 个布局与 52 个动画预设的最小可运行示例。
+> 本文档覆盖安装、快速开始、主题系统、全部 57 个组件、12 个布局、52 个动画预设、图表引擎与蓝图（节点图）组件的最小可运行示例。
 > 所有示例均与仓库真实 API 一致；离屏验证一律使用 `QT_QPA_PLATFORM=offscreen`。
 
 ## 目录
@@ -15,7 +15,8 @@
 - [5. 布局用法](#5-布局用法)
 - [6. 动画用法](#6-动画用法)
 - [7. 图表用法（InstructionX_UIKit.charts 原生引擎）](#7-图表用法instructionx_uikitcharts-原生引擎)
-- [8. 常见问题](#8-常见问题)
+- [8. 蓝图模式（InstructionX_UIKit.blueprint 节点图）](#8-蓝图模式instructionx_uikitblueprint-节点图)
+- [9. 常见问题](#9-常见问题)
 
 ## 1. 安装
 
@@ -1046,7 +1047,96 @@ chart.update_option({"series": [{"data": [130, 120, 150, 160, 170, 240]}]})  # �
 - Demo「图表」页已全面切换到 `InstructionX_UIKit.charts` 演示；`PySide6.QtCharts` 不再是图表页依赖，仅当你已有基于 QtCharts 的旧代码时才需要它，两者可共存互不影响。
 - 引擎契约见仓库 `CHART_SPEC.md`；可经 `register_series` / `register_component` 扩展自定义系列与组件。
 
-## 8. 常见问题
+## 8. 蓝图模式（InstructionX_UIKit.blueprint 节点图）
+
+类 UE5 Blueprint / ComfyUI 的节点图编辑器：**纯 UI 与交互，不含业务执行逻辑**。扩展性第一——节点类型、引脚类型、菜单、节点体内容全部可注册 / 覆写。完整演示见 Demo「蓝图」页（`demo/pages/blueprint.py`），组件契约见 `BP_SPEC.md`。
+
+### 8.1 核心概念
+
+| 概念 | 类 | 说明 |
+| --- | --- | --- |
+| 图 | `BlueprintGraph` | 节点 / 边容器，`add_edge` 全量校验（方向相反、类型兼容含 `any` 通配、单连接替换、禁止自连 / 重复），信号驱动界面同步 |
+| 节点 | `BlueprintNode` | `inputs` / `outputs` 引脚、`properties` 自定义参数、`status`（idle/running/done/error）、`elapsed_ms` 耗时 |
+| 引脚 | `Pin` / `PinDirection` | `data_type` 决定颜色（`PIN_COLORS`：any/int/float/str/image/tensor/exec），输入可设 `multi` 多连接 |
+| 边 | `Edge` | `from_*`（输出端）→ `to_*`（输入端） |
+| 注册表 | `NodeRegistry` / `register_node_type` | 节点类型单例注册表：注册 / 搜索 / 分类 / `create`；`register_pin_type` 扩展引脚配色 |
+| 画布 | `BlueprintCanvas` | 平移 / 缩放 / 框选 / 拖线建边 / 创建与右键菜单 / Delete 删除 / 序列化 |
+| 运行指示 | `ExecutionController` | 经 `canvas.execution()` 取得：仅做 UI 状态展示，**不执行业务逻辑** |
+
+### 8.2 快速上手（10 行）
+
+```python
+from PySide6.QtCore import QPointF
+from InstructionX_UIKit.blueprint import BlueprintGraph, BlueprintCanvas
+
+graph = BlueprintGraph()
+canvas = BlueprintCanvas(graph)                 # 直接当 QWidget 用
+a = canvas.add_node_at("start", QPointF(40, 120))     # 内置起始节点
+b = canvas.add_node_at("resize", QPointF(360, 120))   # 经注册表创建
+graph.add_edge(a.id, "out", b.id, "in")          # 校验通过返回 Edge
+canvas.fit_view()                                # 适应视图
+```
+
+### 8.3 注册自定义节点（含 body_builder）
+
+```python
+from InstructionX_UIKit.blueprint import register_node_type
+from InstructionX_UIKit.components.spin_box import SpinBox
+from InstructionX_UIKit.components.combo_box import ComboBox
+
+def build_resize_body(node, container):
+    """节点体构建器：container 透明、自带 QVBoxLayout，写回 node.properties。"""
+    width = SpinBox(16, 4096, int(node.properties.get("width", 640)), size="sm")
+    width.valueChanged.connect(lambda v: node.properties.__setitem__("width", int(v)))
+    container.layout().addWidget(width)
+    combo = ComboBox(items=["nearest", "bilinear", "bicubic"], size="sm")
+    combo.currentTextChanged.connect(
+        lambda s: node.properties.__setitem__("interpolation", s))
+    container.layout().addWidget(combo)
+
+register_node_type(
+    "resize", "Resize", "处理",
+    inputs=[{"id": "in", "name": "进入", "data_type": "exec"},
+            {"id": "img", "name": "图像", "data_type": "image"}],
+    outputs=[{"id": "out", "name": "退出", "data_type": "exec"},
+             {"id": "img", "name": "图像", "data_type": "image"}],
+    accent="warning", body_builder=build_resize_body,
+    description="调整图像尺寸",
+)
+register_pin_type("audio", "#E0A030")  # 可选：扩展引脚类型配色
+```
+
+注意：画布为避免与节点拖拽冲突，将节点体设为鼠标透明——`body_builder` 注入的控件在画布内作展示用；交互编辑建议放到侧栏属性面板（Demo 蓝图页用 `demo.pages.playground.ParamForm` 实现，写回同一份 `node.properties` 后 `node.changed.emit()` 刷新外观）。
+
+### 8.4 运行指示 API（ComfyUI 式，纯 UI）
+
+```python
+ex = canvas.execution()
+ex.set_path([a.id, b.id, c.id])   # 高亮路径边（流动虚线动画）
+ex.start(a.id)                    # running：脉冲描边 + 标题栏旋转圈
+ex.finish(a.id)                   # done：success 描边 + 耗时徽标（缺省自动计时）
+ex.fail(b.id, "模拟失败")          # error：danger 描边 + tooltip
+ex.reset()                        # 全部回 idle，清耗时与路径
+# 信号：node_started(str) / node_finished(str, float) / finished()
+```
+
+Demo 蓝图页的「运行」按 exec 链拓扑序用 QTimer 逐节点模拟（每节点 200–800ms 随机耗时），「单步」逐节点推进——全部只是状态指示，无业务逻辑。
+
+### 8.5 序列化
+
+```python
+data = canvas.to_dict()      # {"graph": {...}, "view": {"zoom", "offset"}}
+canvas.from_dict(data)       # 重建节点 / 边并还原视图状态
+graph.to_dict()              # 仅数据层：{"nodes": [...], "edges": [...]}
+```
+
+全部 JSON 友好（`json.dumps` 可直接序列化），含节点位置、引脚、properties 与画布 zoom/offset。
+
+### 8.6 应用场景
+
+节点图天然适合「可视化拼装 + 数据流」类工具：**PyTorch 模块拼装**（把 Conv / Attention / 融合等模块注册为节点类型，properties 承载超参数，图结构导出为构建脚本）、**着色器 / 材质流水线**（纹理输入、滤镜、混合节点，引脚类型映射数据格式）、**AI 流水线编排**（加载→预处理→推理→后处理→落盘，如 Demo 预置图），以及规则引擎、音视频转码链、ETL 流程等。库只负责编辑与状态展示，真正的执行调度由应用层按图拓扑自行实现。
+
+## 9. 常见问题
 
 **Q1：设置了 `size="sm"` 但样式不生效？**
 `size` 是 QWidget 内置 `Q_PROPERTY`，`setProperty("size", "sm")` 会失败且不会成为动态属性。务必使用：
