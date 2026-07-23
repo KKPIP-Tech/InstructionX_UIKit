@@ -6,8 +6,8 @@
 并额外提供 loading（自绘旋转弧）与 block（撑满父布局）能力。
 """
 
-from PySide6.QtCore import Qt, QVariantAnimation, QRectF
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtCore import Qt, QVariantAnimation, QPointF, QRectF
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPen
 from PySide6.QtWidgets import QPushButton, QSizePolicy, QStyle, QStyleOptionButton, QStylePainter
 
 from ..theme import T, ThemeManager, set_property
@@ -170,7 +170,48 @@ class Button(QPushButton):
             return QColor(T("color.primary"))
         return QColor(T("color.text.primary"))
 
+    def _ink_centered_text(self) -> bool:
+        """圆形 + 纯文本短文本（≤2 字符，如 "+"）时按墨迹盒自绘居中。
+
+        样式按字体行高盒（含 ascent/descent 空白）居中文本，"+" 等符号
+        的可见墨迹在行高盒内偏上，垂直方向会偏 1~2px；圆形按钮尺寸小、
+        无留白缓冲，偏移肉眼可见。参照 ``icon_button.py`` 的方案：背景 /
+        边框 / 状态仍交给样式绘制，文本改用 ``tightBoundingRect`` 墨迹盒
+        自绘，保证水平 + 垂直精确居中。``round`` 胶囊与普通按钮不受影响。
+        """
+        text = self.text()
+        return (self.property("shape") == "circle" and 0 < len(text) <= 2
+                and self.icon().isNull())
+
     def paintEvent(self, event):
+        if not self._loading and self._ink_centered_text():
+            # 1) 交给样式表绘制按钮底板（背景 / 边框 / 圆角 / 焦点态）
+            painter = QStylePainter(self)
+            opt = QStyleOptionButton()
+            self.initStyleOption(opt)
+            opt.text = ""
+            painter.drawControl(QStyle.CE_PushButton, opt)
+            painter.end()
+            # 2) 按墨迹盒自绘短文本：drawText 锚点为 (left, baseline)，
+            #    ink 相对该点定位，反向平移使墨迹中心与几何中心重合。
+            #    注意需关闭字体 hinting：默认 hinting 会把字形按整像素
+            #    网格吸附，渲染结果相对 tightBoundingRect 的设计度量上移
+            #    ~0.5px；PreferNoHinting 下渲染墨迹与度量一致，居中精度
+            #    达亚像素级（实测偏差 < 0.1px）。
+            font = QFont(self.font())
+            font.setHintingPreference(QFont.PreferNoHinting)
+            p = QPainter(self)
+            p.setRenderHint(QPainter.TextAntialiasing)
+            p.setFont(font)
+            metrics = QFontMetricsF(font)
+            ink = metrics.tightBoundingRect(self.text())
+            cx = self.width() / 2.0
+            cy = self.height() / 2.0
+            p.setPen(self.palette().color(self.foregroundRole()))
+            p.drawText(QPointF(cx - ink.center().x(), cy - ink.center().y()),
+                       self.text())
+            p.end()
+            return
         if not self._loading:
             super().paintEvent(event)
             return

@@ -62,6 +62,12 @@ class Popover(QWidget):
     def __init__(self, title: str = "", content=None, parent=None):
         super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAutoFillBackground(False)
+        # 全局基座 QSS「QWidget { background: bg.base }」会在绘制链中给
+        # 弹出窗整个矩形（含透明的阴影边距区）涂上不透明底色（暗色
+        # #15181E，真机上即"黑色方框"）。实例级覆盖为透明：弹出窗只由
+        # paintEvent 绘制圆角卡体 + 箭头 + 阴影，其余区域保持真透明。
+        self.setStyleSheet("background: transparent;")
         self._placement = "top"
         self._anchor_center = None  # 锚点中心（全局坐标），用于箭头的对齐
         self._anim_opacity = None

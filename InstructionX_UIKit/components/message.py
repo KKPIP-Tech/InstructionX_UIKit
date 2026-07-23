@@ -68,6 +68,11 @@ class Message(QWidget):
         super().__init__(None, Qt.FramelessWindowHint | Qt.Tool
                          | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAutoFillBackground(False)
+        # 覆盖全局基座 QSS「QWidget { background: bg.base }」，避免提示
+        # 窗口整个矩形被涂上不透明底色（暗色下呈黑色方框）；胶囊卡体
+        # 与内容只由 paintEvent 自绘，窗口其余区域保持真透明。
+        self.setStyleSheet("background: transparent;")
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         if type not in self.TYPES:
             raise ValueError(

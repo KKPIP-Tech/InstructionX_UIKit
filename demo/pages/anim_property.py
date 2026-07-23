@@ -81,7 +81,7 @@ def _cards() -> list:
     st = _Stage(); t = st.place(_block("淡入"), 120, 66)
     cards.append(_pcard(
         "fade_in 淡入", "透明度 0 → 1", st,
-        lambda o: A.fade_in(t, **o),
+        lambda o, t=t: A.fade_in(t, **o),
         [("int", "duration", "时长", 200, 50, 2000),
          ("easing", "easing", "缓动", "standard"),
          ("float", "from_opacity", "起始透明度", 0.0, 0.0, 1.0)]))
@@ -109,7 +109,7 @@ def _cards() -> list:
     st = _Stage(); t = st.place(_block("滑入"), 120, 66)
     cards.append(_pcard(
         "slide_in 滑入", "从指定方向偏移滑入", st,
-        lambda o: A.slide_in(t, **o),
+        lambda o, t=t: A.slide_in(t, **o),
         [("choice", "direction", "方向", "left", list(_DIRECTIONS)),
          ("int", "distance", "距离", 70, 16, 200),
          ("bool", "fade", "同步淡入", True),
@@ -118,7 +118,7 @@ def _cards() -> list:
     st = _Stage(); t = st.place(_block("缩放"), 120, 66)
     cards.append(_pcard(
         "zoom_in 缩放进入", "由小放大进入", st,
-        lambda o: A.zoom_in(t, **o),
+        lambda o, t=t: A.zoom_in(t, **o),
         [("float", "from_scale", "起始缩放", 0.6, 0.05, 1.0),
          ("bool", "fade", "同步淡入", True),
          ("int", "duration", "时长", 200, 50, 2000)]))
@@ -126,14 +126,14 @@ def _cards() -> list:
     st = _Stage(); t = st.place(_block("弹性"), 120, 66)
     cards.append(_pcard(
         "spring_pop 弹性弹出", "回弹式弹出", st,
-        lambda o: A.spring_pop(t, **o),
+        lambda o, t=t: A.spring_pop(t, **o),
         [("float", "from_scale", "起始缩放", 0.55, 0.05, 1.0),
          ("int", "duration", "时长", 320, 100, 1000)]))
     # 6 角标弹入
     st = _Stage(); t = st.place(_block("99+", key="danger", size=(48, 40)), 48, 40)
     cards.append(_pcard(
         "badge_pop 角标弹入", "角标弹性入场", st,
-        lambda o: A.badge_pop(t, **o),
+        lambda o, t=t: A.badge_pop(t, **o),
         [("int", "duration", "时长", 320, 100, 1000),
          ("easing", "easing", "缓动", "spring")]))
     # 7 交错入场（4 个绝对定位小块）
@@ -153,14 +153,14 @@ def _cards() -> list:
     st = _Stage(); t = st.place(_block("模糊"), 120, 66)
     cards.append(_pcard(
         "blur_in 模糊进入", "模糊半径 → 0", st,
-        lambda o: A.blur_in(t, **o),
+        lambda o, t=t: A.blur_in(t, **o),
         [("int", "radius", "模糊半径", 16, 0, 40),
          ("int", "duration", "时长", 320, 100, 2000)]))
     # 9 遮罩揭示
     st = _Stage(); t = st.place(_block("揭示"), 120, 66)
     cards.append(_pcard(
         "mask_reveal 遮罩揭示", "逐帧裁剪揭示", st,
-        lambda o: A.mask_reveal(t, **o),
+        lambda o, t=t: A.mask_reveal(t, **o),
         [("choice", "direction", "方向", "circle",
           ["right", "left", "down", "up", "circle"]),
          ("int", "duration", "时长", 320, 100, 2000)]))
@@ -168,7 +168,7 @@ def _cards() -> list:
     st = _Stage(); t = st.place(_block("悬停我", key="success"), 120, 66)
     cards.append(_pcard(
         "hover_lift 悬停上浮", "鼠标悬停上浮（安装后悬停查看）", st,
-        lambda o: A.hover_lift(t, **o),
+        lambda o, t=t: A.hover_lift(t, **o),
         [("int", "dy", "上移距离", 6, 0, 20),
          ("bool", "use_shadow", "阴影切换", True),
          ("int", "duration", "时长", 120, 50, 600)],
@@ -218,7 +218,7 @@ def _cards() -> list:
     st = _Stage(); t = st.place(_block("脉冲"), 120, 66)
     cards.append(_pcard(
         "pulse 脉冲", "缩放心跳强调", st,
-        lambda o: A.pulse(t, **o),
+        lambda o, t=t: A.pulse(t, **o),
         [("float", "peak", "峰值缩放", 1.06, 1.0, 1.5),
          ("int", "loops", "循环次数", 1, 1, 5),
          ("int", "duration", "时长", 320, 100, 2000)]))
@@ -226,7 +226,7 @@ def _cards() -> list:
     st = _Stage(); t = st.place(_block("弹跳", key="success"), 120, 66)
     cards.append(_pcard(
         "bounce 弹跳", "上移后落地回弹", st,
-        lambda o: A.bounce(t, **o),
+        lambda o, t=t: A.bounce(t, **o),
         [("int", "height", "弹跳高度", 12, 4, 40),
          ("int", "loops", "循环次数", 1, 1, 5),
          ("int", "duration", "时长", 480, 200, 2000)]))
@@ -234,7 +234,7 @@ def _cards() -> list:
     st = _Stage(); t = st.place(_block("摇摆", key="warning"), 120, 66)
     cards.append(_pcard(
         "swing 摇摆", "左右摇摆", st,
-        lambda o: A.swing(t, **o),
+        lambda o, t=t: A.swing(t, **o),
         [("int", "angle", "摆角(度)", 8, 2, 30),
          ("int", "loops", "循环次数", 1, 1, 5),
          ("int", "duration", "时长", 480, 200, 2000)]))
@@ -242,7 +242,7 @@ def _cards() -> list:
     st = _Stage(); t = st.place(_block("抖动", key="danger"), 120, 66)
     cards.append(_pcard(
         "shake 抖动", "水平抖动", st,
-        lambda o: A.shake(t, **o),
+        lambda o, t=t: A.shake(t, **o),
         [("int", "distance", "振幅", 6, 2, 20),
          ("int", "loops", "循环次数", 1, 1, 5),
          ("int", "duration", "时长", 320, 100, 1000)]))
@@ -270,7 +270,7 @@ def _cards() -> list:
         t.move(home)
     cards.append(_pcard(
         "float_loop 漂浮循环", "原位上下往复（循环）", st,
-        lambda o: A.float_loop(t, **o),
+        lambda o, t=t: A.float_loop(t, **o),
         [("int", "dy", "幅度", 6, 2, 24),
          ("int", "duration", "周期", 1600, 400, 4000),
          ("int", "loops", "循环次数", -1, -1, 5, {"special": "无限"})],
@@ -279,7 +279,7 @@ def _cards() -> list:
     st = _Stage(); t = st.place(_block("辉光"), 120, 66)
     cards.append(_pcard(
         "pulse_glow 辉光呼吸", "投影半径呼吸（循环）", st,
-        lambda o: A.pulse_glow(t, **o),
+        lambda o, t=t: A.pulse_glow(t, **o),
         [("int", "min_blur", "最小半径", 8, 0, 20),
          ("int", "max_blur", "最大半径", 28, 10, 60),
          ("int", "duration", "周期", 1600, 400, 4000)],
@@ -288,7 +288,7 @@ def _cards() -> list:
     st = _Stage(); t = st.place(_block("呼吸"), 120, 66)
     cards.append(_pcard(
         "breathing 呼吸", "透明度呼吸（循环）", st,
-        lambda o: A.breathing(t, **o),
+        lambda o, t=t: A.breathing(t, **o),
         [("float", "min_opacity", "最低透明度", 0.5, 0.05, 0.9),
          ("int", "duration", "周期", 1600, 400, 4000)],
         continuous=True))

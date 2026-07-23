@@ -54,12 +54,18 @@ def create_button_page() -> QWidget:
         _disabled(Button("禁用", variant="primary"))))
     sizes.layout().addWidget(Button("块级按钮 block", variant="primary", block=True))
     shapes = Section("形状 shape")
-    # 圆形按钮：QSS 约定「配合组件固定宽=高」，此处按 md 边长 32 固定为正方形，
-    # 否则 "+" 单字按钮宽度由字宽决定，会渲染成细长条。
-    circle_btn = Button("+", shape="circle", variant="primary")
-    circle_btn.setFixedSize(32, 32)
+    # 圆形按钮：QSS 约定「配合组件固定宽=高」，此处按 sm/md/lg 边长
+    # 24/32/40 固定为正方形，否则 "+" 单字按钮宽度由字宽决定，会渲染成
+    # 细长条。短文本（≤2 字符）圆形按钮由组件按墨迹盒自绘，"+" 在三档
+    # 尺寸下均水平 + 垂直精确居中。
+    circle_sm = Button("+", shape="circle", variant="primary", size="sm")
+    circle_sm.setFixedSize(24, 24)
+    circle_md = Button("+", shape="circle", variant="primary")
+    circle_md.setFixedSize(32, 32)
+    circle_lg = Button("+", shape="circle", variant="primary", size="lg")
+    circle_lg.setFixedSize(40, 40)
     shapes.layout().addWidget(row(
-        Button("圆角", shape="round"), circle_btn,
+        Button("圆角", shape="round"), circle_sm, circle_md, circle_lg,
         Button("胶囊", shape="round", variant="primary")))
     return make_page("Button 按钮", "六种变体、三种尺寸，支持加载态、块级与圆角 / 圆形。",
                      [variants, sizes, shapes])

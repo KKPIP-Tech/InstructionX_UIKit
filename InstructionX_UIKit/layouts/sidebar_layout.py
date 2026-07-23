@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -162,12 +163,22 @@ class SidebarLayout(QWidget):
         self._brand.setVisible(not collapsed and bool(self._brand.text()))
         self._center_logo(collapsed)
         for btn, _icon_name, text in self._nav_buttons:
+            policy = btn.sizePolicy()
             if collapsed:
                 btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
                 btn.setText("")  # 图标栏不出现单字 / 文本
+                # QToolButton 默认水平 Fixed 尺寸策略：按钮只取 sizeHint
+                # 宽度（图标 18 + padding 8 = 26px）并在栏内左对齐，图标
+                # 中心偏离 56px 栏中心约 6px。折叠态改为 Expanding 使按钮
+                # 撑满栏宽，样式绘制 ToolButtonIconOnly 时图标即在按钮
+                # （也即栏）内精确水平居中；对称 padding 不产生偏移。
+                policy.setHorizontalPolicy(QSizePolicy.Expanding)
             else:
                 btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
                 btn.setText(text)
+                # 展开态恢复 QToolButton 默认的 Fixed 水平策略，保持原样
+                policy.setHorizontalPolicy(QSizePolicy.Fixed)
+            btn.setSizePolicy(policy)
         self._refresh_nav_icons()
         self._toggle.setText("»" if collapsed else "«  收起导航")
 
