@@ -15,6 +15,7 @@ from . import (
     anim_painted,
     anim_property,
     basic_widgets,
+    blueprint,
     charts,
     display,
     feedback,
@@ -136,6 +137,9 @@ NAV = [
     ])),
     ("charts", "图表", _register([
         ("charts", "图表（原生引擎）", charts.create_page),
+    ])),
+    ("blueprint", "蓝图", _register([
+        ("blueprint", "蓝图（节点图）", blueprint.create_page),
     ])),
 ]
 
