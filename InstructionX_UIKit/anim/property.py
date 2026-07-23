@@ -267,6 +267,23 @@ def _transform_effect(target: QWidget) -> _TransformEffect:
     return eff
 
 
+def _force_transparent(widget: QWidget) -> None:
+    """强制叠加层 / 占位控件背景透明。
+
+    主题全局 QSS 含基座规则 ``QWidget { background-color: <bg.base> }``，
+    会把普通 QWidget 刷成不透明底色块；叠加层一旦带不透明底，外扩的
+    margin 区域就会变成盖住相邻控件的实心矩形（真机可见的「块」）。
+    这里三重压制：
+    - ``WA_TranslucentBackground``：render()/grab() 时不再填充窗口底色；
+    - ``setAutoFillBackground(False)``：禁止 palette 背景自动填充；
+    - 实例级 ``background: transparent``：压过全局 QSS 基座规则
+      （实例样式表优先级高于应用程序级样式表）。
+    """
+    widget.setAttribute(Qt.WA_TranslucentBackground, True)
+    widget.setAutoFillBackground(False)
+    widget.setStyleSheet("background: transparent; border: none;")
+
+
 class _Overlay(QWidget):
     """覆盖在目标控件上的透明自绘层（涟漪 / 高亮闪烁共用）。
 
@@ -277,6 +294,7 @@ class _Overlay(QWidget):
 
     def __init__(self, target: QWidget, color: QColor, radius: float = 6.0):
         super().__init__(target)
+        _force_transparent(self)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.setFocusPolicy(Qt.NoFocus)
         self._color = QColor(color)
@@ -422,6 +440,9 @@ class _SnapshotOverlay(QWidget):
                  mouse_transparent: bool = True):
         parent = target.parentWidget()
         super().__init__(parent if parent is not None else target)
+        # 父对象 = 目标父控件，几何 = 目标 geometry（父坐标系）外扩 margin，
+        # 坐标系一致；目标随滚动区内容移动时叠加层天然跟随（同一父控件）。
+        _force_transparent(self)
         self._target_ref = target
         self._pm = pixmap
         self._margin = max(1, int(math.ceil(margin)))
@@ -618,6 +639,9 @@ class _TargetHold:
             lay = parent.layout()
             if lay is not None and lay.indexOf(target) >= 0:
                 spacer = QWidget(parent)
+                # spacer 只是透明占位：全局 QSS 基座规则会把普通 QWidget
+                # 刷成不透明底色块，必须压制（否则动画期间出现实心矩形）。
+                _force_transparent(spacer)
                 spacer.setFixedSize(target.size())
                 spacer.setSizePolicy(target.sizePolicy())
                 spacer.setAttribute(Qt.WA_TransparentForMouseEvents, True)
