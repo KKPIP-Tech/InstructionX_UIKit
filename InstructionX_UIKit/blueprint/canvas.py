@@ -45,6 +45,9 @@ class BlueprintCanvas(QWidget):
     参数:
         graph: ``BlueprintGraph`` 数据图（节点 / 边变化自动同步到界面）。
         parent: 父控件。
+        owner: 注册表命名空间标识（缺省 ``None`` 保持旧行为）；给定时
+            节点创建 / 创建菜单 / 节点体解析范围均为「该 owner + 全局」，
+            多插件同名节点类型因此互不干扰。
 
     信号:
         node_moved(str, QPointF): 节点拖动结束（节点 id + 新场景坐标）。
@@ -65,11 +68,12 @@ class BlueprintCanvas(QWidget):
     edge_removed = Signal(str)
     selection_changed = Signal(list)
 
-    def __init__(self, graph: BlueprintGraph, parent=None):
+    def __init__(self, graph: BlueprintGraph, parent=None, owner: str = None):
         super().__init__(parent)
         if graph is None:
             graph = BlueprintGraph()
         self.graph = graph
+        self._owner = owner
         self._zoom = 1.0
         self._offset = QPointF(0.0, 0.0)
         self._node_widgets = {}
@@ -122,11 +126,13 @@ class BlueprintCanvas(QWidget):
     def add_node_at(self, type_name: str, scene_pos: QPointF) -> BlueprintNode:
         """经注册表创建节点并放置到场景坐标，返回 ``BlueprintNode``。
 
+        按画布 ``owner`` 解析类型（「本 owner + 全局」范围）。
+
         示例::
 
             node = canvas.add_node_at("start", QPointF(80, 100))
         """
-        node = NodeRegistry.instance().create(type_name)
+        node = NodeRegistry.instance().create(type_name, owner=self._owner)
         node.pos = QPointF(scene_pos)
         self.graph.add_node(node)
         return node
@@ -260,7 +266,7 @@ class BlueprintCanvas(QWidget):
     # 图信号 → 界面同步
     # ------------------------------------------------------------------
     def _on_node_added(self, node: BlueprintNode) -> None:
-        widget = NodeWidget(node, self)
+        widget = NodeWidget(node, self, owner=self._owner)
         widget.installEventFilter(self)
         for pin in node.inputs + node.outputs:
             handle = widget.pin_widget(pin.id, pin.direction)
@@ -539,7 +545,7 @@ class BlueprintCanvas(QWidget):
             # 拖到空白松开：弹创建菜单，创建后自动连接（UE5 行为）
             scene_pt = self.view_to_scene(view_pos)
             self._pending_wire = (src_nid, src_pin, scene_pt)
-            menu = NodeCreationMenu(self)
+            menu = NodeCreationMenu(self, owner=self._owner)
             want_dir = (PinDirection.Input if src_pin.direction is PinDirection.Output
                         else PinDirection.Output)
             menu.type_chosen.connect(self._create_node_for_wire)
@@ -653,7 +659,7 @@ class BlueprintCanvas(QWidget):
                 self.unsetCursor()
             else:
                 scene_pt = self.view_to_scene(pos)
-                menu = NodeCreationMenu(self)
+                menu = NodeCreationMenu(self, owner=self._owner)
                 menu.type_chosen.connect(
                     lambda t, sp=scene_pt: self.add_node_at(t, sp))
                 menu.popup_at(event.globalPosition().toPoint())
