@@ -10,6 +10,9 @@
 - 边校验矩阵（类型不兼容拒绝 / any 通配 / 方向 / 自连 / 重复 / 单连接替换）；
 - 图与画布序列化往返相等；
 - 注册表：注册 / 搜索 / 分类 / create / body_builder 注入 / 引脚类型注册；
+- 注册表 owner 命名空间隔离：同名类型跨 owner 共存、「owner + 全局」
+  解析范围、异定义覆盖 WARNING、注销回退、画布 / 创建菜单 / 节点体
+  按 owner 解析；
 - 画布：add_node_at 位置、程序建边边部件几何、模拟引脚拖拽建边、
   橡皮筋框选、Delete 删除连带边、fit_view、缩放夹取、center_on；
 - execution：start→running、finish→done + 耗时徽标像素断言、fail→error、
@@ -19,6 +22,7 @@
 """
 
 import json
+import logging
 import os
 import sys
 import traceback
@@ -138,6 +142,74 @@ def make_canvas(w=960, h=640):
     canvas.show()
     app.processEvents()
     return graph, canvas
+
+
+# ---------------------------------------------------------------------------
+# owner 命名空间隔离测试辅助
+# ---------------------------------------------------------------------------
+
+#: 两个测试用命名空间（不与其他用例的全局注册冲突）
+_OWNER_A = "test_plugin_a"
+_OWNER_B = "test_plugin_b"
+
+
+class _ListHandler(logging.Handler):
+    """收集日志记录的测试用处理器（用于断言 WARNING 是否触发）。"""
+
+    def __init__(self):
+        super().__init__()
+        self.records = []
+
+    def emit(self, record):
+        self.records.append(record)
+
+
+def _build_owner_a_body(node, container):
+    """owner A 的节点体构建器：注入带 objectName 的 QLabel。"""
+    label = QLabel("A 节点体")
+    label.setObjectName("ownerABody")
+    container.layout().addWidget(label)
+
+
+def _build_owner_b_body(node, container):
+    """owner B 的节点体构建器：注入带 objectName 的 QLabel。"""
+    label = QLabel("B 节点体")
+    label.setObjectName("ownerBBody")
+    container.layout().addWidget(label)
+
+
+def register_owner_types():
+    """注册 owner 测试类型（重复调用安全：同定义覆盖静默幂等）。
+
+    - ``ns_node``：两个 owner 下同名异定义（A 输出 img/image，B 输出
+      mat/tensor）；
+    - ``ns_only_a``：仅 owner A 注册的私有类型（菜单范围断言用）；
+    - ``ns_widget``：两个 owner 各自带不同 body_builder（节点体解析
+      断言用）。
+    """
+    register_node_type(
+        "ns_node", "命名空间节点 A", "输入", owner=_OWNER_A,
+        outputs=[{"id": "img", "name": "图像", "data_type": "image"}],
+        description="owner A 版本（image 输出）",
+    )
+    register_node_type(
+        "ns_node", "命名空间节点 B", "IO", owner=_OWNER_B,
+        outputs=[{"id": "mat", "name": "张量", "data_type": "tensor"}],
+        description="owner B 版本（tensor 输出）",
+    )
+    register_node_type(
+        "ns_only_a", "A 私有节点", "私有", owner=_OWNER_A,
+        outputs=[{"id": "out", "name": "任意", "data_type": "any"}],
+        description="仅 owner A 可见",
+    )
+    register_node_type(
+        "ns_widget", "体节点", "工具", owner=_OWNER_A,
+        body_builder=_build_owner_a_body, description="owner A 节点体",
+    )
+    register_node_type(
+        "ns_widget", "体节点", "工具", owner=_OWNER_B,
+        body_builder=_build_owner_b_body, description="owner B 节点体",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -305,6 +377,116 @@ def _():
     assert_true(pin_color("int") == str(T("color.success")), "pin_color 令牌键")
     assert_true(types_compatible("any", "image") and not types_compatible("int", "str"),
                 "types_compatible")
+
+
+# ---------------------------------------------------------------------------
+# 4b. 注册表：owner 命名空间隔离
+# ---------------------------------------------------------------------------
+
+@check("注册表 owner：共存 / 解析范围 / 覆盖 WARNING / 注销回退")
+def _():
+    register_test_types()
+    register_owner_types()
+    reg = NodeRegistry.instance()
+    # 同名类型在两个 owner 下共存，各得各的定义
+    spec_a = reg.spec("ns_node", owner=_OWNER_A)
+    spec_b = reg.spec("ns_node", owner=_OWNER_B)
+    assert_eq(spec_a.title, "命名空间节点 A", "owner A spec")
+    assert_eq(spec_b.title, "命名空间节点 B", "owner B spec")
+    assert_eq(spec_a.outputs[0]["id"], "img", "owner A 引脚定义")
+    assert_eq(spec_b.outputs[0]["id"], "mat", "owner B 引脚定义")
+    assert_eq(spec_a.owner, _OWNER_A, "spec.owner 回写")
+    # 指定 owner 的解析范围为「该 owner + 全局」
+    assert_true(reg.spec("start", owner=_OWNER_A) is not None,
+                "owner 画布可用全局内置 start")
+    assert_true(reg.spec("resize", owner=_OWNER_A) is not None,
+                "owner 解析回退全局类型")
+    cats_a = reg.categories(owner=_OWNER_A)
+    assert_true("输入" in cats_a and "流程" in cats_a,
+                "categories 含本空间与全局")
+    assert_true("IO" not in cats_a, "categories 不含其他 owner 的分类")
+    hits = reg.search("ns_node", owner=_OWNER_A)
+    assert_eq(len(hits), 1, "search 只命中本空间（+全局）的同名类型")
+    assert_eq(hits[0].owner, _OWNER_A, "search 命中本空间定义")
+    # create 按 owner 解析引脚
+    node_a = reg.create("ns_node", owner=_OWNER_A)
+    assert_eq([p.id for p in node_a.outputs], ["img"], "create owner A 引脚")
+    node_b = reg.create("ns_node", owner=_OWNER_B)
+    assert_eq([p.id for p in node_b.outputs], ["mat"], "create owner B 引脚")
+    # 不传 owner 旧行为：全局优先；全局未命中跨空间多命中记 WARNING
+    handler = _ListHandler()
+    reg_logger = logging.getLogger("InstructionX_UIKit.blueprint.registry")
+    reg_logger.addHandler(handler)
+    try:
+        spec_any = reg.spec("ns_node")
+        assert_true(spec_any is not None, "跨空间兜底仍返回定义")
+        assert_true(any(r.levelno >= logging.WARNING for r in handler.records),
+                    "多命名空间命中应记 WARNING")
+        # 同空间重复注册：同定义静默幂等，异定义覆盖记 WARNING
+        handler.records.clear()
+        register_owner_types()
+        assert_eq(len(handler.records), 0, "同定义重复注册应静默")
+        register_node_type(
+            "ns_node", "命名空间节点 A2", "输入", owner=_OWNER_A,
+            outputs=[{"id": "pix", "name": "像素", "data_type": "image"}],
+        )
+        assert_true(any(r.levelno >= logging.WARNING for r in handler.records),
+                    "同空间异定义覆盖应记 WARNING")
+        assert_eq(reg.spec("ns_node", owner=_OWNER_A).outputs[0]["id"], "pix",
+                  "覆盖后新定义生效")
+        register_owner_types()  # 恢复 A 原定义，保证用例可重入
+    finally:
+        reg_logger.removeHandler(handler)
+    # unregister：owner 优先，未命中回退全局
+    assert_true(reg.unregister("ns_node", owner=_OWNER_B), "注销 owner B 定义")
+    assert_true(reg.spec("ns_node", owner=_OWNER_B) is None,
+                "注销后回退全局仍未命中")
+    assert_true(reg.spec("ns_node", owner=_OWNER_A) is not None,
+                "注销不影响其他 owner")
+    register_owner_types()  # 恢复 B，保证用例可重入
+    # 不传 owner 的旧调用对全局类型行为不变
+    assert_true(reg.spec("load_image") is not None, "全局类型查询不受影响")
+
+
+@check("画布 / 菜单 / 节点体：owner 透传解析")
+def _():
+    register_test_types()
+    register_owner_types()
+    g = BlueprintGraph()
+    c = BlueprintCanvas(g, owner=_OWNER_A)
+    c.resize(960, 640)
+    c.show()
+    app.processEvents()
+    # 画布按 owner 创建节点（标题 / 引脚来自本空间 spec）
+    n = c.add_node_at("ns_node", QPointF(80, 120))
+    assert_eq(n.title, "命名空间节点 A", "画布按 owner 创建节点")
+    assert_eq([p.id for p in n.outputs], ["img"], "画布节点引脚来自 owner spec")
+    s = c.add_node_at("start", QPointF(80, 320))
+    assert_true(s is not None, "全局内置类型仍可用于 owner 画布")
+    # 创建菜单只列「该 owner + 全局」：A 私有类型对 B 不可见
+    menu_a = NodeCreationMenu(c, owner=_OWNER_A)
+    menu_a.popup_at(QPoint(50, 50))
+    app.processEvents()
+    types_a = menu_a.matching_types()
+    assert_true("ns_only_a" in types_a, "菜单含本空间私有类型")
+    assert_true("start" in types_a and "resize" in types_a, "菜单含全局类型")
+    menu_a.close()
+    menu_b = NodeCreationMenu(c, owner=_OWNER_B)
+    menu_b.popup_at(QPoint(50, 50))
+    app.processEvents()
+    types_b = menu_b.matching_types()
+    assert_true("ns_only_a" not in types_b, "其他空间私有类型不可见")
+    assert_true("ns_node" in types_b, "本空间同名类型可见")
+    menu_b.close()
+    # 节点体 body_builder 按 owner 解析
+    w_node = c.add_node_at("ns_widget", QPointF(420, 120))
+    w = c.node_widget(w_node.id)
+    assert_true(w._body is not None, "body 容器应存在")
+    assert_true(w._body.findChild(QLabel, "ownerABody") is not None,
+                "节点体应使用 owner A 的 body_builder")
+    assert_true(w._body.findChild(QLabel, "ownerBBody") is None,
+                "节点体不应使用其他 owner 的 body_builder")
+    c.close()
 
 
 # ---------------------------------------------------------------------------
