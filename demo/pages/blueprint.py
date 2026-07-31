@@ -8,7 +8,10 @@
 - 中央 ``BlueprintCanvas``：预置「开始→加载图像→预处理→模型推理→
   后处理→保存结果」流水线（exec 链 + image/tensor 数据引脚混排）；
 - 右侧属性面板：选中节点时显示其类型 / 标题 / 状态，并用
-  ``playground.ParamForm`` 编辑属性（写回 ``node.properties``）。
+  ``playground.ParamForm`` 编辑属性（写回 ``node.properties``）；
+- 底部「命名空间隔离」小节：全部节点类型注册在 ``owner="uikit-demo"``
+  命名空间（标准用法示范），另在 ``owner="other-plugin"`` 下注册同名
+  但引脚定义不同的 ``load_image``，用小画布展示两个 owner 互不影响。
 
 **纯模拟说明**：本页的「运行 / 单步」只驱动 ``ExecutionController``
 的 UI 状态指示（running / done / 耗时徽标 / 路径高亮），不执行任何
@@ -23,6 +26,7 @@ import json
 import os
 import random
 import time
+from functools import partial
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, Qt, QTimer
@@ -38,6 +42,7 @@ from PySide6.QtWidgets import (
 from InstructionX_UIKit.blueprint import (
     BlueprintCanvas,
     BlueprintGraph,
+    NodeRegistry,
     register_node_type,
 )
 from InstructionX_UIKit.components import Button
@@ -53,6 +58,11 @@ __all__ = ["create_page", "register_demo_node_types", "PROPERTY_SCHEMAS"]
 
 #: offscreen 下降级读写当前工作目录的该文件（不弹文件对话框）
 FALLBACK_JSON = "blueprint_demo.json"
+
+#: 本演示页的注册表命名空间：全部节点类型注册在该 owner 下（标准用法示范）
+DEMO_OWNER = "uikit-demo"
+#: 命名空间隔离小节用的第二个 owner：注册同名异定义的 load_image 做对照
+OTHER_OWNER = "other-plugin"
 
 # ---------------------------------------------------------------------------
 # 节点属性 schema（右侧属性面板用）
@@ -219,16 +229,22 @@ def register_demo_node_types() -> None:
 
     库内置 ``start``（流程）之外注册 12 种；其中 resize / cnn /
     gaussian_blur / transformer 带 ``body_builder`` 属性编辑体。
+
+    **标准用法示范**：全部类型注册到 ``owner=DEMO_OWNER`` 命名空间——
+    同一应用内建议统一用自己的 owner 注册，与其他来源注册的同名类型
+    互不覆盖（见页面底部「命名空间隔离」小节）。
     """
+    # 统一为每次注册注入 owner 命名空间（等价于每个调用显式传 owner=...）
+    _register = partial(register_node_type, owner=DEMO_OWNER)
     # -- 输入 -------------------------------------------------------------
-    register_node_type(
+    _register(
         "load_image", "加载图像", "输入",
         inputs=[dict(_EXEC_IN)],
         outputs=[dict(_EXEC_OUT),
                  {"id": "img", "name": "图像", "data_type": "image"}],
         accent="primary", description="从磁盘加载图像（image 输出）",
     )
-    register_node_type(
+    _register(
         "noise", "随机噪声", "输入",
         inputs=[dict(_EXEC_IN)],
         outputs=[dict(_EXEC_OUT),
@@ -236,7 +252,7 @@ def register_demo_node_types() -> None:
         accent="primary", description="生成随机噪声张量（tensor 输出）",
     )
     # -- 处理 -------------------------------------------------------------
-    register_node_type(
+    _register(
         "resize", "Resize", "处理",
         inputs=[dict(_EXEC_IN),
                 {"id": "img", "name": "图像", "data_type": "image"}],
@@ -245,7 +261,7 @@ def register_demo_node_types() -> None:
         accent="warning", body_builder=build_resize_body,
         description="调整图像尺寸（宽 / 高 / 插值可编辑）",
     )
-    register_node_type(
+    _register(
         "normalize", "归一化", "处理",
         inputs=[dict(_EXEC_IN),
                 {"id": "img", "name": "图像", "data_type": "image"}],
@@ -253,7 +269,7 @@ def register_demo_node_types() -> None:
                  {"id": "tensor", "name": "张量", "data_type": "tensor"}],
         accent="warning", description="图像归一化为张量（预处理）",
     )
-    register_node_type(
+    _register(
         "gaussian_blur", "高斯模糊", "处理",
         inputs=[dict(_EXEC_IN),
                 {"id": "img", "name": "图像", "data_type": "image"}],
@@ -262,7 +278,7 @@ def register_demo_node_types() -> None:
         accent="warning", body_builder=build_blur_body,
         description="高斯模糊（半径 Slider 可调）",
     )
-    register_node_type(
+    _register(
         "edge_detect", "边缘检测", "处理",
         inputs=[dict(_EXEC_IN),
                 {"id": "tensor", "name": "张量", "data_type": "tensor"}],
@@ -271,7 +287,7 @@ def register_demo_node_types() -> None:
         accent="warning", description="从张量提取边缘（后处理）",
     )
     # -- 模型 -------------------------------------------------------------
-    register_node_type(
+    _register(
         "cnn", "CNN 模块", "模型",
         inputs=[dict(_EXEC_IN),
                 {"id": "tensor", "name": "张量", "data_type": "tensor"}],
@@ -280,7 +296,7 @@ def register_demo_node_types() -> None:
         accent="danger", body_builder=build_cnn_body,
         description="卷积骨干（层数 / 通道数可编辑）",
     )
-    register_node_type(
+    _register(
         "transformer", "Transformer 模块", "模型",
         inputs=[dict(_EXEC_IN),
                 {"id": "tensor", "name": "张量", "data_type": "tensor"}],
@@ -289,7 +305,7 @@ def register_demo_node_types() -> None:
         accent="danger", body_builder=build_transformer_body,
         description="注意力模块（层数 / 头数可编辑）",
     )
-    register_node_type(
+    _register(
         "fusion", "融合", "模型",
         inputs=[dict(_EXEC_IN),
                 {"id": "tensor_a", "name": "张量 A", "data_type": "tensor"},
@@ -299,20 +315,20 @@ def register_demo_node_types() -> None:
         accent="danger", description="两路 tensor 加权融合",
     )
     # -- 输出 -------------------------------------------------------------
-    register_node_type(
+    _register(
         "save_result", "保存结果", "输出",
         inputs=[dict(_EXEC_IN),
                 {"id": "img", "name": "图像", "data_type": "image"}],
         accent="success", description="把结果写出到磁盘",
     )
-    register_node_type(
+    _register(
         "log_output", "日志输出", "输出",
         inputs=[dict(_EXEC_IN),
                 {"id": "msg", "name": "消息", "data_type": "any", "multi": True}],
         accent="success", description="打印任意数据到日志",
     )
     # -- 工具 -------------------------------------------------------------
-    register_node_type(
+    _register(
         "perf_probe", "性能探针", "工具",
         inputs=[dict(_EXEC_IN),
                 {"id": "any_in", "name": "观测", "data_type": "any", "multi": True}],
@@ -324,6 +340,27 @@ def register_demo_node_types() -> None:
 
 # 模块级注册（库内置 "start" 节点保证开箱即有）
 register_demo_node_types()
+
+
+def register_other_owner_types() -> None:
+    """在 ``owner=OTHER_OWNER`` 下注册同名异定义类型（命名空间隔离演示）。
+
+    与 ``DEMO_OWNER`` 下的 ``load_image`` 同名，但标题 / 引脚定义不同：
+    该版本输出 ``mat``（tensor）而非 ``img``（image）。两个 owner 的
+    同名类型在注册表中共存、互不影响。
+    """
+    register_node_type(
+        "load_image", "载入图像（张量）", "IO",
+        inputs=[dict(_EXEC_IN)],
+        outputs=[dict(_EXEC_OUT),
+                 {"id": "mat", "name": "张量", "data_type": "tensor"}],
+        accent="primary", description="另一插件的同名类型：输出 tensor",
+        owner=OTHER_OWNER,
+    )
+
+
+# 命名空间隔离演示用注册（模块级，幂等）
+register_other_owner_types()
 
 
 # ---------------------------------------------------------------------------
@@ -396,7 +433,9 @@ class BlueprintDemoPage(QWidget):
         self.graph = BlueprintGraph()
         # 先接默认属性槽，保证 NodeWidget 构建时 properties 已就位
         self.graph.node_added.connect(apply_defaults)
-        self.canvas = BlueprintCanvas(self.graph, self)
+        # 标准用法示范：画布携带 owner，节点创建 / 创建菜单 / 节点体
+        # 均按「DEMO_OWNER + 全局（内置 start 等）」范围解析
+        self.canvas = BlueprintCanvas(self.graph, self, owner=DEMO_OWNER)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 18, 20, 16)
@@ -413,8 +452,8 @@ class BlueprintDemoPage(QWidget):
             "引脚拖出连线、Delete 删除选中。「运行 / 单步」为纯 UI 模拟："
             "仅驱动 ExecutionController 状态指示，不含任何业务逻辑。"))
         root.addWidget(code_label(
-            'canvas = BlueprintCanvas(BlueprintGraph()); '
-            'canvas.add_node_at("resize", QPointF(100, 80))'))
+            'register_node_type("resize", ..., owner="uikit-demo"); '
+            'canvas = BlueprintCanvas(graph, owner="uikit-demo")'))
 
         root.addLayout(self._build_toolbar())
 
@@ -423,6 +462,8 @@ class BlueprintDemoPage(QWidget):
         body.addWidget(self.canvas, 1)
         body.addWidget(self._build_panel(), 0)
         root.addLayout(body, 1)
+
+        root.addWidget(self._build_owner_section())
 
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
@@ -476,6 +517,66 @@ class BlueprintDemoPage(QWidget):
         host_lay.setSpacing(6)
         lay.addWidget(self._panel_host, 1)
         return panel
+
+    # -------------------------------------------------------- 命名空间隔离小节
+    def _build_owner_section(self) -> QFrame:
+        """命名空间隔离演示：同名类型在两个 owner 下共存、互不影响。
+
+        左侧实时展示 ``NodeRegistry.spec`` 按 owner 查询的结果，右侧
+        小画布以 ``owner=OTHER_OWNER`` 视角创建同名 ``load_image``
+        （输出 ``mat``/tensor，与本页画布的 ``img``/image 版本不同）。
+        """
+        frame = QFrame()
+        frame.setFrameShape(QFrame.Shape.StyledPanel)
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(6)
+
+        head = QLabel("命名空间隔离（owner）")
+        head_font = head.font()
+        head_font.setBold(True)
+        head.setFont(head_font)
+        lay.addWidget(head)
+
+        lay.addWidget(hint_label(
+            '两个插件可能注册同名节点类型（如 "load_image"）但引脚定义不同。'
+            "各自带上 owner 注册即可共存；画布 / 创建菜单 / 节点体在指定 "
+            "owner 时按「该 owner + 全局」范围解析，互不干扰；不传 owner "
+            "的旧调用行为完全不变。"))
+        lay.addWidget(code_label(
+            'register_node_type("load_image", ..., owner="uikit-demo")'
+            "    # 输出 img(image)"))
+        lay.addWidget(code_label(
+            'register_node_type("load_image", ..., owner="other-plugin")'
+            "    # 输出 mat(tensor)，同名不冲突"))
+
+        reg = NodeRegistry.instance()
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        info = QVBoxLayout()
+        info.setSpacing(4)
+        for owner, label in ((DEMO_OWNER, "本页画布"),
+                             (OTHER_OWNER, "右侧小画布")):
+            spec = reg.spec("load_image", owner=owner)
+            outs = "、".join(f"{p['id']}({p.get('data_type', 'any')})"
+                             for p in spec.outputs)
+            info.addWidget(hint_label(
+                f'{label} spec("load_image", owner="{owner}")：'
+                f"标题「{spec.title}」/ 分类「{spec.category}」/ 输出 {outs}",
+                role="tertiary"))
+        info.addStretch(1)
+        row.addLayout(info, 1)
+
+        # 第二画布：other-plugin 视角（全局内置 start 仍可用）
+        other_graph = BlueprintGraph()
+        other_canvas = BlueprintCanvas(other_graph, owner=OTHER_OWNER)
+        other_canvas.setFixedSize(360, 220)
+        n_start = other_canvas.add_node_at("start", QPointF(20, 40))
+        n_load = other_canvas.add_node_at("load_image", QPointF(170, 60))
+        other_graph.add_edge(n_start.id, "out", n_load.id, "in")
+        row.addWidget(other_canvas, 0)
+        lay.addLayout(row)
+        return frame
 
     def _clear_panel(self) -> None:
         lay = self._panel_host.layout()
