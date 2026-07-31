@@ -42,17 +42,23 @@ class NodeCreationMenu(QDialog):
 
         # 只列出拥有「Input 且兼容 image」引脚的节点类型
         menu.popup_at(pos, compatible=(PinDirection.Input, "image"))
+
+    参数:
+        parent: 父控件。
+        owner: 命名空间标识（缺省 ``None`` 列全部类型）；给定时只列出
+            「该 owner + 全局命名空间」的节点类型。
     """
 
     #: 选定节点类型信号，参数为 type_name
     type_chosen = Signal(str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, owner: str = None):
         super().__init__(parent)
         self.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_DeleteOnClose, False)
         self.setMinimumWidth(260)
         self._compatible = None
+        self._owner = owner
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
@@ -119,9 +125,10 @@ class NodeCreationMenu(QDialog):
         self.list.clear()
         keyword = self.search_edit.text()
         reg = NodeRegistry.instance()
-        specs = [s for s in reg.search(keyword) if self._spec_visible(s)]
+        specs = [s for s in reg.search(keyword, owner=self._owner)
+                 if self._spec_visible(s)]
         first_item = None
-        for category in reg.categories():
+        for category in reg.categories(owner=self._owner):
             cat_specs = [s for s in specs if s.category == category]
             if not cat_specs:
                 continue
