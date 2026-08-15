@@ -1059,7 +1059,7 @@ chart.update_option({"series": [{"data": [130, 120, 150, 160, 170, 240]}]})  # �
 | 节点 | `BlueprintNode` | `inputs` / `outputs` 引脚、`properties` 自定义参数、`status`（idle/running/done/error）、`elapsed_ms` 耗时 |
 | 引脚 | `Pin` / `PinDirection` | `data_type` 决定颜色（`PIN_COLORS`：any/int/float/str/image/tensor/exec），输入可设 `multi` 多连接 |
 | 边 | `Edge` | `from_*`（输出端）→ `to_*`（输入端） |
-| 注册表 | `NodeRegistry` / `register_node_type` | 节点类型单例注册表：注册 / 搜索 / 分类 / `create`；`register_pin_type` 扩展引脚配色 |
+| 注册表 | `NodeRegistry` / `register_node_type` | 节点类型单例注册表：注册 / 搜索 / 分类 / `create`，键为 `(owner, type_name)`，支持命名空间隔离；`register_pin_type` 扩展引脚配色 |
 | 画布 | `BlueprintCanvas` | 平移 / 缩放 / 框选 / 拖线建边 / 创建与右键菜单 / Delete 删除 / 序列化 |
 | 运行指示 | `ExecutionController` | 经 `canvas.execution()` 取得：仅做 UI 状态展示，**不执行业务逻辑** |
 
@@ -1108,7 +1108,39 @@ register_pin_type("audio", "#E0A030")  # 可选：扩展引脚类型配色
 
 注意：画布为避免与节点拖拽冲突，将节点体设为鼠标透明——`body_builder` 注入的控件在画布内作展示用；交互编辑建议放到侧栏属性面板（Demo 蓝图页用 `demo.pages.playground.ParamForm` 实现，写回同一份 `node.properties` 后 `node.changed.emit()` 刷新外观）。
 
-### 8.4 运行指示 API（ComfyUI 式，纯 UI）
+### 8.4 命名空间隔离（owner）
+
+多个插件 / 模块可能注册**同名节点类型**（如 `load_image`）但引脚定义不同。注册、查询、创建均可携带 `owner` 关键字参数划定命名空间，同名类型在不同 owner 下共存、互不影响；`owner=None` 为全局命名空间（内置 `start` 等留在全局），**不传 owner 的旧调用行为完全不变**。
+
+```python
+from InstructionX_UIKit.blueprint import register_node_type, NodeRegistry, BlueprintCanvas, BlueprintGraph
+
+# 两个「插件」各自注册同名但引脚不同的 load_image
+register_node_type("load_image", "加载图像", "输入", owner="plugin_a",
+                   outputs=[{"id": "img", "name": "图像", "data_type": "image"}])
+register_node_type("load_image", "载入图像", "IO", owner="plugin_b",
+                   outputs=[{"id": "mat", "name": "张量", "data_type": "tensor"}])
+
+reg = NodeRegistry.instance()
+reg.spec("load_image", owner="plugin_a")   # 各得各的定义
+reg.spec("load_image", owner="plugin_b")
+reg.spec("load_image")                     # 全局未命中时跨空间查找；
+                                           # 多命中记 WARNING 并返回首个
+
+# 画布 / 创建菜单 / 节点体在指定 owner 时按「该 owner + 全局」范围解析，
+# 因此画布始终可用全局内置类型（start 等）
+canvas = BlueprintCanvas(BlueprintGraph(), owner="plugin_a")
+```
+
+解析规则汇总：
+
+- 指定 owner 的查询 / 创建（`spec` / `create` / `search` / `categories` / `specs`）范围为「该 owner + 全局命名空间」，该 owner 优先；
+- 同命名空间内重复注册同名类型：引脚定义相同则静默幂等，不同则覆盖并记 WARNING（标准库 `logging`）；
+- `NodeRegistry` 内部键为 `(owner, type_name)`；`NodeSpec.owner` 为信息性字段，`register` 未显式传 owner 时回退取它。
+
+完整演示见 Demo「蓝图」页底部「命名空间隔离」小节（`demo/pages/blueprint.py`）。
+
+### 8.5 运行指示 API（ComfyUI 式，纯 UI）
 
 ```python
 ex = canvas.execution()
@@ -1122,7 +1154,7 @@ ex.reset()                        # 全部回 idle，清耗时与路径
 
 Demo 蓝图页的「运行」按 exec 链拓扑序用 QTimer 逐节点模拟（每节点 200–800ms 随机耗时），「单步」逐节点推进——全部只是状态指示，无业务逻辑。
 
-### 8.5 序列化
+### 8.6 序列化
 
 ```python
 data = canvas.to_dict()      # {"graph": {...}, "view": {"zoom", "offset"}}
@@ -1132,7 +1164,7 @@ graph.to_dict()              # 仅数据层：{"nodes": [...], "edges": [...]}
 
 全部 JSON 友好（`json.dumps` 可直接序列化），含节点位置、引脚、properties 与画布 zoom/offset。
 
-### 8.6 应用场景
+### 8.7 应用场景
 
 节点图天然适合「可视化拼装 + 数据流」类工具：**PyTorch 模块拼装**（把 Conv / Attention / 融合等模块注册为节点类型，properties 承载超参数，图结构导出为构建脚本）、**着色器 / 材质流水线**（纹理输入、滤镜、混合节点，引脚类型映射数据格式）、**AI 流水线编排**（加载→预处理→推理→后处理→落盘，如 Demo 预置图），以及规则引擎、音视频转码链、ETL 流程等。库只负责编辑与状态展示，真正的执行调度由应用层按图拓扑自行实现。
 

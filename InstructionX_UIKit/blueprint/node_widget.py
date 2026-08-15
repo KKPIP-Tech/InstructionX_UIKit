@@ -132,6 +132,9 @@ class NodeWidget(QFrame):
 
     参数:
         node: 数据节点（引脚 / 标题 / 属性 / 状态变化会自动反映到外观）。
+        parent: 父控件（通常为 ``BlueprintCanvas``）。
+        owner: 注册表命名空间标识（缺省 ``None`` 保持旧行为）；用于按
+            「该 owner + 全局」解析 ``NodeSpec.body_builder``。
 
     供画布使用的接口：
         ``pin_widget(pin_id)``：取引脚热区控件（用于全局坐标 / 事件）；
@@ -141,9 +144,10 @@ class NodeWidget(QFrame):
         ``elapsed_text()``：当前耗时徽标文本。
     """
 
-    def __init__(self, node: BlueprintNode, parent=None):
+    def __init__(self, node: BlueprintNode, parent=None, owner: str = None):
         super().__init__(parent)
         self.node = node
+        self._owner = owner
         self._selected = False
         self._scale = 1.0
         self._handles = {}
@@ -159,8 +163,8 @@ class NodeWidget(QFrame):
         for pin in node.inputs + node.outputs:
             self._handles[(pin.direction, pin.id)] = PinHandle(self, pin)
 
-        # 自定义体 / 缺省 properties 展示
-        spec = NodeRegistry.instance().spec(node.type_name)
+        # 自定义体 / 缺省 properties 展示（按 owner 解析注册表，画布传入）
+        spec = NodeRegistry.instance().spec(node.type_name, owner=self._owner)
         if spec is not None and spec.body_builder is not None:
             self._body = QWidget(self)
             _transparent(self._body)

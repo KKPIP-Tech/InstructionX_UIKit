@@ -14,6 +14,25 @@
 （透明背景、自带垂直布局 ``container.layout()``），开发者在其中创建
 任意编辑控件并写回 ``node.properties``。
 
+命名空间（owner）隔离::
+
+    多个插件 / 模块可能注册同名节点类型（如 ``load_image``）但引脚定义
+    不同。注册、查询、创建均可携带 ``owner`` 关键字参数划定命名空间，
+    同名类型在不同 owner 下互不影响；``owner=None`` 为全局命名空间
+    （内置 ``start`` 等留在全局），且全部旧调用（不传 owner）行为不变::
+
+    register_node_type("load_image", "载入图像", "输入", owner="plugin_a",
+                       outputs=[{"id": "img", "data_type": "image"}])
+    register_node_type("load_image", "加载图片", "IO", owner="plugin_b",
+                       outputs=[{"id": "mat", "data_type": "tensor"}])
+
+    reg.spec("load_image", owner="plugin_a")   # 各得各的定义
+    reg.spec("load_image")                     # 全局未命中时跨空间查找，
+                                               # 多命中记 WARNING 并返回首个
+
+    查询 / 创建在指定 owner 时的解析范围为「该 owner + 全局命名空间」，
+    因此画布（``BlueprintCanvas(..., owner=...)``）始终可用全局内置类型。
+
 完整示例::
 
     from PySide6.QtWidgets import QSpinBox
@@ -37,10 +56,14 @@
 """
 
 from dataclasses import dataclass, field
+import logging
 from typing import Callable, Optional
 
 from ..theme import T
 from .model import BlueprintNode, PinDirection
+
+#: 本模块日志器（库自包含，统一走标准库 logging）
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "NodeSpec",
@@ -115,6 +138,8 @@ class NodeSpec:
             ``Callable[[BlueprintNode, QWidget], None]``，缺省 ``None``
             表示以 properties 键值对展示。
         description: 描述文本（创建菜单 tooltip / 副标题）。
+        owner: 命名空间标识（信息性，默认 ``None`` 即全局命名空间）。
+            ``NodeRegistry.register`` 未显式传 owner 时回退取此字段。
     """
 
     type_name: str
@@ -125,6 +150,7 @@ class NodeSpec:
     accent: Optional[str] = None
     body_builder: Optional[Callable] = None
     description: str = ""
+    owner: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -132,13 +158,18 @@ class NodeSpec:
 # ---------------------------------------------------------------------------
 
 class NodeRegistry:
-    """节点类型注册表（单例）。
+    """节点类型注册表（单例），内部以 ``(owner, type_name)`` 为键。
+
+    ``owner=None`` 为全局命名空间（内置 ``start`` 留在全局）；各插件 /
+    模块可传自己的 owner 注册同名类型而互不覆盖。指定 owner 的查询 /
+    创建范围为「该 owner + 全局」；不传 owner 保持旧行为（全空间）。
 
     用法::
 
         reg = NodeRegistry.instance()
         reg.register(NodeSpec("resize", "Resize", "处理", ...))
         node = reg.create("resize")          # -> BlueprintNode（引脚已就位）
+        node = reg.create("load_image", owner="plugin_a")  # 按命名空间创建
         reg.search("图像")                    # 按标题/类型/描述模糊搜索
         reg.categories()                     # ["流程", "输入", ...]
 
@@ -148,6 +179,7 @@ class NodeRegistry:
     _instance = None
 
     def __init__(self):
+        #: 注册表存储：键为 ``(owner, type_name)``，owner 为 None 即全局
         self._specs = {}
 
     @classmethod
@@ -158,44 +190,98 @@ class NodeRegistry:
         return cls._instance
 
     # -- 注册 ------------------------------------------------------------
-    def register(self, spec: NodeSpec) -> NodeSpec:
-        """注册节点类型（同 ``type_name`` 覆盖），返回 ``spec``。"""
+    def register(self, spec: NodeSpec, owner: str = None) -> NodeSpec:
+        """注册节点类型（同命名空间内同 ``type_name`` 覆盖），返回 ``spec``。
+
+        参数:
+            owner: 命名空间标识；``None`` 时回退取 ``spec.owner``，
+                仍为 ``None`` 则归入全局命名空间。同空间覆盖时若引脚
+                定义不同记 WARNING，定义相同则静默幂等。
+        """
         if not spec.type_name:
             raise ValueError("NodeSpec.type_name 不能为空")
-        self._specs[spec.type_name] = spec
+        if owner is None:
+            owner = spec.owner
+        spec.owner = owner
+        key = (owner, spec.type_name)
+        existing = self._specs.get(key)
+        if existing is not None and not self._same_definition(existing, spec):
+            logger.warning(
+                "节点类型 %r 在命名空间 %r 中被重复注册且引脚定义不同，"
+                "旧定义已被覆盖", spec.type_name, owner)
+        self._specs[key] = spec
         return spec
 
-    def unregister(self, type_name: str) -> bool:
-        """注销节点类型；不存在返回 ``False``。"""
-        return self._specs.pop(type_name, None) is not None
+    @staticmethod
+    def _same_definition(a: NodeSpec, b: NodeSpec) -> bool:
+        """判断两条 spec 引脚定义是否一致（用于覆盖时的幂等判定）。"""
+        return a.inputs == b.inputs and a.outputs == b.outputs
 
-    def spec(self, type_name: str):
-        """按类型名取 ``NodeSpec``，未注册返回 ``None``。"""
-        return self._specs.get(type_name)
+    def unregister(self, type_name: str, owner: str = None) -> bool:
+        """注销节点类型；不存在返回 ``False``。
+
+        参数:
+            owner: 为 ``None`` 时仅注销全局命名空间（旧行为）；给定时
+                优先注销该 owner，未命中回退全局。
+        """
+        if owner is not None and self._specs.pop((owner, type_name), None) is not None:
+            return True
+        return self._specs.pop((None, type_name), None) is not None
+
+    def spec(self, type_name: str, owner: str = None):
+        """按类型名取 ``NodeSpec``，未注册返回 ``None``。
+
+        参数:
+            owner: 给定时只查「该 owner → 全局」；为 ``None`` 时先查
+                全局，未命中再查全部命名空间——唯一命中返回之，多个
+                命中记 WARNING 并返回注册顺序的首个（保持旧调用方不崩）。
+        """
+        if owner is not None:
+            found = self._specs.get((owner, type_name))
+            if found is not None:
+                return found
+            return self._specs.get((None, type_name))
+        found = self._specs.get((None, type_name))
+        if found is not None:
+            return found
+        hits = [s for (o, t), s in self._specs.items() if t == type_name]
+        if len(hits) > 1:
+            logger.warning(
+                "节点类型 %r 在多个命名空间中均有定义且全局未注册，"
+                "未指定 owner 的查询返回首个命中（共 %d 个）",
+                type_name, len(hits))
+        return hits[0] if hits else None
 
     # -- 查询 ------------------------------------------------------------
-    def specs(self, category: str = None) -> list:
-        """全部 ``NodeSpec``（可按分类过滤），按注册顺序返回。"""
-        items = list(self._specs.values())
+    def _scoped_specs(self, owner: str = None) -> list:
+        """按 owner 取范围内的 spec（``None`` 全空间，否则该 owner + 全局）。"""
+        if owner is None:
+            return list(self._specs.values())
+        return [s for (o, _t), s in self._specs.items()
+                if o is None or o == owner]
+
+    def specs(self, category: str = None, owner: str = None) -> list:
+        """``NodeSpec`` 列表（可按分类 / 命名空间过滤），按注册顺序返回。"""
+        items = self._scoped_specs(owner)
         if category is not None:
             items = [s for s in items if s.category == category]
         return items
 
-    def categories(self) -> list:
-        """全部分类名（按注册出现顺序，去重）。"""
+    def categories(self, owner: str = None) -> list:
+        """全部分类名（按注册出现顺序，去重）；可按命名空间限定范围。"""
         seen = []
-        for spec in self._specs.values():
+        for spec in self._scoped_specs(owner):
             if spec.category not in seen:
                 seen.append(spec.category)
         return seen
 
-    def search(self, keyword: str) -> list:
+    def search(self, keyword: str, owner: str = None) -> list:
         """按关键字模糊搜索（匹配类型名 / 标题 / 分类 / 描述，忽略大小写）。"""
         kw = str(keyword).strip().lower()
         if not kw:
-            return self.specs()
+            return self.specs(owner=owner)
         result = []
-        for spec in self._specs.values():
+        for spec in self._scoped_specs(owner):
             hay = (spec.type_name + spec.title + spec.category
                    + spec.description).lower()
             if kw in hay:
@@ -203,13 +289,17 @@ class NodeRegistry:
         return result
 
     # -- 创建 ------------------------------------------------------------
-    def create(self, type_name: str) -> BlueprintNode:
+    def create(self, type_name: str, owner: str = None) -> BlueprintNode:
         """按类型创建 ``BlueprintNode``：引脚 / 标题 / 强调色按 spec 就位。
 
         未注册的类型抛 ``KeyError``。``body_builder`` 不在此调用——
         它由 ``NodeWidget`` 在构建节点体时执行（UI 层职责）。
+
+        参数:
+            owner: 命名空间标识；给定时按「该 owner → 全局」解析，
+                为 ``None`` 时保持旧行为（全局优先，跨空间兜底）。
         """
-        spec = self._specs.get(type_name)
+        spec = self.spec(type_name, owner=owner)
         if spec is None:
             raise KeyError(f"未注册的节点类型: {type_name!r}")
         node = BlueprintNode(spec.type_name, spec.title)
@@ -225,7 +315,8 @@ class NodeRegistry:
 
 def register_node_type(type_name: str, title: str, category: str,
                        inputs=(), outputs=(), accent=None,
-                       body_builder=None, description: str = "") -> NodeSpec:
+                       body_builder=None, description: str = "",
+                       owner: str = None) -> NodeSpec:
     """便捷函数：一行注册节点类型（等价 ``NodeRegistry.instance().register``）。
 
     参数:
@@ -236,13 +327,16 @@ def register_node_type(type_name: str, title: str, category: str,
         body_builder: ``Callable[[BlueprintNode, QWidget], None]``，
             在节点体容器中注入自定义编辑 UI（见模块 docstring 完整示例）。
         description: 创建菜单中的描述 / tooltip。
+        owner: 命名空间标识（缺省 ``None`` 即全局）；不同插件注册同名
+            类型时各自传入互不相同的 owner 即可共存。
 
     返回:
         注册成功的 ``NodeSpec``。
     """
     spec = NodeSpec(type_name=type_name, title=title, category=category,
                     inputs=list(inputs), outputs=list(outputs), accent=accent,
-                    body_builder=body_builder, description=description)
+                    body_builder=body_builder, description=description,
+                    owner=owner)
     return NodeRegistry.instance().register(spec)
 
 

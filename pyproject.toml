@@ -8,4 +8,5 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "pyside6>=6.11.1",
+    "qrcode[pil]>=7.4",
 ]
