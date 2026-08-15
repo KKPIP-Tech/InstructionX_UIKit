@@ -8,7 +8,7 @@
 - 自定义体区：``NodeSpec.body_builder`` 注入；缺省显示 properties 键值；
 - 状态视觉：running = 标题栏 SpinnerArc + accent 脉冲描边；
   done = success 2px 描边 + 耗时徽标胶囊；error = danger 描边 + 错误图标；
-  选中 = primary 2px 描边 + shadow.md。
+  选中 = primary 2px 描边 + shadow.md 外发光（外发光由画布层自绘）。
 
 实现要点（供维护者参考）：
 
@@ -28,7 +28,7 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QFrame, QVBoxLayout, QWidget
 
 from ..anim.painted import SpinnerArc
-from ..theme import T, ThemeManager, apply_shadow
+from ..theme import T, ThemeManager
 from .model import BlueprintNode, PinDirection
 from .registry import NodeRegistry, pin_color
 
@@ -138,7 +138,7 @@ class NodeWidget(QFrame):
 
     供画布使用的接口：
         ``pin_widget(pin_id)``：取引脚热区控件（用于全局坐标 / 事件）；
-        ``set_selected(bool)``：选中态（primary 描边 + shadow.md）；
+        ``set_selected(bool)``：选中态（primary 描边，外发光由画布绘制）；
         ``apply_view(scene_pos, scale)``：由画布按视图变换放置；
         ``badge_rect()``：done 耗时徽标的逻辑矩形（测试像素断言用）；
         ``elapsed_text()``：当前耗时徽标文本。
@@ -155,6 +155,15 @@ class NodeWidget(QFrame):
         self._spinner = None
         self._pulse = 0.0
         self._body_h = 0.0
+        # 外观位图缓存（GL 视口代理绘制用；仅 GL 模式生效）
+        self._cache_pm = None
+        self._cache_scale = 0.0
+        self._cache_dirty = True
+        # 布局版本与引脚逻辑坐标缓存（_relayout 重建；边端点几何键使用）
+        self._layout_rev = 0
+        self._pin_offsets = {}
+        # GL 位图代理状态缓存（_relayout 重算；见 uses_proxy）
+        self._proxy_state = False
         _transparent(self)
         self.setAttribute(Qt.WA_StyledBackground, False)
         self.setMouseTracking(True)
@@ -245,6 +254,20 @@ class NodeWidget(QFrame):
         w = max(MIN_W, tw, pin_w, body_w)
         h = TITLE_H + rows * PIN_ROW_H + self._body_h + PAD_BOTTOM
         self.node.size = QSizeF(w, h)
+        # 引脚逻辑坐标缓存 + 布局版本（边端点几何键 / 高频查询用）
+        self._pin_offsets = {}
+        for i, pin in enumerate(self.node.inputs):
+            self._pin_offsets[(PinDirection.Input, pin.id)] = QPointF(
+                0.0, TITLE_H + i * PIN_ROW_H + PIN_ROW_H / 2)
+        for i, pin in enumerate(self.node.outputs):
+            self._pin_offsets[(PinDirection.Output, pin.id)] = QPointF(
+                w, TITLE_H + i * PIN_ROW_H + PIN_ROW_H / 2)
+        self._layout_rev += 1
+        # 位图代理状态：父视口支持代理且无可见自定义体（_relayout 时机与
+        # 体可见性翻转一致，见 apply_view 的 BODY_MIN_ZOOM 处理）
+        self._proxy_state = (
+            getattr(self.parentWidget(), "supports_node_proxy", False)
+            and not self._body_visible())
         self._arrange_children()
 
     def _arrange_children(self) -> None:
@@ -265,7 +288,11 @@ class NodeWidget(QFrame):
                                   int((TITLE_H * s - ss) / 2), int(ss), int(ss))
 
     def pin_logical_center(self, pin) -> QPointF:
-        """引脚圆心的节点逻辑坐标（输入在左缘、输出在右缘）。"""
+        """引脚圆心的节点逻辑坐标（输入在左缘、输出在右缘，布局缓存）。"""
+        c = self._pin_offsets.get((pin.direction, pin.id))
+        if c is not None:
+            return QPointF(c)
+        # 回退：布局缓存尚未建立时的直接计算
         w = self.node.size.width()
         if pin.direction is PinDirection.Input:
             idx = self.node.inputs.index(pin)
@@ -305,18 +332,82 @@ class NodeWidget(QFrame):
         self.update()
 
     # ------------------------------------------------------------------
+    # GL 代理绘制（位图缓存）
+    # ------------------------------------------------------------------
+    def uses_proxy(self) -> bool:
+        """当前是否由 GL 视口以位图缓存代理绘制。
+
+        条件：父控件是支持代理的视口（``supports_node_proxy``，即
+        ``_GLViewport``），且自定义体（body_builder 注入的真实控件）
+        当前不可见。带可见体的节点保持真实控件自绘（兼容性边界）。
+
+        结果为 ``_relayout`` 时重算的缓存（体可见性翻转必然伴随
+        ``_relayout``，见 ``apply_view``），高频调用零开销。
+        """
+        return bool(self._proxy_state)
+
+    def _invalidate_cache(self) -> None:
+        """内容 / 状态 / 主题变化后标记缓存失效（下次取缓存时重建）。"""
+        self._cache_dirty = True
+
+    def cache_pixmap(self) -> "QPixmap":
+        """外观缓存位图（惰性重建；缩放手势中沿用旧位图纹理缩放）。
+
+        重建时机：缓存缺失 / 标记失效 / 缩放系数变化且不在滚轮缩放手势
+        进行中（手势期间由视口按目标矩形拉伸旧位图，手势结束 150ms 后
+        由画布触发一次全量重建，保证最终清晰）。
+        """
+        zooming = False
+        vp = self.parentWidget()
+        canvas = getattr(vp, "_canvas", None)
+        if canvas is not None:
+            zooming = bool(getattr(canvas, "_zooming", False))
+        if (self._cache_pm is None or self._cache_dirty
+                or (abs(self._cache_scale - self._scale) > 1e-3 and not zooming)):
+            self._render_cache()
+        return self._cache_pm
+
+    def _render_cache(self) -> None:
+        """把节点外观（逻辑坐标内容）离屏渲染为按 缩放 × DPR 的位图。"""
+        from PySide6.QtGui import QPixmap
+        s = self._scale
+        dpr = self.devicePixelRatioF()
+        w = self.node.size.width() * s * dpr
+        h = self.node.size.height() * s * dpr
+        pm = QPixmap(max(1, math.ceil(w)), max(1, math.ceil(h)))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.TextAntialiasing)
+        p.scale(s, s)
+        self._paint_content(p)
+        p.end()
+        self._cache_pm = pm
+        self._cache_scale = s
+        self._cache_dirty = False
+
+    def update(self, *args) -> None:
+        """代理模式下重绘请求转发给视口（自身透明，无需控件级重绘）。"""
+        if self.uses_proxy():
+            vp = self.parentWidget()
+            if vp is not None:
+                vp.update(self.geometry())
+            return
+        super().update(*args)
+
+    # ------------------------------------------------------------------
     # 选中 / 状态
     # ------------------------------------------------------------------
     def set_selected(self, on: bool) -> None:
-        """设置选中态：primary 2px 描边 + shadow.md（取消时移除阴影）。"""
+        """设置选中态：primary 2px 描边（本控件内）+ shadow.md 外发光
+        （由画布层自绘，避免 QGraphicsDropShadowEffect 的软件模糊开销）。
+        """
         on = bool(on)
         if on == self._selected:
             return
         self._selected = on
-        if on:
-            apply_shadow(self, "md")
-        else:
-            self.setGraphicsEffect(None)
+        self._invalidate_cache()
         self.update()
 
     def is_selected(self) -> bool:
@@ -363,28 +454,45 @@ class NodeWidget(QFrame):
             self.setToolTip(self.node.error_message)
         else:
             self.setToolTip("")
+        self._invalidate_cache()
         self.update()
 
     def _on_node_changed(self) -> None:
         self._relayout()
+        # 父控件可能是画布或画布内的绘制视口（viewport.py），逐级找落位回调
         parent = self.parentWidget()
-        if parent is not None and hasattr(parent, "_node_layout_changed"):
-            parent._node_layout_changed(self)
+        handler = getattr(parent, "_node_layout_changed", None)
+        if handler is None and parent is not None:
+            handler = getattr(parent.parentWidget(), "_node_layout_changed", None)
+        if handler is not None:
+            handler(self)
+        self._invalidate_cache()
         self.update()
 
     def _tick_pulse(self) -> None:
         self._pulse += 0.033
+        self._invalidate_cache()
         self.update()
 
     # ------------------------------------------------------------------
     # 绘制
     # ------------------------------------------------------------------
     def paintEvent(self, _event) -> None:
+        if self.uses_proxy():
+            return  # GL 视口代理绘制：自身仅作交互容器（子控件照常工作）
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.TextAntialiasing)
-        s = self._scale
-        p.scale(s, s)
+        p.scale(self._scale, self._scale)
+        self._paint_content(p)
+        p.end()
+
+    def _paint_content(self, p: QPainter) -> None:
+        """节点外观全部内容（逻辑坐标；调用方已 scale 并开抗锯齿）。
+
+        供 ``paintEvent``（软件路径）与 ``_render_cache``（GL 位图缓存）
+        两条路径共用，保证两种渲染模式下外观一致。
+        """
         w, h = self.node.size.width(), self.node.size.height()
         radius = float(T("radius.lg"))
         accent = self.accent_color()
@@ -476,7 +584,6 @@ class NodeWidget(QFrame):
         p.setPen(QPen(border_color, border_w))
         p.setBrush(Qt.NoBrush)
         p.drawPath(path)
-        p.end()
 
     def _draw_pins(self, p: QPainter) -> None:
         """绘制引脚行：彩色圆点（multi 双环）+ 名称。"""
@@ -518,5 +625,6 @@ class NodeWidget(QFrame):
     # ------------------------------------------------------------------
     def refresh_theme(self) -> None:
         """主题切换时重排并重绘（画布 / 测试可直接调用）。"""
+        self._invalidate_cache()
         self._relayout()
         self.update()

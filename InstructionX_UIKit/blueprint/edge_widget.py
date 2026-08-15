@@ -49,6 +49,9 @@ class EdgeWidget(QObject):
 
     状态属性：
         ``hovered`` / ``selected`` / ``flowing``（running 路径流动虚线）。
+
+    性能要点：贝塞尔路径 / 包围盒 / 命中采样点 / 基础颜色全部按端点
+    坐标缓存（端点变化时惰性重建），避免每帧 / 每次命中检测重建路径。
     """
 
     def __init__(self, canvas, edge, parent=None):
@@ -59,6 +62,15 @@ class EdgeWidget(QObject):
         self.selected = False
         self.flowing = False
         self._dash_offset = 0.0
+        # 几何缓存（端点几何键未变时零重建；见 _ensure_path）
+        self._geo_key = None
+        self._path = None
+        self._p1 = None
+        self._p2 = None
+        self._bounds = None
+        self._samples = None
+        # 基础颜色（边的引脚类型创建后不变，惰性取一次）
+        self._base_color = None
 
     # -- 几何 ------------------------------------------------------------
     def source_pos(self) -> QPointF:
@@ -73,26 +85,89 @@ class EdgeWidget(QObject):
         return self.canvas.pin_scene_pos(self.edge.to_node, self.edge.to_pin,
                                          PinDirection.Input)
 
+    def _ensure_path(self) -> None:
+        """端点几何变化时重建路径并级联失效派生缓存。
+
+        几何键 = 两端节点场景坐标 + 两端节点布局版本（引脚逻辑偏移随
+        布局变化）。键未变时每帧仅付两次 dict 查找与元组比较，不再走
+        ``pin_scene_pos`` → ``pin_logical_center`` 的完整解析链。
+        """
+        canvas = self.canvas
+        src = canvas.graph.node(self.edge.from_node)
+        tgt = canvas.graph.node(self.edge.to_node)
+        sw = canvas._node_widgets.get(self.edge.from_node)
+        tw = canvas._node_widgets.get(self.edge.to_node)
+        key = (
+            None if src is None else (
+                src.pos.x(), src.pos.y(),
+                sw._layout_rev if sw is not None else -1),
+            None if tgt is None else (
+                tgt.pos.x(), tgt.pos.y(),
+                tw._layout_rev if tw is not None else -1),
+        )
+        if self._path is not None and key == self._geo_key:
+            return
+        self._geo_key = key
+        self._p1, self._p2 = self.source_pos(), self.target_pos()
+        self._path = bezier_path(self._p1, self._p2)
+        self._bounds = None
+        self._samples = None
+
     def path(self) -> QPainterPath:
-        """当前贝塞尔曲线路径（场景坐标）。"""
-        return bezier_path(self.source_pos(), self.target_pos())
+        """当前贝塞尔曲线路径（场景坐标，缓存）。"""
+        self._ensure_path()
+        return self._path
 
     def bounding_rect(self) -> QRectF:
-        """路径外接矩形（含描边余量，场景坐标）。"""
-        return self.path().boundingRect().adjusted(-8, -8, 8, 8)
+        """路径外接矩形（含描边余量，场景坐标，缓存）。"""
+        self._ensure_path()
+        if self._bounds is None:
+            self._bounds = self._path.boundingRect().adjusted(-8, -8, 8, 8)
+        return self._bounds
 
     def contains(self, scene_pt: QPointF, tol: float = 7.0) -> bool:
-        """命中检测：场景点距曲线采样点的最小距离小于 ``tol`` 即命中。"""
-        path = self.path()
-        for pt in _path_points(path):
+        """命中检测：场景点距曲线采样点的最小距离小于 ``tol`` 即命中。
+
+        先做包围盒粗筛（含容差），通过后才比对缓存的曲线采样点。
+        """
+        coarse = self.bounding_rect().adjusted(-tol, -tol, tol, tol)
+        if not coarse.contains(scene_pt):
+            return False
+        self._ensure_path()
+        if self._samples is None:
+            self._samples = _path_points(self._path)
+        for pt in self._samples:
             if math.hypot(pt.x() - scene_pt.x(), pt.y() - scene_pt.y()) <= tol:
                 return True
         return False
 
+    def _color(self) -> QColor:
+        """边的基础颜色（按源引脚类型，惰性缓存）。"""
+        if self._base_color is None:
+            from .model import PinDirection
+            node = self.canvas.graph.node(self.edge.from_node)
+            pin = (node.pin(self.edge.from_pin, PinDirection.Output)
+                   if node is not None else None)
+            self._base_color = (QColor(pin_color(pin.data_type)) if pin is not None
+                                else QColor(str(T("color.text.tertiary"))))
+        return QColor(self._base_color)
+
     # -- 状态 ------------------------------------------------------------
     def set_flowing(self, on: bool) -> None:
-        """设置 / 取消流动虚线动画（由 ExecutionController.set_path 驱动）。"""
-        self.flowing = bool(on)
+        """设置 / 取消流动虚线动画（由 ExecutionController.set_path 驱动）。
+
+        状态翻转时请求画布局部重绘本边包围盒，确保流动虚线及时出现 /
+        清除（画布定时器只负责推进相位，不负责状态翻转后的首帧）。
+        """
+        on = bool(on)
+        if on == self.flowing:
+            return
+        self.flowing = on
+        update = getattr(self.canvas, "_update_scene_rects", None)
+        if update is not None:
+            update([self.bounding_rect()])
+        else:
+            self.canvas.update()
 
     def advance_dash(self, step: float = 1.6) -> None:
         """推进流动虚线相位（画布定时器调用）。"""
@@ -101,13 +176,7 @@ class EdgeWidget(QObject):
     # -- 绘制 ------------------------------------------------------------
     def draw(self, p: QPainter) -> None:
         """在已做场景变换的画笔上绘制本条边（抗锯齿、主题实时取色）。"""
-        from .model import PinDirection
         path = self.path()
-        node = self.canvas.graph.node(self.edge.from_node)
-        pin = (node.pin(self.edge.from_pin, PinDirection.Output)
-               if node is not None else None)
-        base = QColor(pin_color(pin.data_type)) if pin is not None else QColor(
-            str(T("color.text.tertiary")))
         if self.flowing:
             color = QColor(str(T("color.primary")))
             pen = QPen(color, 2.4)
@@ -120,7 +189,7 @@ class EdgeWidget(QObject):
             p.drawPath(path)
             return
         width = 2.0
-        color = base
+        color = self._color()
         if self.selected:
             color = QColor(str(T("color.primary")))
             width = 2.8

@@ -584,6 +584,9 @@ class BlueprintDemoPage(QWidget):
             item = lay.takeAt(0)
             w = item.widget()
             if w is not None:
+                # 先隐藏再摘出父级：setParent(None) 会让控件短暂成为可见的
+                # 顶层窗口（表现为闪弹一个游离小窗），hide 可避免。
+                w.hide()
                 w.setParent(None)
                 w.deleteLater()
         self.panel_form = None
