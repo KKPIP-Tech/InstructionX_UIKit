@@ -97,10 +97,26 @@ class MainWindow(QMainWindow):
         splitter.setCollapsible(1, False)
         root.addWidget(splitter, 1)
 
+        # 预热蓝图页：蓝图 GL 视口基于 QOpenGLWidget，若在顶层窗口可见之后
+        # 才加入窗口树，Qt 会重建顶层原生窗口句柄（表现为窗口短暂关闭重开）。
+        # 在 show() 之前的构造阶段创建蓝图页即可规避（USAGE.md §8.6）。
+        self._prewarm_blueprint()
+
         # 默认选中第一页
         first = self._first_leaf()
         if first is not None:
             self._tree.setCurrentItem(first)
+
+    def _prewarm_blueprint(self) -> None:
+        """在窗口显示前预创建蓝图演示页（不改变当前选中页）。"""
+        for i in range(self._tree.topLevelItemCount()):
+            cat = self._tree.topLevelItem(i)
+            for j in range(cat.childCount()):
+                child = cat.child(j)
+                data = child.data(0, Qt.UserRole)
+                if data is not None and data[0] == "blueprint":
+                    self.show_page(data[0], data[1])
+                    return
 
     # -- 顶部条 -----------------------------------------------------------
     def _build_topbar(self) -> QWidget:

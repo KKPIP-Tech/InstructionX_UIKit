@@ -1168,6 +1168,8 @@ import os
 os.environ["UIKIT_BLUEPRINT_GL"] = "off"   # 在 QApplication 创建前设置
 ```
 
+> **注意（GL 后端的 Qt 固有行为）**：`QOpenGLWidget` 加入**已可见**的顶层窗口时，Qt 会重建该窗口的原生句柄，表现为窗口短暂关闭后重开一次。建议像 Demo 的 `MainWindow` 一样，在顶层窗口 `show()` 之前创建 `BlueprintCanvas`（或至少预创建一次蓝图页面）；一次性创建并长期持有画布的应用不受影响。
+
 ### 8.7 序列化
 
 ```python
@@ -1178,7 +1180,7 @@ graph.to_dict()              # 仅数据层：{"nodes": [...], "edges": [...]}
 
 全部 JSON 友好（`json.dumps` 可直接序列化），含节点位置、引脚、properties 与画布 zoom/offset。
 
-### 8.7 应用场景
+### 8.8 应用场景
 
 节点图天然适合「可视化拼装 + 数据流」类工具：**PyTorch 模块拼装**（把 Conv / Attention / 融合等模块注册为节点类型，properties 承载超参数，图结构导出为构建脚本）、**着色器 / 材质流水线**（纹理输入、滤镜、混合节点，引脚类型映射数据格式）、**AI 流水线编排**（加载→预处理→推理→后处理→落盘，如 Demo 预置图），以及规则引擎、音视频转码链、ETL 流程等。库只负责编辑与状态展示，真正的执行调度由应用层按图拓扑自行实现。
 
