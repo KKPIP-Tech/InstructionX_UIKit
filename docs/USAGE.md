@@ -1154,7 +1154,21 @@ ex.reset()                        # 全部回 idle，清耗时与路径
 
 Demo 蓝图页的「运行」按 exec 链拓扑序用 QTimer 逐节点模拟（每节点 200–800ms 随机耗时），「单步」逐节点推进——全部只是状态指示，无业务逻辑。
 
-### 8.6 序列化
+### 8.6 渲染后端（GPU 加速）
+
+画布绘制由内部视口承载，**运行时自动选择后端，调用方无需修改任何代码**：
+
+- **GL 后端（默认，可用时）**：视口为 `QOpenGLWidget`，背景 / 网格 / 边 / 节点位图合成走 GPU；无可见自定义体（`body_builder`）的节点以缓存位图代理由视口统一绘制，平移 / 缩放 / 拖动期间节点内容零重绘，高分辨率（4K+）与大节点量场景显著流畅。带可见自定义体的节点自动回退为真实控件渲染。
+- **软件后端（自动回退）**：无 GL 环境（含 `QT_QPA_PLATFORM=offscreen` 的测试环境）时使用普通 QWidget 视口，行为与历史版本一致，离屏测试与截图回归不受影响。
+
+环境变量 `UIKIT_BLUEPRINT_GL` 可控制后端选择：`auto`（默认，自动探测）/ `on`（强制尝试，失败仍回退并记 WARNING）/ `off`（强制软件渲染，可用于排查显示问题）。
+
+```python
+import os
+os.environ["UIKIT_BLUEPRINT_GL"] = "off"   # 在 QApplication 创建前设置
+```
+
+### 8.7 序列化
 
 ```python
 data = canvas.to_dict()      # {"graph": {...}, "view": {"zoom", "offset"}}
