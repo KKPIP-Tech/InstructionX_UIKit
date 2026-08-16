@@ -41,6 +41,8 @@
 import math
 from html import escape as _html_escape
 
+from shiboken6 import isValid as _shiboken_is_valid
+
 from PySide6.QtCore import (
     QAbstractAnimation,
     QEasingCurve,
@@ -68,16 +70,13 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
-    QGraphicsBlurEffect,
-    QGraphicsDropShadowEffect,
     QGraphicsEffect,
     QGraphicsOpacityEffect,
-    QLabel,
     QStackedWidget,
     QWidget,
 )
 
-from ..theme import T, ThemeManager, apply_shadow
+from ..theme import T, ThemeManager
 from ..tokens import DURATION, EASING
 
 __all__ = [
@@ -92,6 +91,7 @@ __all__ = [
     "hover_lift",
     "button_morph_loading",
     "ripple",
+    "clear_ripple",
     "switch_toggle",
     "pulse",
     "bounce",
@@ -439,9 +439,21 @@ class _SnapshotOverlay(QWidget):
     def __init__(self, target: QWidget, pixmap: QPixmap, margin: float = 1,
                  mouse_transparent: bool = True):
         parent = target.parentWidget()
-        super().__init__(parent if parent is not None else target)
-        # 父对象 = 目标父控件，几何 = 目标 geometry（父坐标系）外扩 margin，
-        # 坐标系一致；目标随滚动区内容移动时叠加层天然跟随（同一父控件）。
+        if parent is not None:
+            super().__init__(parent)
+            # 父对象 = 目标父控件，几何 = 目标 geometry（父坐标系）外扩
+            # margin，坐标系一致；目标随滚动区内容移动时叠加层天然跟随
+            # （同一父控件）。
+        else:
+            # 顶级窗口目标（无父控件）：叠加层不能作为其子控件——动画
+            # 期间目标被隐藏，子叠加层随之隐藏，动画完全不可见。改为
+            # 独立无边框透明顶级窗口（Qt.Tool 不进任务栏），按全局坐标
+            # 定位：顶级窗口的 geometry() 即屏幕坐标，与叠加层坐标系
+            # 一致。几何按逻辑坐标设置，paintEvent 按 DPR 绘制，高 DPI
+            # 无模糊；目标在动画期间被拖动时叠加层不跟随（动画时长内
+            # 移动窗口属罕见场景）。
+            super().__init__(None, Qt.Tool | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         _force_transparent(self)
         self._target_ref = target
         self._pm = pixmap
@@ -471,12 +483,10 @@ class _SnapshotOverlay(QWidget):
         if mouse_transparent:
             self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.setFocusPolicy(Qt.NoFocus)
-        if parent is not None:
-            geo = target.geometry()
-        else:
-            geo = target.rect()
+        # 有父控件：geometry() 为父坐标系；顶级窗口：geometry() 即屏幕
+        # 坐标——两种情况下与叠加层坐标系均一致，直接外扩 margin 定位
         m = self._margin
-        self.setGeometry(geo.adjusted(-m, -m, m, m))
+        self.setGeometry(target.geometry().adjusted(-m, -m, m, m))
         self.show()
         self.raise_()
 
@@ -626,6 +636,15 @@ class _TargetHold:
 
     布局管理的目标先用同尺寸 spacer 经 ``QLayout.replaceWidget`` 替换，
     避免隐藏触发布局重排（兄弟控件位移）；还原时换回原控件。
+
+    目标在动画期间被删除的兜底（三层，均幂等）：
+    1. ``destroyed`` 信号（真实事件循环下可靠）；
+    2. ``QEvent.DeferredDelete`` 哨兵（deleteLater 提前清理，目标仍存活、
+       可完整还原占位）；
+    3. spacer 上的看门狗定时器轮询 ``shiboken6.isValid(target)``——本机
+       PySide6 在裸 ``processEvents`` 泵（离屏测试框架）下前两层均不
+       触达，轮询是唯一可靠路径；目标死亡后仅摘除 spacer，不改引用
+       计数（会话稍后 release 时幂等）。
     """
 
     def __init__(self, target: QWidget):
@@ -634,6 +653,13 @@ class _TargetHold:
         self.pixmap = _grab_pixmap(target)
         self.spacer = None
         self.count = 0
+        # 缓存父对象 / 布局引用：目标在动画期间被删除后，release() 的
+        # spacer 清理不能依赖 target（target.parentWidget() 会抛
+        # RuntimeError，被 except 吞掉后 spacer.deleteLater() 永不执行，
+        # 布局里残留幽灵占位）
+        self._parent = None
+        self._layout = None
+        self._watch = None
         parent = target.parentWidget()
         if parent is not None:
             lay = parent.layout()
@@ -647,10 +673,34 @@ class _TargetHold:
                 spacer.setAttribute(Qt.WA_TransparentForMouseEvents, True)
                 if lay.replaceWidget(target, spacer) is not None:
                     self.spacer = spacer
+                    self._parent = parent
+                    self._layout = lay
                     spacer.show()
+                    # 看门狗：随 spacer 一同销毁，无独立生命周期负担
+                    self._watch = QTimer(spacer)
+                    self._watch.setInterval(100)
+                    self._watch.timeout.connect(self._poll_target)
+                    self._watch.start()
                 else:
                     spacer.deleteLater()
         target.setVisible(False)
+
+    def _poll_target(self) -> None:
+        """看门狗：目标已销毁则摘除 spacer（不触碰引用计数）。"""
+        if _shiboken_is_valid(self.target):
+            return
+        if self._watch is not None:
+            self._watch.stop()
+            self._watch = None
+        spacer, self.spacer = self.spacer, None
+        if spacer is not None:
+            lay = self._layout
+            if lay is not None:
+                try:
+                    lay.removeWidget(spacer)
+                except RuntimeError:
+                    pass
+            spacer.deleteLater()
 
     def release(self, end_hidden=None) -> None:
         """引用计数减一；归零时还原目标可见性与布局占位。"""
@@ -659,19 +709,56 @@ class _TargetHold:
             self.was_hidden = bool(end_hidden)
         if self.count > 0:
             return
+        if self._watch is not None:
+            self._watch.stop()
+            self._watch = None
         target = self.target
         try:
             target._uik_snap_hold = None
-            if self.spacer is not None:
-                parent = target.parentWidget()
-                lay = parent.layout() if parent is not None else None
-                if lay is not None:
-                    lay.replaceWidget(self.spacer, target)
-                self.spacer.deleteLater()
-                self.spacer = None
+        except RuntimeError:
+            pass  # 目标已销毁：仅清理内部标记，余下工作只涉及 spacer 与布局
+        spacer, self.spacer = self.spacer, None
+        if spacer is not None:
+            lay = self._layout
+            if lay is not None:
+                try:
+                    lay.replaceWidget(spacer, target)
+                except RuntimeError:
+                    # 目标已销毁无法换回：仅把 spacer 摘出布局再销毁，
+                    # 保证布局不残留幽灵占位
+                    try:
+                        lay.removeWidget(spacer)
+                    except RuntimeError:
+                        pass
+            spacer.deleteLater()
+        try:
             target.setHidden(self.was_hidden)
         except RuntimeError:
             pass
+
+
+class _DeleteGuard(QObject):
+    """目标控件的删除哨兵：捕获 ``QEvent.DeferredDelete`` 提前执行清理。
+
+    真实事件循环下 ``deleteLater()`` 的 DeferredDelete 事件经 sendEvent
+    派发、必经事件过滤器（实测确认）；此时目标仍存活，可以完整还原
+    占位（replaceWidget 换回原控件）后再删除——比 ``destroyed`` 信号
+    的清理更干净。哨兵 parent 到目标控件，随目标一同销毁，无额外
+    生命周期负担。
+    """
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.callback = None
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if event.type() == QEvent.DeferredDelete and self.callback is not None:
+            cb, self.callback = self.callback, None
+            try:
+                cb()
+            except RuntimeError:
+                pass
+        return False
 
 
 class _SnapSession:
@@ -679,7 +766,9 @@ class _SnapSession:
 
     ``finish(end_hidden)`` 正常结束（可指定终态隐藏，如 fade_out）；
     ``abort()`` 中止（stop / 目标销毁），一律还原初始可见性。
-    两者幂等。
+    两者幂等。目标销毁的清理经两条独立路径兜底：
+    删除哨兵（DeferredDelete 事件，deleteLater 可靠）与
+    ``destroyed`` 连接（shiboken.delete 路径）。
     """
 
     def __init__(self, target: QWidget, margin: float = 1,
@@ -695,10 +784,21 @@ class _SnapSession:
         self.overlay = _SnapshotOverlay(target, hold.pixmap, margin,
                                         mouse_transparent)
         self._done = False
+        guard = _DeleteGuard(target)
+        guard.callback = self.abort
+        target.installEventFilter(guard)
+        self._guard = guard
         try:
             target.destroyed.connect(self.abort)
         except (RuntimeError, TypeError):
             pass
+
+    def _clear_guard(self) -> None:
+        """释放删除哨兵回调：目标存活期间不持有会话引用。"""
+        guard = getattr(self, "_guard", None)
+        if guard is not None:
+            guard.callback = None
+            self._guard = None
 
     def finish(self, end_hidden=None) -> None:
         if self._done:
@@ -708,6 +808,7 @@ class _SnapSession:
             end_hidden = self.end_hidden
         self.hold.release(end_hidden)
         self._drop_overlay()
+        self._clear_guard()
 
     def abort(self, *_args) -> None:
         if self._done:
@@ -715,6 +816,7 @@ class _SnapSession:
         self._done = True
         self.hold.release(None)
         self._drop_overlay()
+        self._clear_guard()
 
     def _drop_overlay(self) -> None:
         overlay, self.overlay = self.overlay, None
@@ -750,6 +852,11 @@ class _SnapAnimation(QVariantAnimation):
         self.finished.connect(self._on_finished)
         self.stateChanged.connect(self._on_state_changed)
         self.destroyed.connect(self._on_destroyed)
+        # 句柄被 deleteLater / 随目标销毁时 destroyed 在本机 PySide6 不
+        # 保证触达 Python 接收方：加 DeferredDelete 哨兵兜底还原目标
+        guard = _DeleteGuard(self)
+        guard.callback = lambda: self._teardown(final=False)
+        self.installEventFilter(guard)
 
     # -- 结束处理 ----------------------------------------------------------
     def _on_finished(self) -> None:
@@ -798,6 +905,18 @@ class _SnapAnimation(QVariantAnimation):
     def sessions(self):
         """当前存活会话列表（测试 / 调试观测用）。"""
         return list(self._sessions)
+
+    def start(self, policy=QAbstractAnimation.DeletionPolicy.KeepWhenStopped):
+        """启动动画；自然结束后的句柄二次 ``start()`` 会复位结束标记。
+
+        注意：重放不会重建快照会话（会话在结束时已释放），重播视觉
+        效果的调用方应重新调用对应预设函数获取新句柄；复位仅保证
+        内部状态机一致（stop / finished / stateChanged 三路兜底逻辑
+        在重放后依然按新一次运行正确工作）。
+        """
+        if self._finished:
+            self._finished = False
+        super().start(policy)
 
     def stop(self) -> None:
         """停止并立即还原目标（布局占位与可见性）。"""
@@ -1034,7 +1153,8 @@ def spring_pop(target, **opts):
         fade: 是否同步淡入（默认 True）。
         remove_on_finish: 结束后摘除变换效果（默认 True）。
     返回:
-        QParallelAnimationGroup。
+        动画句柄（``_SnapAnimation``，QVariantAnimation 子类；可
+        ``stop()`` 还原）。
 
     实现说明:
         与 :func:`zoom_in` 相同，基于快照叠加层；OutBack 缓动的
@@ -1058,7 +1178,8 @@ def badge_pop(target, **opts):
         target: 目标 QWidget（通常为徽标控件）。
         duration / easing: 默认 ``slow``(320) / ``spring``(OutBack)。
     返回:
-        QParallelAnimationGroup。
+        动画句柄（``_SnapAnimation``，QVariantAnimation 子类；可
+        ``stop()`` 还原）。
     示例::
 
         badge_pop(unread_badge)
@@ -1083,7 +1204,8 @@ def stagger_in(target, **opts):
         distance: 起始下偏移 px，默认 24。
         duration / easing: 每个子动画时长，默认 ``normal`` / ``entrance``。
     返回:
-        QParallelAnimationGroup（内部为 延迟 + 并行 的顺序组）。
+        动画句柄（``_SnapAnimation``，QVariantAnimation 子类，内部按
+        错峰进度驱动全部子会话；可 ``stop()`` 还原）。
 
     实现说明:
         每个子控件一个快照会话（隐藏 + 叠加层），由同一驱动动画按
@@ -1353,6 +1475,10 @@ def hover_lift(target, **opts):
     easing = _ease(opts)
     shadow_from = opts.get("shadow_from", "sm")
     shadow_to = opts.get("shadow_to", "md")
+    for level in (shadow_from, shadow_to):
+        if level not in ("sm", "md", "lg"):
+            # 口径与 theme.apply_shadow 一致（非法值不落到令牌字典的裸 KeyError）
+            raise ValueError(f"未知阴影级别: {level!r}，应为 sm/md/lg 之一")
     use_shadow = bool(opts.get("use_shadow", True))
     filt = _HoverLiftFilter(target, dy, duration, easing,
                             shadow_from, shadow_to, use_shadow)
@@ -1534,6 +1660,47 @@ def ripple(target, **opts):
     target.installEventFilter(filt)
     target._uik_ripple = filt
     return filt
+
+
+def clear_ripple(target):
+    """清除 ``ripple()`` 在目标上安装的涟漪过滤器与叠加层（幂等）。
+
+    用途:
+        demo 重放 / 场景重置：``ripple()`` 用内部标记 ``_uik_ripple``
+        防重复安装，直接重建演示控件前调用本函数彻底还原目标；
+        再次调用 ``ripple()`` 会重新安装（含残留的进行中涟漪动画）。
+    参数:
+        target: 安装了涟漪的目标控件（未安装时为空操作）。
+    示例::
+
+        ripple(ok_button)
+        ...
+        clear_ripple(ok_button)   # 重置后 ripple(ok_button) 可重新安装
+    """
+    filt = getattr(target, "_uik_ripple", None)
+    if filt is None:
+        return
+    try:
+        anim = filt._anim
+        if anim is not None:
+            anim.stop()
+    except RuntimeError:
+        pass
+    try:
+        target.removeEventFilter(filt)
+    except RuntimeError:
+        pass
+    try:
+        overlay = filt.overlay
+        if overlay is not None:
+            overlay.hide()
+            overlay.deleteLater()
+    except RuntimeError:
+        pass
+    try:
+        delattr(target, "_uik_ripple")
+    except (RuntimeError, AttributeError):
+        pass
 
 
 def switch_toggle(switch, **opts):
@@ -1724,7 +1891,8 @@ def flash_highlight(target, **opts):
         duration / easing: 单次时长，默认 ``slower``(480) / ``standard``。
         corner: 圆角裁剪半径，默认取 ``radius.md``。
     返回:
-        QVariantAnimation（结束后叠加层自动 deleteLater）。
+        QVariantAnimation（自然结束 / 手动 ``stop()`` / 目标销毁均会
+        自动清理叠加层）。
     示例::
 
         flash_highlight(updated_row, times=2)
@@ -1742,7 +1910,26 @@ def flash_highlight(target, **opts):
     anim.setEasingCurve(_ease(opts))
     anim.setLoopCount(int(opts.get("times", 1)))
     anim.valueChanged.connect(lambda p: overlay.set_fill(max_opacity * float(p)))
-    anim.finished.connect(overlay.deleteLater)
+
+    # 覆盖层清理三路兜底：自然结束（finished）/ 手动 stop（stateChanged
+    # 转 Stopped 但 finished 不发射——旧实现仅挂 finished 导致 stop 后
+    # 半透明色块永久残留）/ 动画随目标销毁（destroyed）。幂等。
+    cleaned = {"done": False}
+
+    def _cleanup():
+        if cleaned["done"]:
+            return
+        cleaned["done"] = True
+        try:
+            overlay.deleteLater()
+        except RuntimeError:
+            pass
+
+    anim.finished.connect(_cleanup)
+    anim.stateChanged.connect(
+        lambda new, _old: QTimer.singleShot(0, _cleanup)
+        if new == QAbstractAnimation.Stopped else None)
+    anim.destroyed.connect(_cleanup)
     anim.start()
     return _own(target, anim)
 
@@ -1764,6 +1951,13 @@ def float_loop(target, **opts):
         不再使用 ``pos`` 属性动画——目标原位隐藏，快照叠加层
         按正弦曲线上下往复；重放 / 停止均以原几何为基准，
         不存在旧实现以中途位置为新基准逐次漂移的问题。
+
+    警告（重要）:
+        无限循环期间目标全程隐藏、以静态快照显示：**不可点击、内容
+        更新不显示**。仅用于装饰性元素（空状态插画、引导提示箭头、
+        加载占位）；需要保持交互的目标请改用 :func:`hover_lift`
+        （其叠加层带 ``forward_to`` 鼠标转发机制），或在交互前自行
+        ``anim.stop()`` 还原目标。
     示例::
 
         anim = float_loop(empty_illustration)   # anim.stop() 停止
@@ -1796,6 +1990,12 @@ def pulse_glow(target, **opts):
         旧实现挂 QGraphicsDropShadowEffect（真机可能整片不绘制）；
         现改为叠加层在内容快照之下绘制「保留 alpha 的单色剪影」
         预模糊位图并呼吸其半径，平台无关。
+
+    警告（重要）:
+        无限循环期间目标全程隐藏、以静态快照显示：**不可点击、内容
+        更新不显示**。请勿用于需要交互的控件（如主行动按钮本身）；
+        保持交互的发光效果请改用 :func:`hover_lift` 阴影插值，或在
+        交互前自行 ``glow.stop()`` 还原目标。
     示例::
 
         glow = pulse_glow(cta_button)   # glow.stop() 停止
@@ -1825,6 +2025,11 @@ def breathing(target, **opts):
         loops: 循环次数，默认 -1（无限）。
     返回:
         动画句柄（快照叠加层透明度；``stop()`` 停止并还原）。
+
+    警告（重要）:
+        无限循环期间目标全程隐藏、以静态快照显示：**不可点击、内容
+        更新不显示**。仅用于装饰性指示（加载占位、录制中指示）；需
+        保持交互的目标请在交互前自行 ``anim.stop()`` 还原。
     示例::
 
         anim = breathing(recording_dot)
@@ -1855,18 +2060,19 @@ def gradient_flow(target, **opts):
         direction: ``horizontal``(默认) / ``vertical``。
         radius: 背景圆角 px，默认取 ``radius.md``。
     返回:
-        QVariantAnimation（parent 到 target）。
+        QVariantAnimation（parent 到 target），附带 ``restore()`` 方法：
+        停止动画并还原原样式表（无限循环时 ``finished`` 永不触发，
+        必须用 ``restore()`` 或手动还原）。
 
     实现说明:
-        QVariantAnimation 驱动相位，每帧生成
-        ``qlineargradient`` QSS 赋给 target；动画结束（stop 后不会自动）
-        恢复原 styleSheet 仅在 ``finished`` 时触发——无限循环时
-        请自行 ``anim.stop()`` 后恢复，文档示例见下。
+        QVariantAnimation 驱动相位，生成 ``qlineargradient`` QSS 赋给
+        target；相位按约 30fps 量化——每帧 setStyleSheet 会触发全量
+        re-polish，量化后视觉依旧平滑、样式表重写次数大幅下降。
     示例::
 
         anim = gradient_flow(banner)
         ...
-        anim.stop()
+        anim.restore()
     """
     colors = [QColor(c) for c in opts.get("colors", [T("color.primary"), T("color.success")])]
     if len(colors) < 2:
@@ -1876,23 +2082,40 @@ def gradient_flow(target, **opts):
     x2, y2 = (1, 0) if horizontal else (0, 1)
     target.setAttribute(Qt.WA_StyledBackground, True)
     orig_sheet = target.styleSheet()
+    duration = int(opts.get("duration", 2400))
 
     anim = QVariantAnimation(target)
-    anim.setDuration(int(opts.get("duration", 2400)))
+    anim.setDuration(duration)
     anim.setStartValue(0.0)
     anim.setEndValue(1.0)
     anim.setEasingCurve(QEasingCurve.Linear)
     anim.setLoopCount(int(opts.get("loops", -1)))
 
+    # 相位量化：steps 档（约 30fps）。相位相邻档间隔 duration/steps ms，
+    # 渐变缓慢流动下不可感知；挡掉同档重复帧的 setStyleSheet。
+    steps = max(2, int(round(duration / 33.0)))
+    state = {"q": -1}
+
     def apply(p):
-        ca = _lerp_gradient(colors, float(p))
-        cb = _lerp_gradient(colors, float(p) + 0.5)
+        q = int(float(p) * steps)
+        if q == state["q"]:
+            return
+        state["q"] = q
+        phase = q / steps
+        ca = _lerp_gradient(colors, phase)
+        cb = _lerp_gradient(colors, phase + 0.5)
         target.setStyleSheet(
             f"background: qlineargradient(x1:0, y1:0, x2:{x2}, y2:{y2}, "
             f"stop:0 {ca.name()}, stop:1 {cb.name()}); "
             f"border-radius: {radius}px;"
         )
 
+    def restore():
+        """停止动画并还原原样式表（无限循环下的唯一还原入口）。"""
+        anim.stop()
+        target.setStyleSheet(orig_sheet)
+
+    anim.restore = restore
     anim.valueChanged.connect(apply)
     anim.finished.connect(lambda: target.setStyleSheet(orig_sheet))
     apply(0.0)
@@ -1912,7 +2135,8 @@ def gradient_text_flow(label, **opts):
         duration: 流动一周时长 ms，默认 2000。
         loops: 循环次数，默认 -1（无限）。
     返回:
-        QVariantAnimation；``finished`` 时自动还原原文本。
+        QVariantAnimation；``finished`` 时自动还原原文本，另附带
+        ``restore()`` 方法（停止动画并立即还原，无限循环时唯一还原入口）。
 
     实现说明:
         QSS 无法表达文字渐变，本实现每帧按字符位置插值颜色并
@@ -1921,6 +2145,8 @@ def gradient_text_flow(label, **opts):
     示例::
 
         anim = gradient_text_flow(title_label)
+        ...
+        anim.restore()
     """
     colors = [QColor(c) for c in opts.get(
         "colors", [T("color.primary"), T("color.success"), T("color.warning")])]
@@ -1944,6 +2170,12 @@ def gradient_text_flow(label, **opts):
             parts.append(f"<span style='color:{color.name()};'>{_html_escape(ch)}</span>")
         label.setText("".join(parts))
 
+    def restore():
+        """停止动画并还原原文本（无限循环下 ``finished`` 永不触发）。"""
+        anim.stop()
+        label.setText(orig_text)
+
+    anim.restore = restore
     anim.valueChanged.connect(apply)
     anim.finished.connect(lambda: label.setText(orig_text))
     apply(0.0)
@@ -1979,7 +2211,8 @@ def cross_fade(target, **opts):
         to: 目标控件 B（target 为普通控件时必填；B 会与 A 同几何并 show）。
         duration / easing: 默认 ``normal``(200) / ``standard``。
     返回:
-        QPropertyAnimation / QParallelAnimationGroup。
+        动画句柄（``_SnapAnimation``，QVariantAnimation 子类；可
+        ``stop()`` 还原两控件初始可见性）。
 
     实现说明:
         QStackedWidget 分支：先抓取当前页快照叠加层，立即切换页码，
@@ -1987,7 +2220,8 @@ def cross_fade(target, **opts):
         两控件分支：A、B 各走一个快照会话——A 淡出（hide_source=True
         时结束保持隐藏，默认），B 从隐藏快照淡入、结束显示；
         中途 stop() 两控件均还原初始可见性。全程不使用
-        QGraphicsOpacityEffect。
+        QGraphicsOpacityEffect。两控件必须处于同一父控件下（快照
+        叠加层按同一父坐标系定位），否则抛 ValueError。
     示例::
 
         cross_fade(stacked, index=1)
@@ -2027,6 +2261,13 @@ def cross_fade(target, **opts):
     other = opts.get("to")
     if other is None:
         raise ValueError("cross_fade: 普通控件间过渡必须提供 to=<目标控件> 参数")
+    if target.parentWidget() is not other.parentWidget():
+        # 叠加层按同一父坐标系定位；不同父控件下 setGeometry 直接套用
+        # 会错位（两个顶级窗口除外——两者 parent 均为 None 时 geometry()
+        # 同为屏幕坐标，语义一致）
+        raise ValueError(
+            "cross_fade: 两个控件必须处于同一父控件下（不同父控件间坐标"
+            "系不一致，过渡位置会错位）")
     hide_source = bool(opts.get("hide_source", True))
     other.setGeometry(target.geometry())
     other.raise_()
@@ -2137,9 +2378,18 @@ def slide_transition(target, **opts):
         index: 页索引（QStackedWidget 时必填）。
         direction: B 进入方向，默认 ``left``（从右向左推入）。
         duration / easing: 默认 ``slow``(320) / ``entrance``。
-        hide_source: 结束后是否隐藏 A 并还原其位置（默认 True）。
+        hide_source: 结束后是否隐藏 A（默认 True）。
     返回:
-        QParallelAnimationGroup。
+        动画句柄（``_SnapAnimation``，QVariantAnimation 子类；中途
+        ``stop()`` 还原两控件初始可见性，A 不隐藏）。
+
+    实现说明:
+        快照叠加层路径（与 page_transition 的 slide 分支一致）：A、B
+        各一个快照会话，A 的叠加层滑出、B 的叠加层从进入侧滑入，
+        结束按 hide_source 隐藏 A 并显示 B。不再使用 ``pos`` 属性动画
+        ——布局托管的控件会被布局刷新重置（真机 Windows + QSS + 高
+        DPI 下动画失效）。两控件必须处于同一父控件下（叠加层按同一
+        父坐标系定位），否则抛 ValueError。
     示例::
 
         slide_transition(panel_a, to=panel_b)
@@ -2154,45 +2404,52 @@ def slide_transition(target, **opts):
     other = opts.get("to")
     if other is None:
         raise ValueError("slide_transition: 普通控件间过渡必须提供 to=<目标控件> 参数")
+    if target.parentWidget() is not other.parentWidget():
+        raise ValueError(
+            "slide_transition: 两个控件必须处于同一父控件下（不同父控件间"
+            "坐标系不一致，过渡位置会错位）")
     direction = opts.get("direction", "left")
     if direction not in _DIRECTIONS:
         raise ValueError(f"未知方向: {direction!r}，应为 {_DIRECTIONS} 之一")
     duration = _dur(opts, "slow")
     easing = _ease(opts, "entrance")
+    hide_source = bool(opts.get("hide_source", True))
+
+    other.setGeometry(target.geometry())
+    other.raise_()
 
     w = max(target.width(), 1)
     h = max(target.height(), 1)
     offset = _direction_offset(direction, w, h)
-    a_start = target.pos()
+    margin = max(abs(offset.x()), abs(offset.y())) + 2
 
-    other.setGeometry(target.geometry())
-    other.move(a_start + offset)
-    other.show()
-    other.raise_()
+    # 快照叠加层路径：A 滑出（结束按 hide_source 隐藏），B 从进入侧
+    # 滑入（结束显示）；两控件几何全程不变，布局托管下行为一致。
+    session_a = _SnapSession(target, margin=margin, end_hidden=hide_source)
+    session_b = _SnapSession(other, margin=margin, end_hidden=False)
+    anim = _SnapAnimation([session_a, session_b], target)
+    anim.setDuration(duration)
+    anim.setStartValue(0.0)
+    anim.setEndValue(1.0)
+    anim.setEasingCurve(QEasingCurve(QEasingCurve.Linear))
+    ov_a, ov_b = session_a.overlay, session_b.overlay
+    e_ent = easing
 
-    group = QParallelAnimationGroup(target)
-    out_anim = QPropertyAnimation(target, b"pos")
-    out_anim.setDuration(duration)
-    out_anim.setStartValue(a_start)
-    out_anim.setEndValue(a_start - offset)
-    out_anim.setEasingCurve(easing)
-    group.addAnimation(out_anim)
+    def _apply(value):
+        k = 1.0 - e_ent.valueForProgress(float(value))
+        if ov_a is not None:
+            ov_a.dx = -offset.x() * k
+            ov_a.dy = -offset.y() * k
+            ov_a.update()
+        if ov_b is not None:
+            ov_b.dx = offset.x() * k
+            ov_b.dy = offset.y() * k
+            ov_b.update()
 
-    in_anim = QPropertyAnimation(other, b"pos")
-    in_anim.setDuration(duration)
-    in_anim.setStartValue(a_start + offset)
-    in_anim.setEndValue(a_start)
-    in_anim.setEasingCurve(easing)
-    group.addAnimation(in_anim)
-
-    def _finish():
-        if opts.get("hide_source", True):
-            target.setVisible(False)
-            target.move(a_start)  # 还原坐标，便于下次复用
-
-    group.finished.connect(_finish)
-    group.start()
-    return _own(target, group)
+    anim.valueChanged.connect(_apply)
+    _apply(0.0)
+    anim.start()
+    return _own(target, anim)
 
 
 # ---------------------------------------------------------------------------
@@ -2253,6 +2510,11 @@ def container_morph(target, **opts):
     anim.setEndValue(1.0)
     anim.setEasingCurve(_ease(opts))
 
+    # 圆角按整数像素量化：样式表只在整数变化时重写（每帧 setStyleSheet
+    # 触发全量 re-polish，量化后单次动画仅重写 |end-start|+1 次，
+    # 视觉无差异）；尺寸约束仍需逐帧驱动（布局吸收）。
+    radius_state = {"r": None}
+
     def apply(p):
         t = float(p)
         if size is not None:
@@ -2261,8 +2523,10 @@ def container_morph(target, **opts):
             target.setMinimumSize(w, h)
             target.setMaximumSize(w, h)
         if end_radius is not None:
-            r = start_radius + (end_radius - start_radius) * t
-            target.setStyleSheet(f"{base_sheet} border-radius: {r:.1f}px;")
+            r = int(round(start_radius + (end_radius - start_radius) * t))
+            if r != radius_state["r"]:
+                radius_state["r"] = r
+                target.setStyleSheet(f"{base_sheet} border-radius: {r}px;")
 
     anim.valueChanged.connect(apply)
 

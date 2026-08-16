@@ -26,6 +26,7 @@ import random
 from PySide6.QtCore import (
     QAbstractAnimation,
     QEasingCurve,
+    QElapsedTimer,
     QEvent,
     QPoint,
     QPointF,
@@ -51,16 +52,17 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QAbstractButton,
     QFrame,
-    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
 from ..theme import T, ThemeManager
 from ..tokens import DURATION, EASING
+from .property import _SnapshotOverlay, _grab_pixmap
 
 __all__ = [
     "SpinnerArc",
@@ -97,18 +99,13 @@ __all__ = [
 def _theme_refresh(widget) -> None:
     """主题切换时触发重绘（SPEC §3 自绘组件约定）。
 
-    槽函数带 RuntimeError 守卫：控件被销毁后主题广播仍会触达已连接的
-    lambda（PySide 对 Python 可调用对象不自动断开），守卫避免
-    ``Internal C++ object already deleted`` 噪音（蓝图节点动态删除场景）。
+    直接连接 ``widget.update`` 绑定方法：连接以 widget 为接收方上下文，
+    控件销毁时 Qt 自动断开——旧实现连 lambda（无接收方），ThemeManager
+    单例的信号槽列表会永久持有已销毁控件的包装对象，每次主题切换对
+    全部死对象空转（调用 update() 抛 RuntimeError 被守卫吞掉）。绑定
+    方法自动断连后无需守卫，属 Qt 层机制保证。
     """
-
-    def _safe_update(*_):
-        try:
-            widget.update()
-        except RuntimeError:
-            pass
-
-    ThemeManager.instance().theme_changed.connect(_safe_update)
+    ThemeManager.instance().theme_changed.connect(widget.update)
 
 
 def _parse_color(text: str) -> QColor:
@@ -182,6 +179,11 @@ def _run_anim(owner, duration, easing, on_value, on_finish=None):
     if on_finish is not None:
         anim.finished.connect(on_finish)
     anim.finished.connect(lambda: _drop_anim(owner, anim))
+    # 手动 stop() 不发射 finished：捕获 Stopped 状态同步清理句柄，
+    # 否则反复 start/stop 时 _uik_anims 死句柄无限累积（_drop_anim 幂等）
+    anim.stateChanged.connect(
+        lambda new, _old, a=anim, o=owner: _drop_anim(o, a)
+        if new == QAbstractAnimation.Stopped else None)
     anims = getattr(owner, "_uik_anims", None)
     if anims is None:
         anims = []
@@ -192,17 +194,24 @@ def _run_anim(owner, duration, easing, on_value, on_finish=None):
 
 
 class _Ticker:
-    """定频心跳定时器：回调 ``callback(elapsed_ms, dt_ms)``。"""
+    """定频心跳定时器：回调 ``callback(elapsed_ms, dt_ms)``。
+
+    ``dt`` 用 ``QElapsedTimer`` 实测：系统繁忙时 QTimer 触发延迟，
+    以名义 interval 累加会造成周期动画相位漂移；实测 dt 保证
+    ``elapsed`` 始终等于真实流逝时间。
+    """
 
     def __init__(self, owner, callback, interval=16):
         self._timer = QTimer(owner)
         self._timer.setInterval(max(5, int(interval)))
         self._elapsed = 0
         self._callback = callback
+        self._stopwatch = QElapsedTimer()
+        self._stopwatch.start()
         self._timer.timeout.connect(self._on_tick)
 
     def _on_tick(self):
-        dt = self._timer.interval()
+        dt = self._stopwatch.restart()
         self._elapsed += dt
         self._callback(self._elapsed, dt)
 
@@ -217,10 +226,56 @@ class _Ticker:
 
     def reset(self):
         self._elapsed = 0
+        self._stopwatch.restart()
 
     @property
     def elapsed(self) -> int:
         return self._elapsed
+
+
+class _HiddenPauseMixin:
+    """自绘动画控件混入：隐藏时暂停动画源、重新显示时恢复（§7.2 约定）。
+
+    隐藏控件定时器空转不仅耗电，TypewriterLabel 等回调还会继续推进
+    状态。约定动画源成员名：``_ticker``（_Ticker）/ ``_timer``（QTimer）
+    / ``_auto``（QTimer 自动轮播）/ ``_anim``（QVariantAnimation）。
+    hideEvent 记录并暂停在跑的源；showEvent 调用 ``_resume_anim()``
+    恢复（默认重调 ``start()``，子类按需覆写，如无 start() 的类）。
+    """
+
+    def _anim_sources(self):
+        """生成 (名称, 在跑的动画源) 对。"""
+        for name in ("_ticker", "_timer", "_auto"):
+            src = getattr(self, name, None)
+            if src is not None and src.isActive():
+                yield name, src
+        anim = getattr(self, "_anim", None)
+        if anim is not None and anim.state() == QAbstractAnimation.Running:
+            yield "_anim", anim
+
+    def _anim_active(self) -> bool:
+        return any(True for _ in self._anim_sources())
+
+    def _pause_anim(self) -> None:
+        for _name, src in self._anim_sources():
+            src.stop()
+
+    def _resume_anim(self) -> None:
+        start = getattr(self, "start", None)
+        if callable(start):
+            start()
+
+    def hideEvent(self, event):
+        self._uik_was_animating = self._anim_active()
+        if self._uik_was_animating:
+            self._pause_anim()
+        super().hideEvent(event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if getattr(self, "_uik_was_animating", False):
+            self._uik_was_animating = False
+            self._resume_anim()
 
 
 def _snapshot_ratio(widget) -> float:
@@ -336,12 +391,35 @@ def _face_pixmap(size: QSize, title: str, subtitle: str = "",
     return pm
 
 
+def _cached_face_snapshot(holder, widget, text, subtitle, idx=0) -> QPixmap:
+    """按 (序号, 尺寸, 内容控件, 文本, 主题模式) 缓存伪 3D 组件的内容快照。
+
+    paintEvent 每帧对内容 ``render()`` 不低于 3x 超采样位图代价高
+    （大控件时 CPU / 内存峰值明显）；缓存后仅在尺寸变化（resizeEvent
+    清缓存）或内容变更（setContent / setFrontWidget 等清缓存）时重抓。
+    键含主题模式：主题切换自动换键重新抓取（内容控件为隐藏状态，
+    必须经 render() 才能按新令牌重绘）。会话级 ``set_token`` 覆盖不
+    换模式，缓存不感知（覆盖键仅作用于绘制时取色，属可接受边角）。
+    """
+    key = (idx, holder.width(), holder.height(), widget, text,
+           ThemeManager.instance().mode)
+    pm = holder._snap_cache.get(key)
+    if pm is None:
+        if widget is not None:
+            pm = _grab_widget(widget)
+        if pm is None or pm.isNull():
+            pm = _face_pixmap(holder.size(), text, subtitle,
+                              ratio=_snapshot_ratio(holder))
+        holder._snap_cache[key] = pm
+    return pm
+
+
 # ---------------------------------------------------------------------------
 # 1. SpinnerArc —— 旋转圈
 # ---------------------------------------------------------------------------
 
 
-class SpinnerArc(QWidget):
+class SpinnerArc(_HiddenPauseMixin, QWidget):
     """旋转圈加载指示器（QTimer 驱动圆弧旋转）。
 
     用途：等待 / 加载场景的轻量指示器，颜色跟随 ``color.primary``。
@@ -403,7 +481,7 @@ class SpinnerArc(QWidget):
 # ---------------------------------------------------------------------------
 
 
-class BouncingDots(QWidget):
+class BouncingDots(_HiddenPauseMixin, QWidget):
     """跳动的点：若干圆点依次上下弹跳（输入中 / 加载中暗示）。
 
     用途：聊天「正在输入」、局部加载等场景。
@@ -446,8 +524,9 @@ class BouncingDots(QWidget):
         p.setPen(Qt.NoPen)
         base = _qcolor("primary")
         for i in range(self._count):
+            # phase 经取模恒在 [0, 1)，无需 phase < 1.0 分支
             phase = ((self._ticker.elapsed / self._period) - i * 0.16) % 1.0
-            lift = math.sin(math.pi * phase) if phase < 1.0 else 0.0
+            lift = math.sin(math.pi * phase)
             y = self._amp * (1.0 - lift) + 1.0
             c = _with_alpha(base, int(140 + 115 * lift))
             p.setBrush(c)
@@ -461,7 +540,7 @@ class BouncingDots(QWidget):
 # ---------------------------------------------------------------------------
 
 
-class CheckDraw(QWidget):
+class CheckDraw(_HiddenPauseMixin, QWidget):
     """对勾描绘动画：圆环渐现 + 对勾逐笔描出。
 
     用途：提交成功、任务完成等正向即时反馈。
@@ -578,7 +657,7 @@ class CheckDraw(QWidget):
 # ---------------------------------------------------------------------------
 
 
-class LikeBurstButton(QAbstractButton):
+class LikeBurstButton(_HiddenPauseMixin, QAbstractButton):
     """点赞爆裂按钮：点击心形放大回弹，并迸出 8~12 个粒子扩散淡出。
 
     用途：点赞 / 收藏等情绪化交互。可勾选（checkable），勾选态为已点赞。
@@ -624,7 +703,18 @@ class LikeBurstButton(QAbstractButton):
             self._scale_anim.stop()
         self._scale_anim = _run_anim(
             self, duration, easing,
-            lambda v: setattr(self, "_heart_scale", a + (b - a) * v))
+            lambda v: setattr(self, "_heart_scale", a + (b - a) * v),
+            on_finish=self._on_scale_done)
+        self._ticker.start()
+
+    def _on_scale_done(self):
+        """缩放动画结束复位句柄：停机判定依赖其 None，不复位则 ticker
+        60fps 空转至控件销毁。"""
+        self._scale_anim = None
+        self._ticker.start()  # 唤醒 ticker 走一次停机判定
+
+    def _resume_anim(self):
+        # 无公共 start()：恢复时重启动 ticker（_tick 空闲判定会自动停机）
         self._ticker.start()
 
     def _spawn(self):
@@ -706,7 +796,7 @@ class LikeBurstButton(QAbstractButton):
 # ---------------------------------------------------------------------------
 
 
-class MagneticButton(QAbstractButton):
+class MagneticButton(_HiddenPauseMixin, QAbstractButton):
     """磁吸按钮：鼠标靠近时按钮向光标方向位移（上限约 8px），离开弹回。
 
     用途：重点操作的趣味强调。位移通过自绘偏移实现，不影响布局。
@@ -763,6 +853,8 @@ class MagneticButton(QAbstractButton):
         super().showEvent(event)
         parent = self.parentWidget()
         if parent is not None:
+            # showEvent 可多次触发：安装前先移除，防同一事件被过滤 N 次
+            parent.removeEventFilter(self)
             parent.installEventFilter(self)
             parent.setMouseTracking(True)
 
@@ -830,6 +922,10 @@ class MagneticButton(QAbstractButton):
         self._offset = nx
         self.update()
 
+    def _resume_anim(self):
+        # 无公共 start()：恢复跟踪 ticker（_track 空闲判定会自动停机）
+        self._ticker.start()
+
     # -- 绘制 -----------------------------------------------------------
     def paintEvent(self, _event):
         p = QPainter(self)
@@ -862,7 +958,7 @@ class MagneticButton(QAbstractButton):
 # ---------------------------------------------------------------------------
 
 
-class SkeletonShimmer(QWidget):
+class SkeletonShimmer(_HiddenPauseMixin, QWidget):
     """骨架屏占位 + 微光扫过（可被组件库骨架屏复用）。
 
     用途：内容加载期间的占位反馈；默认提供「头像 + 标题 + 两行文本」布局，
@@ -944,7 +1040,7 @@ class SkeletonShimmer(QWidget):
 # ---------------------------------------------------------------------------
 
 
-class Shimmer(QWidget):
+class Shimmer(_HiddenPauseMixin, QWidget):
     """任意矩形区域的微光扫过效果，可独立使用或作为覆盖层叠加到目标控件上。
 
     用途：卡片、图片、按钮等区域的「加载 / 高光」强调。
@@ -1012,7 +1108,7 @@ class Shimmer(QWidget):
 # ---------------------------------------------------------------------------
 
 
-class ProgressStriped(QWidget):
+class ProgressStriped(_HiddenPauseMixin, QWidget):
     """条纹流动进度条：斜纹持续滚动，表达「进行中」。
 
     用途：上传 / 下载 / 批处理等不确定时长任务的进度反馈。
@@ -1106,7 +1202,7 @@ class ProgressStriped(QWidget):
 # ---------------------------------------------------------------------------
 
 
-class MarqueeLabel(QWidget):
+class MarqueeLabel(_HiddenPauseMixin, QWidget):
     """跑马灯：文本超出宽度时横向循环滚动，支持中文。
 
     用途：长标题、通知、歌词等单行文本的有限空间展示。
@@ -1186,7 +1282,7 @@ class MarqueeLabel(QWidget):
 # ---------------------------------------------------------------------------
 
 
-class FluidBackground(QWidget):
+class FluidBackground(_HiddenPauseMixin, QWidget):
     """流体渐变背景：多色相正弦叠加的缓慢流动色块，30fps 性能可控。
 
     用途：登录页、英雄区、空状态等大面积背景的氛围渲染。
@@ -1253,7 +1349,7 @@ class FluidBackground(QWidget):
 # ---------------------------------------------------------------------------
 
 
-class TypewriterLabel(QLabel):
+class TypewriterLabel(_HiddenPauseMixin, QLabel):
     """打字机：逐字显示文本，带闪烁光标，支持中文。
 
     用途：引导文案、AI 回复、终端风格输出等逐字呈现场景。
@@ -1343,7 +1439,7 @@ class TypewriterLabel(QLabel):
 # ---------------------------------------------------------------------------
 
 
-class TextDecodeLabel(QLabel):
+class TextDecodeLabel(_HiddenPauseMixin, QLabel):
     """文字解码：乱码字符逐步「解码」为最终文本，支持中文。
 
     用途：科技感标题进场、解密 / 扫描氛围文案。
@@ -1427,7 +1523,7 @@ class TextDecodeLabel(QLabel):
 # ---------------------------------------------------------------------------
 
 
-class NumberRollLabel(QLabel):
+class NumberRollLabel(_HiddenPauseMixin, QLabel):
     """数字滚动标签：从当前值缓动滚动到目标值（count-up / count-down）。
 
     用途：统计数字、积分、金额等需要强调变化过程的数值展示。
@@ -1521,7 +1617,7 @@ class NumberRollLabel(QLabel):
 # ---------------------------------------------------------------------------
 
 
-class LetterStaggerLabel(QWidget):
+class LetterStaggerLabel(_HiddenPauseMixin, QWidget):
     """逐字进场：每个字符依次淡入并上浮归位，支持中文。
 
     用途：标题、口号等需要强调排版的短文本进场。
@@ -1694,9 +1790,9 @@ class ScrollReveal(QScrollArea):
         content: 内容控件（通常为带 QVBoxLayout 的 QWidget）；
         threshold: 触发阈值（子控件顶边进入视口高度比例），默认 0.85；
         渐显时长取 ``DURATION["normal"]``，缓动取 ``EASING["standard"]``。
-    说明：渐显完成后会**摘除**子控件上的透明度效果（恢复原生渲染）——
-    旧实现让效果常驻 opacity=1，在部分平台（Windows + QSS + 高 DPI）
-    QGraphicsEffect 整片不绘制，表现为渐显区「渲染不正常」；摘除后
+    说明：渐显通过「隐藏子控件（保留布局占位）+ 快照叠加层淡入」实现，
+    **不使用 QGraphicsOpacityEffect**（真机 Windows + QSS + 高 DPI 下
+    效果常驻 / 整片不绘制的平台坑）；结束后摘除叠加层并显示原控件，
     最终渲染与平台无关。扫描在控件尚未 show / 视口未就绪时会自动
     重试，避免演示卡「先构建后显示」时序下块被错误预隐藏。
     示例::
@@ -1711,6 +1807,7 @@ class ScrollReveal(QScrollArea):
         self.setWidgetResizable(True)
         self._threshold = float(threshold)
         self._revealed = set()
+        self._pre_hidden = {}   # 被预隐藏的子控件 → 原 QSizePolicy
         self._scan_retries = 0
         if content is not None:
             self.setContent(content)
@@ -1719,7 +1816,13 @@ class ScrollReveal(QScrollArea):
 
     def setContent(self, content: QWidget):
         """设置内容控件并对其直接子控件启用渐显。"""
+        for child in self._pre_hidden:
+            try:
+                child.show()
+            except RuntimeError:
+                pass
         self._revealed.clear()
+        self._pre_hidden.clear()
         self._scan_retries = 0
         self.setWidget(content)
         QTimer.singleShot(0, self._scan)
@@ -1771,51 +1874,63 @@ class ScrollReveal(QScrollArea):
             else:
                 self._pre_hide(child)
 
-    @staticmethod
-    def _pre_hide(child):
-        """未入视口子控件置为不可见（布局不受影响）；只管理本类打标的效果。"""
-        eff = child.graphicsEffect()
-        if eff is None:
-            eff = QGraphicsOpacityEffect(child)
-            eff.setOpacity(0.0)
-            eff.setProperty("_uik_reveal", True)
-            child.setGraphicsEffect(eff)
-        elif isinstance(eff, QGraphicsOpacityEffect) and eff.property("_uik_reveal"):
-            eff.setOpacity(0.0)
-        # 子控件自带的外部效果不干预，避免误改 / 堆叠
-
-    @staticmethod
-    def _strip_effect(child, eff):
-        """渐显完成后摘除本类打标的效果，恢复原生渲染（平台鲁棒）。"""
-        try:
-            if child.graphicsEffect() is eff:
-                child.setGraphicsEffect(None)
-        except RuntimeError:
-            pass
+    def _pre_hide(self, child):
+        """未入视口的子控件隐藏（保留布局占位，滚动条不跳动）。"""
+        if child in self._pre_hidden or child in self._revealed:
+            return
+        if child.isHidden():
+            return  # 外部已隐藏的控件不接管
+        sp = QSizePolicy(child.sizePolicy())
+        if not sp.retainSizeWhenHidden():
+            sp.setRetainSizeWhenHidden(True)
+            child.setSizePolicy(sp)
+        child.hide()
+        self._pre_hidden[child] = sp
 
     def _reveal(self, child, instant=False):
-        """渐显一个子控件；``instant=True`` 时直接置 1（已滚过视口的情况）。"""
-        eff = child.graphicsEffect()
-        if isinstance(eff, QGraphicsOpacityEffect) and eff.property("_uik_reveal"):
-            start = float(eff.opacity())
-        elif eff is None:
-            if instant:
-                return  # 本就无效果：无需渐显，保持原生渲染
-            eff = QGraphicsOpacityEffect(child)
-            eff.setProperty("_uik_reveal", True)
-            eff.setOpacity(0.0)
-            child.setGraphicsEffect(eff)
-            start = 0.0
-        else:
-            # 外部效果：直接视为已渐显，不再堆叠新效果
+        """渐显一个子控件；``instant=True`` 时直接显示（已滚过视口的情况）。
+
+        渐显路径：隐藏原控件（保留占位），以快照叠加层 0→1 淡入，
+        结束换回原控件——快照抓取对隐藏控件同样有效，全程无
+        QGraphicsOpacityEffect。
+        """
+        orig_policy = self._pre_hidden.pop(child, None)
+        if instant:
+            if orig_policy is not None:
+                child.setSizePolicy(orig_policy)
+            child.show()
             return
-        if instant or start >= 0.999:
-            eff.setOpacity(1.0)
-            self._strip_effect(child, eff)
-            return
+        if orig_policy is None and not child.isHidden():
+            # 直接进入视口（从未被预隐藏）：先隐藏再快照淡入
+            sp = QSizePolicy(child.sizePolicy())
+            if not sp.retainSizeWhenHidden():
+                sp.setRetainSizeWhenHidden(True)
+                child.setSizePolicy(sp)
+            child.hide()
+            orig_policy = sp  # 结束后还原用户原策略
+        pixmap = _grab_pixmap(child)
+        overlay = _SnapshotOverlay(child, pixmap, margin=1)
+        overlay.opacity = 0.0
+
+        def _finish(c=child, o=overlay, p=orig_policy):
+            if p is not None:
+                try:
+                    c.setSizePolicy(p)
+                except RuntimeError:
+                    pass
+            try:
+                c.show()
+            except RuntimeError:
+                pass
+            try:
+                o.hide()
+                o.deleteLater()
+            except RuntimeError:
+                pass
+
         _run_anim(self, DURATION["normal"], EASING["standard"],
-                  lambda v, e=eff, s=start: e.setOpacity(s + (1.0 - s) * v),
-                  on_finish=lambda c=child, e=eff: self._strip_effect(c, e))
+                  lambda v, o=overlay: setattr(o, "opacity", float(v)),
+                  on_finish=_finish)
 
 
 # ---------------------------------------------------------------------------
@@ -1823,7 +1938,7 @@ class ScrollReveal(QScrollArea):
 # ---------------------------------------------------------------------------
 
 
-class HorizontalScrollStrip(QScrollArea):
+class HorizontalScrollStrip(_HiddenPauseMixin, QScrollArea):
     """横向滚动条带：条目横向排布并自动无缝循环滚动，悬停暂停。
 
     用途：标签云、Logo 墙、公告条等横向信息带。
@@ -1859,7 +1974,7 @@ class HorizontalScrollStrip(QScrollArea):
         sb.valueChanged.connect(self._wrap)
         sb.rangeChanged.connect(lambda *_: self._measure())
         _theme_refresh(self)
-        ThemeManager.instance().theme_changed.connect(lambda *_: self._restyle())
+        ThemeManager.instance().theme_changed.connect(self._restyle)
         self._rebuild()
         if autoplay:
             self.start()
@@ -2152,6 +2267,57 @@ class _StoryOverlay(QWidget):
         p.end()
 
 
+class _StoryStepPanel(QFrame):
+    """ScrollStoryArea 的步骤卡片：paintEvent 内按 alpha 参数化整体不透明度。
+
+    不使用 QGraphicsOpacityEffect（项目红线：真机 Windows + QSS +
+    高 DPI 下常驻效果可能整片不渲染）。改为「离屏渲染 + 半透明合成」：
+    paintEvent 先经 render() 把完整内容（含 QSS 样式与子控件）画到
+    缓存位图，再按当前 alpha 合成回自身；render() 重入由戳记标志挡
+    住，避免无限递归。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFrameShape(QFrame.StyledPanel)
+        self._alpha = 0.3
+        self._uik_stamp = False   # render() 离屏重入戳记
+
+    def set_alpha(self, alpha: float):
+        """设置整体不透明度 0~1（仅变化时重绘，抑制滚动高频下的无谓重绘）。"""
+        alpha = max(0.0, min(1.0, float(alpha)))
+        if abs(alpha - self._alpha) > 0.002:
+            self._alpha = alpha
+            self.update()
+
+    def alpha(self) -> float:
+        return self._alpha
+
+    def paintEvent(self, event):
+        if self._uik_stamp:
+            # render() 触发的离屏重入：直接画基类内容（进入缓存位图）
+            super().paintEvent(event)
+            return
+        if self._alpha >= 0.999:
+            super().paintEvent(event)
+            return
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        pm = QPixmap(max(2, int(math.ceil(self.width() * dpr))),
+                     max(2, int(math.ceil(self.height() * dpr))))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.transparent)
+        self._uik_stamp = True
+        try:
+            self.render(pm)
+        finally:
+            self._uik_stamp = False
+        p = QPainter(self)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.setOpacity(self._alpha)
+        p.drawPixmap(0, 0, pm)
+        p.end()
+
+
 class ScrollStoryArea(QScrollArea):
     """滚动叙事：滚动进度驱动一条侧轴时间线，步骤卡片靠近视口中心时点亮。
 
@@ -2159,6 +2325,8 @@ class ScrollStoryArea(QScrollArea):
     主要参数：
         addStep(title, text): 追加一个叙事步骤卡片；
         progress(): 当前滚动进度 0~1；activeIndex(): 当前激活步骤序号。
+    说明：步骤卡片的明暗由 :class:`_StoryStepPanel` 在 paintEvent 内
+    按进度参数化 alpha 实现，不使用 QGraphicsOpacityEffect。
     示例::
 
         st = ScrollStoryArea()
@@ -2184,8 +2352,7 @@ class ScrollStoryArea(QScrollArea):
 
     def addStep(self, title: str, text: str) -> QFrame:
         """追加叙事步骤，返回步骤卡片控件。"""
-        panel = QFrame()
-        panel.setFrameShape(QFrame.StyledPanel)
+        panel = _StoryStepPanel()
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(16, 12, 16, 12)
         lay.setSpacing(6)
@@ -2199,9 +2366,6 @@ class ScrollStoryArea(QScrollArea):
         body_label.setProperty("role", "secondary")
         lay.addWidget(title_label)
         lay.addWidget(body_label)
-        eff = QGraphicsOpacityEffect(panel)
-        eff.setOpacity(0.3)
-        panel.setGraphicsEffect(eff)
         self._layout.addWidget(panel)
         self._steps.append(panel)
         QTimer.singleShot(0, self._update_story)
@@ -2256,9 +2420,7 @@ class ScrollStoryArea(QScrollArea):
             if dist < best_dist:
                 best, best_dist = i, dist
             near = max(0.0, 1.0 - dist / (vh * 0.75))
-            eff = panel.graphicsEffect()
-            if isinstance(eff, QGraphicsOpacityEffect):
-                eff.setOpacity(0.3 + 0.7 * near)
+            panel.set_alpha(0.3 + 0.7 * near)
         if self._steps and sb.maximum() > sb.minimum():
             # 端点修正：滚到底末步必点亮，回到顶首步必点亮
             if sb.value() >= sb.maximum():
@@ -2274,7 +2436,7 @@ class ScrollStoryArea(QScrollArea):
 # ---------------------------------------------------------------------------
 
 
-class CardTilt(QWidget):
+class CardTilt(_HiddenPauseMixin, QWidget):
     """卡片倾斜：鼠标在卡片上移动时产生伪 3D 透视倾斜，离开弹回。
 
     用途：重点卡片、商品封面等的立体质感强调。无需 OpenGL，
@@ -2302,6 +2464,7 @@ class CardTilt(QWidget):
         self._ry = 0.0
         self._anim = None
         self._margin_cache = {}
+        self._snap_cache = {}     # 内容快照缓存（键含尺寸 / 内容 / 主题）
         self.setMouseTracking(True)
         self.setMinimumSize(220, 150)
         _theme_refresh(self)
@@ -2314,6 +2477,7 @@ class CardTilt(QWidget):
         widget.setParent(self)
         widget.resize(self.size())
         widget.hide()
+        self._snap_cache = {}
 
     def contentWidget(self):
         return self._content
@@ -2326,6 +2490,7 @@ class CardTilt(QWidget):
         super().resizeEvent(event)
         if self._content is not None:
             self._content.resize(self.size())
+        self._snap_cache = {}
 
     def mouseMoveEvent(self, event):
         w, h = max(1, self.width()), max(1, self.height())
@@ -2357,12 +2522,8 @@ class CardTilt(QWidget):
         self.update()
 
     def _content_pixmap(self) -> QPixmap:
-        if self._content is not None:
-            pm = _grab_widget(self._content)
-            if not pm.isNull():
-                return pm
-        return _face_pixmap(self.size(), "CardTilt", "移动鼠标查看倾斜",
-                            ratio=_snapshot_ratio(self))
+        return _cached_face_snapshot(
+            self, self._content, "CardTilt", "移动鼠标查看倾斜")
 
     def _tilt_margin(self, w: int, h: int) -> float:
         """最大倾角下四角透视外扩的最大像素量（+2 安全余量），按尺寸缓存。"""
@@ -2416,7 +2577,7 @@ class CardTilt(QWidget):
 # ---------------------------------------------------------------------------
 
 
-class CubeRotator(QWidget):
+class CubeRotator(_HiddenPauseMixin, QWidget):
     """立方体旋转：两个画面像立方体相邻面一样绕竖直轴切换。
 
     用途：双状态展示（前后对比、双视图切换）、广告位轮播。
@@ -2439,6 +2600,7 @@ class CubeRotator(QWidget):
         self._angle = 0.0        # 动画进行中的角度 0~180
         self._anim = None
         self._persp = float(persp)
+        self._snap_cache = {}    # 面快照缓存（键含面序号 / 尺寸 / 内容 / 主题）
         self.setMinimumSize(240, 160)
         self._auto = QTimer(self)
         self._auto.timeout.connect(self.rotate)
@@ -2447,10 +2609,12 @@ class CubeRotator(QWidget):
     def setFrontWidget(self, widget: QWidget):
         """设置正面控件（快照渲染）。"""
         self._widgets[0] = self._adopt(widget)
+        self._snap_cache = {}
 
     def setSideWidget(self, widget: QWidget):
         """设置侧面控件（快照渲染）。"""
         self._widgets[1] = self._adopt(widget)
+        self._snap_cache = {}
 
     def _adopt(self, widget):
         widget.setParent(self)
@@ -2463,6 +2627,7 @@ class CubeRotator(QWidget):
         for w in self._widgets:
             if w is not None:
                 w.resize(self.size())
+        self._snap_cache = {}
 
     def face(self) -> int:
         """当前朝向的面：0 正面，1 侧面。"""
@@ -2502,6 +2667,10 @@ class CubeRotator(QWidget):
         """停止自动旋转。"""
         self._auto.stop()
 
+    def _resume_anim(self):
+        # 无公共 start()：恢复自动轮播定时器（隐藏前在跑才被调用）
+        self._auto.start()
+
     def _set_angle(self, deg):
         self._angle = deg
         self.update()
@@ -2513,14 +2682,9 @@ class CubeRotator(QWidget):
         self.update()
 
     def _face_pixmap(self, idx) -> QPixmap:
-        widget = self._widgets[idx]
-        if widget is not None:
-            pm = _grab_widget(widget)
-            if not pm.isNull():
-                return pm
-        return _face_pixmap(self.size(), self._texts[idx],
-                            "rotate() 切换到另一面",
-                            ratio=_snapshot_ratio(self))
+        return _cached_face_snapshot(
+            self, self._widgets[idx], self._texts[idx],
+            "rotate() 切换到另一面", idx)
 
     def paintEvent(self, _event):
         p = QPainter(self)
@@ -2548,7 +2712,7 @@ class CubeRotator(QWidget):
 # ---------------------------------------------------------------------------
 
 
-class FlipCard(QWidget):
+class FlipCard(_HiddenPauseMixin, QWidget):
     """翻转卡片：正 / 背两面绕竖直轴 180° 翻转（点击或调用 flip()）。
 
     用途：会员卡片、单词卡、信息正反对照展示。
@@ -2573,6 +2737,7 @@ class FlipCard(QWidget):
         self._angle = 0.0
         self._anim = None
         self._persp = float(persp)
+        self._snap_cache = {}    # 面快照缓存（键含面序号 / 尺寸 / 内容 / 主题）
         self.setMinimumSize(220, 140)
         self.setCursor(Qt.PointingHandCursor)
         _theme_refresh(self)
@@ -2580,10 +2745,12 @@ class FlipCard(QWidget):
     def setFrontWidget(self, widget: QWidget):
         """设置正面控件（快照渲染）。"""
         self._widgets[0] = self._adopt(widget)
+        self._snap_cache = {}
 
     def setBackWidget(self, widget: QWidget):
         """设置背面控件（快照渲染）。"""
         self._widgets[1] = self._adopt(widget)
+        self._snap_cache = {}
 
     def _adopt(self, widget):
         widget.setParent(self)
@@ -2596,6 +2763,7 @@ class FlipCard(QWidget):
         for w in self._widgets:
             if w is not None:
                 w.resize(self.size())
+        self._snap_cache = {}
 
     def isFlipped(self) -> bool:
         return self._flipped
@@ -2651,14 +2819,8 @@ class FlipCard(QWidget):
         super().mouseReleaseEvent(event)
 
     def _face_pixmap(self, idx) -> QPixmap:
-        widget = self._widgets[idx]
-        if widget is not None:
-            pm = _grab_widget(widget)
-            if not pm.isNull():
-                return pm
-        title = self._texts[idx]
-        return _face_pixmap(self.size(), title, "点击翻转",
-                            ratio=_snapshot_ratio(self))
+        return _cached_face_snapshot(
+            self, self._widgets[idx], self._texts[idx], "点击翻转", idx)
 
     def paintEvent(self, _event):
         p = QPainter(self)
@@ -2689,6 +2851,9 @@ class FlipCard(QWidget):
 
 
 class CoverFlow(QWidget):
+    # 注意：不混入 _HiddenPauseMixin——slideTo 对「_anim 非 None」直接
+    # 返回 None 且无解锁逻辑，隐藏停机会让后续导航永久失效；其切换
+    # 动画仅 slow(320) 且非定时器空转，隐藏期间短时运行可接受。
     """立体轮播：3~5 项卡片以伪 3D 透视堆叠，居中聚焦、两侧旋转退后。
 
     用途：专辑封面、商品推荐、图片精选等强调当前项的横向浏览。
