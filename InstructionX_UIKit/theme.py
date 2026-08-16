@@ -712,6 +712,15 @@ QTextEdit:focus, QPlainTextEdit:focus {{ border-color: {c('primary')}; }}
 QTextEdit:disabled, QPlainTextEdit:disabled {{
     background-color: {c('bg.muted')}; border-color: {c('border')}; color: {c('text.disabled')};
 }}
+/* MarkdownView plain 变体：透明无边框，用于嵌入气泡 / 消息列表 */
+QTextBrowser[variant="plain"] {{
+    background-color: transparent;
+    border: none;
+    padding: 0px;
+}}
+QTextBrowser[variant="plain"]:hover, QTextBrowser[variant="plain"]:focus {{
+    border: none;
+}}
 
 /* 数字 / 日期时间调节框（高度口径与 QLineEdit 对齐） */
 QSpinBox, QDoubleSpinBox, QDateEdit, QTimeEdit, QDateTimeEdit {{

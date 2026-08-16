@@ -4,7 +4,7 @@
 页面 = 标题 + 说明 + 分区演示，紧凑排布；亮 / 暗主题切换自动换肤。
 """
 
-from PySide6.QtCore import QRect, Qt
+from PySide6.QtCore import QRect, Qt, QTimer
 from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -26,6 +26,7 @@ from InstructionX_UIKit.components.descriptions import Descriptions
 from InstructionX_UIKit.components.empty import Empty
 from InstructionX_UIKit.components.image_view import ImageView
 from InstructionX_UIKit.components.list_view import ListWidget
+from InstructionX_UIKit.components.markdown_view import MarkdownView
 from InstructionX_UIKit.components.popover import Popover
 from InstructionX_UIKit.components.qrcode_view import QRCodeView
 from InstructionX_UIKit.components.statistic import Statistic
@@ -433,6 +434,90 @@ def create_popover_page() -> QWidget:
     return make_page("Popover 气泡卡片", "相对锚点弹出（QFrame, Popup），带箭头。", [s])
 
 
+_MARKDOWN_SAMPLE = """## 渲染能力一览
+
+正文支持 **加粗**、*斜体*、~~删除线~~ 与 `行内代码`。
+
+- 无序列表项
+- 支持任务列表：
+- [x] 已完成的事项
+- [ ] 待办事项
+
+> 引用块使用次要文本色，适合展示引用与提示。
+
+```python
+def fibonacci(n):
+    a, b = 0, 1
+    for _ in range(n):
+        a, b = b, a + b
+    return a
+```
+
+| 语法 | 支持情况 |
+|------|----------|
+| 表格 | 支持 |
+| 代码围栏 | 支持（等宽字体 + 底色，不做语法高亮） |
+
+[链接使用主题主色](https://github.com/KKPIP-Tech/InstructionX_UIKit)
+"""
+
+_MARKDOWN_STREAM = """好的，这是为你整理的要点：
+
+1. **MarkdownView** 基于 Qt 内置 Markdown 引擎，原生渲染，不依赖 WebView；
+2. `append_markdown(chunk)` 支持 AI 逐 token 的流式输出；
+3. 代码块使用等宽字族与 `bg.subtle` 底色，文字颜色与正文一致。
+
+```python
+view = MarkdownView()
+for token in stream:
+    view.append_markdown(token)
+```
+"""
+
+
+def create_markdown_page() -> QWidget:
+    s = Section("基础渲染")
+    view = MarkdownView(_MARKDOWN_SAMPLE)
+    view.setMinimumHeight(380)
+    s.layout().addWidget(view)
+
+    s2 = Section("流式追加（模拟 AI 逐字输出）")
+    stream_view = MarkdownView()
+    stream_view.setMinimumHeight(260)
+    chunks = [""]
+    timer = QTimer(stream_view)
+
+    def _replay():
+        stream_view.clear()
+        # 按小片段切分，模拟逐 token 到达
+        chunks[:] = [_MARKDOWN_STREAM[i:i + 4]
+                     for i in range(0, len(_MARKDOWN_STREAM), 4)]
+        timer.start(40)
+
+    def _tick():
+        if not chunks:
+            timer.stop()
+            return
+        stream_view.append_markdown(chunks.pop(0))
+
+    timer.timeout.connect(_tick)
+    s2.layout().addWidget(stream_view)
+    btn = QPushButton("重新播放")
+    set_property(btn, "variant", "primary")
+    set_property(btn, "size", "sm")
+    btn.clicked.connect(_replay)
+    s2.layout().addWidget(row(btn))
+    _replay()
+
+    s3 = Section("空状态")
+    empty_view = MarkdownView()
+    empty_view.setFixedHeight(120)
+    s3.layout().addWidget(empty_view)
+    return make_page("MarkdownView Markdown 渲染",
+                     "Qt 内置引擎原生渲染 Markdown，令牌化样式，支持流式追加。",
+                     [s, s2, s3])
+
+
 #: 展示组件页注册表：(导航键, 标题, 页面工厂)
 DISPLAY_PAGES = [
     ("avatar", "Avatar 头像", create_avatar_page),
@@ -453,4 +538,5 @@ DISPLAY_PAGES = [
     ("empty", "Empty 空状态", create_empty_page),
     ("tooltip", "Tooltip 工具提示", create_tooltip_page),
     ("popover", "Popover 气泡卡片", create_popover_page),
+    ("markdown_view", "MarkdownView Markdown 渲染", create_markdown_page),
 ]
