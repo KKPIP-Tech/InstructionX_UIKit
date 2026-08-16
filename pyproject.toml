@@ -7,6 +7,7 @@ description = "基于 PySide6 的纯桌面 UI 组件库：设计令牌双主题�
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "matplotlib>=3.11.1",
     "pyside6>=6.11.1",
     "qrcode[pil]>=7.4",
 ]

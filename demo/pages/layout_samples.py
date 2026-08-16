@@ -485,6 +485,12 @@ CHAT_MESSAGES = [
      "content": "不会。代码块文字颜色与正文一致，仅以等宽字族和底色区分。\n\n"
                 "| 特性 | 状态 |\n|------|------|\n"
                 "| 语法高亮 | 不支持 |\n| 等宽字族 | 支持 |\n| 底色 | `bg.subtle` 令牌 |"},
+    {"role": "user", "content": "能渲染数学公式吗？"},
+    {"role": "assistant",
+     "content": "可以，支持 LaTeX 语法。行内公式如 $E=mc^2$，块级公式：\n\n"
+                "$$\\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}$$\n\n"
+                "公式由 matplotlib mathtext 后台异步渲染并缓存，"
+                "流式追加时命中缓存零耗时。"},
 ]
 
 #: 流式回复演示文本（演示页用 QTimer 逐段追加）

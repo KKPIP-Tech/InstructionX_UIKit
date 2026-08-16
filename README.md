@@ -43,7 +43,7 @@ pip install -r requirements.txt
 # pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 ```
 
-依赖：`PySide6>=6.6`（含 Addons）与 `qrcode[pil]>=7.4`，除此之外无任何第三方依赖。
+依赖：`PySide6>=6.6`（含 Addons）、`qrcode[pil]>=7.4` 与 `matplotlib>=3.11.1`（MarkdownView 的 LaTeX 公式渲染），除此之外无任何第三方依赖。
 
 ## 快速上手
 

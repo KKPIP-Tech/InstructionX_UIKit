@@ -461,6 +461,24 @@ def fibonacci(n):
 [链接使用主题主色](https://github.com/KKPIP-Tech/InstructionX_UIKit)
 """
 
+_MARKDOWN_MATH = r"""行内公式：质能方程 $E=mc^2$，以及欧拉恒等式 $e^{i\pi}+1=0$。
+
+块级公式（求根公式）：
+
+$$\frac{-b \pm \sqrt{b^2-4ac}}{2a}$$
+
+也支持 `\[...\]` 与 `\begin{equation}` 环境：
+
+\[\int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}\]
+
+\begin{equation}
+a^2 + b^2 = c^2
+\end{equation}
+
+公式由 matplotlib mathtext 在后台线程异步渲染并缓存，渲染期间以源码占位；
+代码围栏与行内代码中的 `$...$` 不会被当作公式。
+"""
+
 _MARKDOWN_STREAM = """好的，这是为你整理的要点：
 
 1. **MarkdownView** 基于 Qt 内置 Markdown 引擎，原生渲染，不依赖 WebView；
@@ -509,13 +527,18 @@ def create_markdown_page() -> QWidget:
     s2.layout().addWidget(row(btn))
     _replay()
 
+    s_math = Section("数学公式（LaTeX）")
+    math_view = MarkdownView(_MARKDOWN_MATH)
+    math_view.setMinimumHeight(300)
+    s_math.layout().addWidget(math_view)
+
     s3 = Section("空状态")
     empty_view = MarkdownView()
     empty_view.setFixedHeight(120)
     s3.layout().addWidget(empty_view)
     return make_page("MarkdownView Markdown 渲染",
-                     "Qt 内置引擎原生渲染 Markdown，令牌化样式，支持流式追加。",
-                     [s, s2, s3])
+                     "Qt 内置引擎原生渲染 Markdown，令牌化样式，支持流式追加与 LaTeX 公式。",
+                     [s, s2, s_math, s3])
 
 
 #: 展示组件页注册表：(导航键, 标题, 页面工厂)
