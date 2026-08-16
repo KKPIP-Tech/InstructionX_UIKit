@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """流式对话布局预设（SPEC §6 chat_conversation）。
 
-面向 AI 人机对话场景的页面骨架：居中的消息列（用户气泡右对齐、
-AI 消息左对齐整宽），AI 消息内嵌 ``MarkdownView`` 原生渲染 Markdown，
+面向 AI 人机对话场景的页面骨架：居中的消息列（用户气泡右对齐
+主色底、AI 消息左对齐整宽 `bg.subtle` 底色气泡），AI 消息内嵌
+``MarkdownView`` 原生渲染 Markdown，
 ``append_to_message`` 支持逐 token 流式输出；底部可选输入区
 （``TextArea`` + 发送按钮），提交时发射 ``messageSubmitted`` 信号，
 布局本身不承载任何 AI 逻辑。
@@ -82,7 +83,7 @@ class _BubbleView(MarkdownView):
 
 
 class _Bubble(QFrame):
-    """单条消息气泡：user 右对齐令牌色底，assistant 整宽透明底。"""
+    """单条消息气泡：user 右对齐主色底，assistant 整宽 `bg.subtle` 底。"""
 
     def __init__(self, role: str, content: str, parent=None):
         super().__init__(parent)
@@ -93,7 +94,7 @@ class _Bubble(QFrame):
                       else QSizePolicy.Expanding)
         self.setSizePolicy(horizontal, QSizePolicy.Maximum)
         lay = QVBoxLayout(self)
-        pad = T("space.2") if role == "user" else 0
+        pad = T("space.2")
         lay.setContentsMargins(pad, pad, pad, pad)
         self.view = _BubbleView(content)
         lay.addWidget(self.view)
@@ -106,13 +107,14 @@ class _Bubble(QFrame):
         self.setFixedHeight(self.view.height() + m.top() + m.bottom())
 
     def paintEvent(self, event) -> None:  # noqa: N802
-        if self.role == "user":
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.Antialiasing)
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(T("color.primary.subtle")))
-            painter.drawRoundedRect(self.rect(), T("radius.lg"), T("radius.lg"))
-            painter.end()
+        color_key = ("color.primary.subtle" if self.role == "user"
+                     else "color.bg.subtle")
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(T(color_key)))
+        painter.drawRoundedRect(self.rect(), T("radius.lg"), T("radius.lg"))
+        painter.end()
         super().paintEvent(event)
 
 
