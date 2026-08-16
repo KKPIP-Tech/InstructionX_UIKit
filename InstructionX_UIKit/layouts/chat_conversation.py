@@ -25,7 +25,7 @@
     win.show()
 """
 
-from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtCore import QCoreApplication, QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QFrame,
@@ -47,6 +47,15 @@ __all__ = ["ChatConversation", "create_chat_conversation"]
 
 #: 消息列最大宽度（与单列布局一致）
 _MAX_CONTENT_WIDTH = 760
+
+#: 气泡高度 = 文档高度 + 取整余量（像素）
+_BUBBLE_HEIGHT_PAD = 4
+
+#: user 气泡宽度上限的兜底下限（像素）
+_MIN_USER_BUBBLE_CAP = 160
+
+#: 滚动跟随判定余量（像素）
+_SCROLL_MARGIN = 4
 
 #: 合法消息角色
 _ROLES = ("user", "assistant")
@@ -78,7 +87,7 @@ class _BubbleView(MarkdownView):
     def _sync_height(self, doc_height: float = None) -> None:
         if doc_height is None:
             doc_height = self.document().size().height()
-        h = int(-(-doc_height // 1)) + 4  # ceil + 取整余量
+        h = int(-(-doc_height // 1)) + _BUBBLE_HEIGHT_PAD  # ceil + 取整余量
         self.setFixedHeight(max(h, T("font.md") + 8))
 
 
@@ -139,7 +148,10 @@ class ChatConversation(QWidget):
         super().__init__(parent)
         self._messages = []
         self._bubbles = []
+        self._rows = []            # 包裹气泡的行布局（clear 时逐行清理）
         self._placeholder = None
+        self._follow = True        # 底部跟随状态（用户上翻后暂停）
+        self._programmatic_scroll = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -167,6 +179,9 @@ class ChatConversation(QWidget):
         self._scroll.setWidget(host)
         # 视口尺寸（含滚动条出现 / 消失引起的收缩）直接驱动列宽
         self._scroll.viewport().installEventFilter(self)
+        # 用户滚动状态 → 底部跟随开关
+        self._scroll.verticalScrollBar().valueChanged.connect(
+            self._on_scroll_value)
 
         # 底部输入区（可选）
         self.input_edit = None
@@ -196,21 +211,38 @@ class ChatConversation(QWidget):
 
     # ------------------------------------------------------------------ 消息
     def set_messages(self, messages) -> None:
-        """整体设置消息列表（覆盖现有内容）。"""
-        self.clear_messages()
+        """整体设置消息列表（覆盖现有内容）。
+
+        先整体校验再提交：任何一条非法都不会留下半提交状态。
+        """
+        normalized = []
         for i, msg in enumerate(messages):
             if not isinstance(msg, dict) or "role" not in msg:
                 raise ValueError(
                     f"消息 {i} 应为含 role/content 的 dict，收到 {msg!r}")
-            self.add_message(msg["role"], msg.get("content", ""))
+            role = msg["role"]
+            if role not in _ROLES:
+                raise ValueError(f"未知消息角色: {role!r}，应为 {_ROLES} 之一")
+            content = msg.get("content")
+            if content is None:
+                content = ""
+            normalized.append((role, str(content)))
+        self.clear_messages()
+        for role, content in normalized:
+            self.add_message(role, content)
 
     def add_message(self, role: str, content: str = "") -> int:
         """追加一条消息，返回消息索引（供 ``append_to_message`` 使用）。"""
         if role not in _ROLES:
             raise ValueError(f"未知消息角色: {role!r}，应为 {_ROLES} 之一")
+        if content is None:
+            content = ""
         self._hide_placeholder()
         bubble = _Bubble(role, str(content))
         self._insert_bubble(bubble)
+        # 气泡文档尺寸变化（流式追加 / 公式图片就绪）后保持底部跟随
+        bubble.view.document().documentLayout().documentSizeChanged.connect(
+            self._follow_after_doc_change)
         self._messages.append({"role": role, "content": str(content)})
         self._bubbles.append(bubble)
         self._follow_scroll()
@@ -225,10 +257,21 @@ class ChatConversation(QWidget):
         self._follow_scroll()
 
     def clear_messages(self) -> None:
-        """清空全部消息，回到空占位。"""
-        for bubble in self._bubbles:
-            self._list_lay.removeWidget(bubble)
-            bubble.deleteLater()
+        """清空全部消息，回到空占位。
+
+        气泡由包裹行（QHBoxLayout）持有：removeWidget 对非直接子项
+        是 no-op，必须逐行 takeAt 移除行内条目再从列表布局摘除行
+        本身，否则行随消息数永久累积。
+        """
+        for row in self._rows:
+            while row.count():
+                item = row.takeAt(0)
+                w = item.widget()
+                if w is not None:
+                    w.hide()
+                    w.deleteLater()
+            self._list_lay.removeItem(row)
+        self._rows.clear()
         self._bubbles.clear()
         self._messages.clear()
         self._show_placeholder()
@@ -248,6 +291,7 @@ class ChatConversation(QWidget):
         else:
             row.addWidget(bubble, 1)
         self._list_lay.insertLayout(self._list_lay.count() - 1, row)
+        self._rows.append(row)
         self._sync_bubble_caps()
 
     def _show_placeholder(self) -> None:
@@ -266,7 +310,7 @@ class ChatConversation(QWidget):
 
     def _sync_bubble_caps(self) -> None:
         """user 气泡宽度上限为消息列的 2/3（随列宽变化）。"""
-        cap = max(160, int(self._column.width() * 2 / 3))
+        cap = max(_MIN_USER_BUBBLE_CAP, int(self._column.width() * 2 / 3))
         for bubble in self._bubbles:
             if bubble.role == "user":
                 bubble.setMaximumWidth(cap)
@@ -283,10 +327,40 @@ class ChatConversation(QWidget):
         self._sync_bubble_caps()
 
     def _follow_scroll(self) -> None:
-        """滚动条在底部时追加后自动跟随（用户上翻则不打断）。"""
+        """滚动条在底部时追加后自动跟随（用户上翻则暂停跟随）。"""
+        if not self._follow:
+            return
         bar = self._scroll.verticalScrollBar()
-        if bar.value() >= bar.maximum() - 4:
+        self._programmatic_scroll = True
+        try:
             bar.setValue(bar.maximum())
+        finally:
+            self._programmatic_scroll = False
+
+    def _on_scroll_value(self, value: int) -> None:
+        """用户滚动：更新底部跟随状态（程序 setValue 除外）。"""
+        if self._programmatic_scroll:
+            return
+        bar = self._scroll.verticalScrollBar()
+        self._follow = value >= bar.maximum() - _SCROLL_MARGIN
+
+    def _follow_after_doc_change(self) -> None:
+        """气泡文档尺寸变化（流式追加 / 公式图片就绪）后继续底部跟随。
+
+        文档变高时滚动范围在事件循环中才更新：若跟随状态开启，先
+        等布局落定（processEvents）再滚到底，修复「公式图片到达使
+        气泡长高后视口不再跟随」的问题。
+        """
+        if not self._follow:
+            return
+
+        def _flush_and_follow():
+            # 布局与滚动范围更新可能需要多轮事件处理才落定
+            for _ in range(4):
+                QCoreApplication.processEvents()
+            self._follow_scroll()
+
+        QTimer.singleShot(0, _flush_and_follow)
 
     def _on_send(self) -> None:
         text = self.input_edit.toPlainText().strip()
