@@ -88,7 +88,7 @@ ThemeManager.instance().theme_changed.connect(lambda mode: self.update())
 ```python
 from InstructionX_UIKit.theme import T
 
-color = T("color.primary")       # "#3563E9"（亮）/ "#5B87F2"（暗）
+color = T("color.primary")       # "#3F5E8C"（亮）/ "#7C98C4"（暗）
 gap = T("space.4")               # 16
 radius = T("radius.md")          # 6
 shadow = T("shadow.md")          # {"blur": 16, "offset": (0, 4), "color": (16, 24, 40, 64)}
@@ -290,7 +290,7 @@ rt.set_read_only(True)                          # 展示模式
 
 ```python
 from InstructionX_UIKit.components.color_picker import ColorPicker
-cp = ColorPicker(color="#3563E9", size="md", show_text=True)
+cp = ColorPicker(color="#3F5E8C", size="md", show_text=True)
 cp.colorChanged.connect(lambda c: print(c.name()))
 ```
 
@@ -430,6 +430,12 @@ tl = Timeline(pending="进行中...")
 tl.add_item("创建订单", time="09:30")
 tl.add_item("支付成功", time="09:35", color="success")   # color: primary/success/warning/danger
 tl.add_item("发货", time="10:00", color="primary")
+# 绘制参数（可选）：轴线侧 / 线宽线型 / 节点半径 / 行距 / 字号
+tl.set_axis_side("right")            # "left"（默认）或 "right"
+tl.set_line(1.5, Qt.DashLine)
+tl.set_dot(6)
+tl.set_row_spacing(4)
+tl.set_fonts(title_size=14, time_size=11)
 ```
 
 **Statistic**（`statistic.py`）—— 统计数值卡。
@@ -620,6 +626,12 @@ steps = Steps(orientation=Qt.Horizontal)
 steps.set_steps(["填写信息", "确认订单", {"title": "支付", "description": "扫码或刷卡"}])
 steps.set_current(1)                  # 之前自动 finish，当前 process，之后 wait
 steps.set_status(2, "error")          # wait/process/finish/error
+steps.clear_status(2)                 # 清除显式状态，恢复按 current 推导
+# 绘制参数（可选）：节点半径 / 连接线宽线型 / 字号
+steps.set_node(10)
+steps.set_link(1.5, Qt.DashLine)
+steps.set_fonts(title_size=14, desc_size=12)
+steps.steps()                         # 归一化步骤副本；steps.orientation() 返回方向
 ```
 
 **Alert**（`alert.py`）—— 警告提示条。
@@ -796,6 +808,7 @@ animp.mask_reveal(banner, direction="circle")           # 遮罩揭示：right/l
 animp.hover_lift(card, dy=4)                            # 悬停上浮 + 阴影（装事件过滤器）
 h = animp.button_morph_loading(submit_btn); h.restore() # 按钮收缩为方块呼吸；restore() 还原
 animp.ripple(primary_btn)                               # 点击涟漪叠加层
+animp.clear_ripple(primary_btn)                         # 清除涟漪滤镜与叠加层（演示重放 / 场景重置用）
 animp.switch_toggle(switch_btn)                         # 按压回弹 + 切换选中态
 animp.pulse(icon, loops=3)                              # 心跳缩放
 animp.bounce(ok_icon)                                   # 弹跳（OutBounce）
@@ -805,7 +818,7 @@ animp.flash_highlight(row, times=2)                     # 高亮闪烁（默认 
 animp.float_loop(tip_card)                              # 无限上下漂浮
 animp.pulse_glow(avatar)                                # 阴影半径呼吸（辉光）
 animp.breathing(tip_label)                              # 透明度呼吸
-animp.gradient_flow(panel, colors=["#3563E9", "#1E9E6A"])  # 背景渐变流动
+animp.gradient_flow(panel, colors=["#3F5E8C", "#3E7E5F"])  # 背景渐变流动（无限循环，用 anim.restore() 还原）
 animp.gradient_text_flow(title_label)                   # 文字逐字渐变流动
 animp.cross_fade(stacked, index=1)                      # 页面交叉淡化（或 a 淡出 b 淡入）
 animp.page_transition(stacked, 1, kind="slide")         # QStackedWidget 切页 fade/slide
@@ -841,7 +854,7 @@ sh = StickyHeader(); sh.setHeaderWidget(bar); sh.setBody(body, cover_height=120)
 ScrollProgressBar(area=scroll_area, height=4)            # 滚动进度条
 st = ScrollStoryArea(); st.addStep("第一步", "准备环境")   # 滚动驱动叙事时间线
 MarqueeLabel(text="很长很长的公告文本", speed=1.6)        # 跑马灯
-FluidBackground(colors=["#3563E9", "#1E9E6A"], blobs=3)  # 流体渐变背景
+FluidBackground(colors=["#3F5E8C", "#3E7E5F"], blobs=3)  # 流体渐变背景
 TypewriterLabel(text="逐字打出这段话", interval=60)       # 打字机
 TextDecodeLabel(text="解码这段文字")                      # 乱码→明文解码
 nr = NumberRollLabel(value=0, decimals=0, prefix="¥"); nr.setValue(12800)   # 数字滚动 count-up

@@ -482,7 +482,8 @@ class TokenState(QObject):
         """会话级覆盖某令牌并发射 ``token_changed``。
 
         只影响状态机视图（``value`` / ``T()`` / 分组导出），
-        不修改本模块的 ``LIGHT`` / ``DARK`` 预设常量。
+        不修改本模块的 ``LIGHT`` / ``DARK`` 预设常量，
+        也不重建已生成的全局 QSS（自绘组件换色而 QSS 控件不换色属预期）。
         """
         self._overrides[key] = value
         self.token_changed.emit(key)

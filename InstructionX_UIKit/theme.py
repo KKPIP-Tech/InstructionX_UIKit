@@ -18,7 +18,9 @@
 ``uiksize``），即可获得正确的 sm/md/lg 样式。
 """
 
+import os
 import tempfile
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QPointF, Qt, Signal
@@ -33,7 +35,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QApplication, QGraphicsDropShadowEffect, QWidget
 
-from .tokens import DARK, FONT_FAMILY, LIGHT, MONO_FAMILY, TokenState
+from .tokens import DARK, FONT_FAMILY, LIGHT, TokenState
 
 __all__ = [
     "ThemeManager",
@@ -246,6 +248,30 @@ def _build_palette(tokens: dict) -> QPalette:
 
 _ASSET_DIR = Path(tempfile.gettempdir()) / "ui_kit_qss_assets"
 
+#: 超龄资源清理阈值（天）：升级或中断写入残留的孤儿 PNG 由首次写入时统一清理
+_ASSET_MAX_AGE_DAYS = 30
+_cleanup_done = False
+
+
+def _cleanup_stale_assets() -> None:
+    """删除超龄的 QSS 图标 PNG（进程内只执行一次）。"""
+    global _cleanup_done
+    if _cleanup_done:
+        return
+    _cleanup_done = True
+    cutoff = time.time() - _ASSET_MAX_AGE_DAYS * 86400
+    try:
+        for child in _ASSET_DIR.iterdir():
+            if not child.suffix.lower() == ".png":
+                continue
+            try:
+                if child.stat().st_mtime < cutoff:
+                    child.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
 
 def _stroke(painter: QPainter, color: str, width: float = 1.6) -> None:
     pen = QPen(QColor(color))
@@ -257,13 +283,18 @@ def _stroke(painter: QPainter, color: str, width: float = 1.6) -> None:
 
 
 def _save_asset(name: str, draw) -> str:
-    """绘制 12x12 透明 PNG 并缓存，返回 QSS 可用的 url 路径；失败返回空串。"""
+    """绘制 12x12 透明 PNG 并缓存，返回 QSS 可用的 url 路径；失败返回空串。
+
+    文件名嵌入绘制色值，天然按颜色区分；写入先落临时文件再原子替换，
+    避免中断写入留下损坏 PNG。
+    """
     if QGuiApplication.instance() is None:
         return ""
     try:
         _ASSET_DIR.mkdir(parents=True, exist_ok=True)
     except OSError:
         return ""
+    _cleanup_stale_assets()
     path = _ASSET_DIR / name
     if not path.exists():
         pm = QPixmap(12, 12)
@@ -272,7 +303,20 @@ def _save_asset(name: str, draw) -> str:
         painter.setRenderHint(QPainter.Antialiasing)
         draw(painter)
         painter.end()
-        if not pm.save(str(path)):
+        tmp = path.with_suffix(".tmp")
+        if not pm.save(str(tmp), "PNG"):
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            return ""
+        try:
+            os.replace(tmp, path)
+        except OSError:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
             return ""
     return path.as_posix()
 
@@ -897,9 +941,8 @@ QProgressBar {{
     font-size: {t['font.xs']}px;
 }}
 QProgressBar::chunk {{ background-color: {c('primary')}; border-radius: 4px; }}
-QProgressBar[status="success"]::chunk {{ background-color: {c('success')}; }}
-QProgressBar[status="warning"]::chunk {{ background-color: {c('warning')}; }}
-QProgressBar[status="error"]::chunk {{ background-color: {c('danger')}; }}
+/* ProgressBar 状态色由 paintEvent 自绘（见 components/progress_bar.py），
+   QSS status 选择器不会生效，不在此输出。 */
 QProgressBar:disabled::chunk {{ background-color: {c('text.disabled')}; }}
 
 /* 复选框 */
