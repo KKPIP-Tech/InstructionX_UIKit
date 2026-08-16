@@ -44,9 +44,15 @@ _GL_STATE = None
 
 
 def gl_available() -> bool:
-    """当前环境是否可用 GL 视口（结果缓存；受 ``UIKIT_BLUEPRINT_GL`` 控制）。"""
+    """当前环境是否可用 GL 视口（结果缓存；受 ``UIKIT_BLUEPRINT_GL`` 控制）。
+
+    ``QApplication`` 尚未创建时不写缓存：此时探测必然为假但结论不可信
+    （GL 设施随应用创建），缓存会把进程永久锁定在软件渲染。
+    """
     global _GL_STATE
     if _GL_STATE is None:
+        if QGuiApplication.instance() is None:
+            return False
         _GL_STATE = _probe_gl()
     return _GL_STATE
 

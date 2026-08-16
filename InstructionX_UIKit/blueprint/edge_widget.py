@@ -40,6 +40,52 @@ def _path_points(path: QPainterPath, count: int = 24) -> list:
     return [path.pointAtPercent(i / count) for i in range(count + 1)]
 
 
+#: 边颜色解析缓存：键为 ``T()`` 解析后的色值字符串（主题切换后解析值
+#: 变化，缓存自然失效）；容量封顶时整体清空，避免主题反复切换无界增长。
+_COLOR_CACHE = {}
+_COLOR_CACHE_MAX = 64
+#: 边画笔缓存：键为 (颜色 RGBA, 宽度, 线型, dash 模式)。同上，颜色取
+#: 实时解析结果，主题切换自然失效；容量封顶整体清空。
+_PEN_CACHE = {}
+_PEN_CACHE_MAX = 96
+
+
+def _cached_color(token_value) -> QColor:
+    """按 ``T()`` 解析值缓存 QColor 并返回**副本**（避免每帧 hex 解析）。
+
+    返回副本允许调用方原地 ``setAlpha`` 等修改而不污染缓存条目。
+    """
+    key = str(token_value)
+    color = _COLOR_CACHE.get(key)
+    if color is None:
+        color = QColor(key)
+        if len(_COLOR_CACHE) >= _COLOR_CACHE_MAX:
+            _COLOR_CACHE.clear()
+        _COLOR_CACHE[key] = color
+    return QColor(color)
+
+
+def _cached_pen(color: QColor, width: float, style=Qt.SolidLine,
+                dash=None) -> QPen:
+    """按 (颜色, 宽度, 线型, dash) 缓存 QPen（复用：dash 相位由调用方
+    在每次绘制前重设，共享画笔在单线程 GUI 下安全）。"""
+    # Qt6 枚举（Qt.PenStyle）不可 int() 转换，取 .value 作缓存键
+    style_v = getattr(style, "value", style)
+    key = (color.rgba(), width, style_v,
+           tuple(dash) if dash is not None else None)
+    pen = _PEN_CACHE.get(key)
+    if pen is None:
+        pen = QPen(QColor.fromRgba(color.rgba()), width)
+        pen.setStyle(style)
+        pen.setCapStyle(Qt.RoundCap)
+        if dash is not None:
+            pen.setDashPattern(dash)
+        if len(_PEN_CACHE) >= _PEN_CACHE_MAX:
+            _PEN_CACHE.clear()
+        _PEN_CACHE[key] = pen
+    return pen
+
+
 class EdgeWidget(QObject):
     """一条已建立连线的部件（几何 + 视觉状态，画布负责绘制）。
 
@@ -142,15 +188,24 @@ class EdgeWidget(QObject):
         return False
 
     def _color(self) -> QColor:
-        """边的基础颜色（按源引脚类型，惰性缓存）。"""
+        """边的基础颜色（按源引脚类型，惰性缓存）。
+
+        注意 ``_base_color`` 缓存的是主题相关色值：主题切换时画布调用
+        ``invalidate_color()`` 失效重建（见 ``BlueprintCanvas._retheme``）。
+        """
         if self._base_color is None:
             from .model import PinDirection
             node = self.canvas.graph.node(self.edge.from_node)
             pin = (node.pin(self.edge.from_pin, PinDirection.Output)
                    if node is not None else None)
-            self._base_color = (QColor(pin_color(pin.data_type)) if pin is not None
-                                else QColor(str(T("color.text.tertiary"))))
+            self._base_color = (_cached_color(pin_color(pin.data_type))
+                                if pin is not None
+                                else _cached_color(str(T("color.text.tertiary"))))
         return QColor(self._base_color)
+
+    def invalidate_color(self) -> None:
+        """失效缓存的边基础色（主题切换后由画布调用，下次绘制实时取色）。"""
+        self._base_color = None
 
     # -- 状态 ------------------------------------------------------------
     def set_flowing(self, on: bool) -> None:
@@ -175,15 +230,17 @@ class EdgeWidget(QObject):
 
     # -- 绘制 ------------------------------------------------------------
     def draw(self, p: QPainter) -> None:
-        """在已做场景变换的画笔上绘制本条边（抗锯齿、主题实时取色）。"""
+        """在已做场景变换的画笔上绘制本条边（抗锯齿、主题实时取色）。
+
+        画笔经 ``_cached_pen`` 按 (色值, 宽度, 线型) 复用：绘制期高频
+        （画布每帧遍历全部边）避免每条边每次绘制重新解析令牌与构造
+        QPen；主题切换后色值变化，缓存键随之变化自然失效。
+        """
         path = self.path()
         if self.flowing:
-            color = QColor(str(T("color.primary")))
-            pen = QPen(color, 2.4)
-            pen.setStyle(Qt.DashLine)
-            pen.setDashPattern([3.0, 3.0])
+            pen = _cached_pen(_cached_color(str(T("color.primary"))), 2.4,
+                              Qt.DashLine, [3.0, 3.0])
             pen.setDashOffset(self._dash_offset)
-            pen.setCapStyle(Qt.RoundCap)
             p.setPen(pen)
             p.setBrush(Qt.NoBrush)
             p.drawPath(path)
@@ -191,12 +248,11 @@ class EdgeWidget(QObject):
         width = 2.0
         color = self._color()
         if self.selected:
-            color = QColor(str(T("color.primary")))
+            color = _cached_color(str(T("color.primary")))
             width = 2.8
         elif self.hovered:
             width = 3.2
-        pen = QPen(color, width)
-        pen.setCapStyle(Qt.RoundCap)
+        pen = _cached_pen(color, width)
         p.setPen(pen)
         p.setBrush(Qt.NoBrush)
         p.drawPath(path)
@@ -212,13 +268,11 @@ class TempWire(QObject):
     ``magnet`` 置真时线条加粗高亮（磁吸到兼容引脚的反馈）。
     """
 
-    def __init__(self, start: QPointF, data_type: str = "any",
-                 from_output: bool = True, parent=None):
+    def __init__(self, start: QPointF, data_type: str = "any", parent=None):
         super().__init__(parent)
         self.start = QPointF(start)
         self.end = QPointF(start)
         self.data_type = data_type or "any"
-        self.from_output = from_output
         self.magnet = False
 
     def set_end(self, scene_pt: QPointF) -> None:
