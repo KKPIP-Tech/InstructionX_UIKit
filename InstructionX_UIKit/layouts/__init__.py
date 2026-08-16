@@ -1,4 +1,4 @@
-"""layouts 包级再导出：12 个布局预设 + 共享辅助件。
+"""layouts 包级再导出：13 个布局预设 + 共享辅助件。
 
 所有布局均为 **API 驱动**：内容由调用方传入（``items`` / ``cards`` /
 ``sections`` 等参数或 ``set_items`` / ``set_content`` 方法），不传内容
@@ -12,6 +12,7 @@ from .dashboard_grid import DashboardGrid, create_dashboard_grid
 from .helpers import (
     TokenColorChip,
     apply_token_font,
+    content_card,
     empty_placeholder,
     titled_card,
 )
@@ -40,5 +41,6 @@ __all__ = [
     "TopNavBar", "create_top_nav_bar",
     "Waterfall", "create_waterfall",
     # helpers
-    "TokenColorChip", "apply_token_font", "empty_placeholder", "titled_card",
+    "TokenColorChip", "apply_token_font", "content_card",
+    "empty_placeholder", "titled_card",
 ]

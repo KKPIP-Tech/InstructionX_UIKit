@@ -3,7 +3,8 @@
 
 12 列网格的仪表盘：卡片按传入顺序依次占据 3/3/3/3（统计卡行）、
 8/4（主图 + 侧栏）、6/6（半宽）、12（通栏）跨度——对应 SPEC §6 的
-3/4/6/12 跨度。少于 9 张卡片时按顺序填充前面槽位。
+3/4/6/12 跨度。跨度表共 9 个槽位：最多 9 张卡片，超出抛
+``ValueError``；少于 9 张时按顺序填充前面槽位。
 
 **API 驱动，无内置假数据**：卡片为调用方传入的 ``QWidget`` 列表；
 不传 ``cards`` 时显示优雅的空占位（「在此放置内容」）。构建带标题
@@ -37,6 +38,9 @@ __all__ = ["DashboardGrid", "create_dashboard_grid"]
 #: 网格列数（SPEC §6：12 列网格）
 _GRID_COLUMNS = 12
 
+#: 卡片槽位上限（SPEC §6 的 3/3/3/3/8/4/6/6/12 跨度表共 9 个槽位）
+_MAX_CARDS = 9
+
 
 class DashboardGrid(QWidget):
     """仪表盘网格：12 列网格，卡片跨 3/4/6/12 列，按断点重排。
@@ -44,7 +48,8 @@ class DashboardGrid(QWidget):
     参数:
         cards: 卡片控件列表（``QWidget``），按传入顺序对应跨度槽位
             （前 4 张各跨 3、第 5 张跨 8、第 6 张跨 4、第 7/8 张各跨 6、
-            第 9 张跨 12）；``None`` 或空列表时显示空占位。
+            第 9 张跨 12）；最多 9 张，超出抛 ``ValueError``；
+            ``None`` 或空列表时显示空占位。
         parent: 父控件。
 
     ``resizeEvent`` 中检测断点变化并重新计算各卡跨度。运行期可调用
@@ -78,11 +83,21 @@ class DashboardGrid(QWidget):
 
     # -- 内容 ------------------------------------------------------------
     def set_cards(self, cards):
-        """设置卡片控件列表（QWidget；空则显示空占位）。"""
+        """设置卡片控件列表（QWidget；空则显示空占位）。
+
+        最多 9 张卡片（SPEC §6 跨度槽位上限），超出抛 ``ValueError``；
+        再次调用时旧卡片以 ``deleteLater`` 销毁（不复用）。
+        """
+        cards = list(cards or [])
+        if len(cards) > _MAX_CARDS:
+            raise ValueError(
+                f"仪表盘网格最多容纳 {_MAX_CARDS} 张卡片（SPEC §6 跨度槽位上限），"
+                f"实际传入 {len(cards)} 张")
         for old in self._cards:
             old.hide()
             old.setParent(None)
-        self._cards = list(cards or [])
+            old.deleteLater()
+        self._cards = cards
         for card in self._cards:
             card.setParent(self._content)
             card.show()
@@ -138,7 +153,8 @@ def create_dashboard_grid(cards=None, parent=None) -> QWidget:
     """创建仪表盘网格布局部件。
 
     参数:
-        cards: 卡片控件列表（``QWidget``）；不传时显示空占位。
+        cards: 卡片控件列表（``QWidget``），最多 9 张（SPEC §6 跨度槽位
+            上限），超出抛 ``ValueError``；不传时显示空占位。
         parent: 父控件，默认 ``None``（作为独立窗口使用）。
     """
     return DashboardGrid(cards=cards, parent=parent)

@@ -5,7 +5,8 @@
 右侧为自绘插图占位（主题感知几何图形，纯装饰、非假数据）。
 
 **API 驱动，无内置假数据**：所有文案与按钮文本均由调用方传入；
-留空的部分自动隐藏（按钮文本为空则不创建该按钮）。
+留空的部分自动隐藏（按钮文本为空则不创建该按钮）；全部文案留空时
+显示优雅的空占位（「在此放置内容」）。
 
 响应式（resizeEvent 中按 SPEC §2.6 断点处理）：
 
@@ -38,7 +39,7 @@ from PySide6.QtWidgets import (
 
 from ..theme import T, ThemeManager, set_property
 from ..tokens import Breakpoint
-from .helpers import apply_token_font
+from .helpers import apply_token_font, empty_placeholder
 
 __all__ = ["HeroSection", "create_hero_section"]
 
@@ -98,8 +99,10 @@ class HeroSection(QWidget):
             :class:`HeroIllustration` 装饰占位图。
         parent: 父控件。
 
-    ``resizeEvent`` 中按断点在「左右并排」与「上下堆叠」之间切换
-    （通过 ``QBoxLayout.setDirection`` 实现，无需重建控件）。
+    全部文案（kicker / title / subtitle / 按钮 / hint）留空时显示
+    优雅的空占位（与其余布局契约一致）。``resizeEvent`` 中按断点在
+    「左右并排」与「上下堆叠」之间切换（通过
+    ``QBoxLayout.setDirection`` 实现，无需重建控件）。
     主 / 次按钮分别保存为 ``primary_button`` / ``secondary_button``
     属性，供调用方连接信号。
     """
@@ -116,11 +119,17 @@ class HeroSection(QWidget):
 
         self._hero = QBoxLayout(QBoxLayout.LeftToRight)
         self._hero.setSpacing(T("space.8"))
-        self._hero.addLayout(
-            self._build_text(kicker, title, subtitle,
-                             primary_text, secondary_text, hint), 3)
-        self._hero.addWidget(
-            illustration if illustration is not None else HeroIllustration(), 2)
+        has_text = bool(kicker or title or subtitle
+                        or primary_text or secondary_text or hint)
+        if has_text:
+            self._hero.addLayout(
+                self._build_text(kicker, title, subtitle,
+                                 primary_text, secondary_text, hint), 3)
+            self._hero.addWidget(
+                illustration if illustration is not None else HeroIllustration(), 2)
+        else:
+            # 空输入契约：无任何文案时显示优雅空占位（不渲染默认插图）
+            self._hero.addWidget(empty_placeholder(), 1)
         root.addLayout(self._hero, 1)
         # 初始按宽屏断点构建，首次 resize 时再按实际宽度修正
         self._sync("lg")
@@ -191,7 +200,7 @@ class HeroSection(QWidget):
 def create_hero_section(kicker="", title="", subtitle="",
                         primary_text="", secondary_text="", hint="",
                         illustration=None, parent=None) -> QWidget:
-    """创建英雄区布局部件（文案与按钮文本均由调用方传入）。"""
+    """创建英雄区布局部件（文案与按钮文本均由调用方传入；全部留空显示空占位）。"""
     return HeroSection(kicker=kicker, title=title, subtitle=subtitle,
                        primary_text=primary_text, secondary_text=secondary_text,
                        hint=hint, illustration=illustration, parent=parent)

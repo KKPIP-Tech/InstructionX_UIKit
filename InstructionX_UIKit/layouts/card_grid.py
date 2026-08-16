@@ -26,9 +26,7 @@
 """
 
 from PySide6.QtWidgets import (
-    QFrame,
     QGridLayout,
-    QLabel,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -36,7 +34,7 @@ from PySide6.QtWidgets import (
 
 from ..theme import T
 from ..tokens import Breakpoint
-from .helpers import TokenColorChip, apply_token_font, empty_placeholder
+from .helpers import content_card, empty_placeholder
 
 __all__ = ["CardGrid", "create_card_grid"]
 
@@ -82,12 +80,16 @@ class CardGrid(QWidget):
 
     # -- 内容 ------------------------------------------------------------
     def set_items(self, items):
-        """设置卡片内容（三元组或 QWidget 列表；空则显示空占位）。"""
+        """设置卡片内容（三元组或 QWidget 列表；空则显示空占位）。
+
+        再次调用时旧卡片以 ``deleteLater`` 销毁（不复用）。
+        """
         for card in self._cards:
             card.setParent(None)
             card.deleteLater()
         self._cards = [
-            item if isinstance(item, QWidget) else self._make_card(*item)
+            item if isinstance(item, QWidget) else content_card(
+                *item, chip_fixed_height=T("space.16") + T("space.6"))
             for item in (items or [])
         ]
         self._sync_cards()
@@ -104,27 +106,6 @@ class CardGrid(QWidget):
         else:
             self._grid.addWidget(self._placeholder, 0, 0, 1, max(self._cols, 1))
             self._placeholder.show()
-
-    # -- 卡片 ------------------------------------------------------------
-    def _make_card(self, title, desc, chip_key):
-        """构造内容卡片：色块 + 标题 + 描述（颜色全部主题感知）。"""
-        card = QFrame()
-        card.setFrameShape(QFrame.StyledPanel)
-        lay = QVBoxLayout(card)
-        lay.setContentsMargins(T("space.4"), T("space.4"), T("space.4"), T("space.4"))
-        lay.setSpacing(T("space.2"))
-        chip = TokenColorChip(chip_key, "radius.md")
-        chip.setFixedHeight(T("space.16") + T("space.6"))
-        lay.addWidget(chip)
-        head = QLabel(title)
-        apply_token_font(head, "font.title.sm", "font.weight.semibold")
-        lay.addWidget(head)
-        body = QLabel(desc)
-        body.setProperty("role", "secondary")
-        body.setWordWrap(True)
-        lay.addWidget(body)
-        lay.addStretch(1)
-        return card
 
     # -- 响应式 ----------------------------------------------------------
     def resizeEvent(self, event):

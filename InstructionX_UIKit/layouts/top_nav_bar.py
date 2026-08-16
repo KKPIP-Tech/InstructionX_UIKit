@@ -32,37 +32,15 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
 from ..theme import T, set_property
 from ..tokens import Breakpoint
-from .helpers import TokenColorChip, apply_token_font, empty_placeholder
+from .helpers import TokenColorChip, apply_token_font, content_card, empty_placeholder
 
 __all__ = ["TopNavBar", "create_top_nav_bar"]
-
-
-def _content_card(title, desc, chip_key="color.primary.subtle"):
-    """构造内容卡片：色块 + 标题 + 描述（颜色全部主题感知）。"""
-    card = QFrame()
-    card.setFrameShape(QFrame.StyledPanel)
-    lay = QVBoxLayout(card)
-    lay.setContentsMargins(T("space.4"), T("space.4"), T("space.4"), T("space.4"))
-    lay.setSpacing(T("space.2"))
-    chip = TokenColorChip(chip_key, "radius.md")
-    chip.setMinimumHeight(T("space.16") + T("space.2"))
-    chip.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-    lay.addWidget(chip)
-    head = QLabel(title)
-    apply_token_font(head, "font.title.sm", "font.weight.semibold")
-    lay.addWidget(head)
-    body = QLabel(desc)
-    body.setProperty("role", "secondary")
-    body.setWordWrap(True)
-    lay.addWidget(body)
-    return card
 
 
 class TopNavBar(QWidget):
@@ -162,7 +140,9 @@ class TopNavBar(QWidget):
         cards = list(cards or [])
         if cards:
             self._cards = [
-                item if isinstance(item, QWidget) else _content_card(*item)
+                item if isinstance(item, QWidget) else content_card(
+                    *item, chip_min_height=T("space.16") + T("space.2"),
+                    chip_expand=True, add_stretch=False)
                 for item in cards
             ]
         else:
