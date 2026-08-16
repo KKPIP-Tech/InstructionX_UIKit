@@ -10,11 +10,19 @@ from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QColorDialog, QHBoxLayout, QLabel, QPushButton, QWidget
 
 from ..theme import T, ThemeManager, set_property
+from ._mixin import SizeMixin
 
 __all__ = ["ColorPicker"]
 
-_SIZES = ("sm", "md", "lg")
 _EDGE = {"sm": 24, "md": 32, "lg": 40}
+
+
+def _coerce_color(color) -> QColor:
+    """把 QColor / 颜色字符串转换为 QColor；无效输入抛中文 ValueError。"""
+    qc = QColor(color) if not isinstance(color, QColor) else QColor(color)
+    if not qc.isValid():
+        raise ValueError(f"无效颜色: {color!r}，应为 QColor 或合法颜色字符串")
+    return qc
 
 
 class _SwatchButton(QPushButton):
@@ -48,7 +56,7 @@ class _SwatchButton(QPushButton):
         p.end()
 
 
-class ColorPicker(QWidget):
+class ColorPicker(SizeMixin, QWidget):
     """颜色选择器。
 
     用途:
@@ -68,13 +76,17 @@ class ColorPicker(QWidget):
         cp.set_color(QColor("#3E7E5F"))
     """
 
+    #: 合法尺寸档（SizeMixin 校验用）
+    _SIZES = ("sm", "md", "lg")
+    _size_label = "颜色选择器"
+
     #: 颜色变化信号
     colorChanged = Signal(QColor)
 
     def __init__(self, color="#3F5E8C", size: str = "md",
                  show_text: bool = True, parent=None):
         super().__init__(parent)
-        self._color = QColor(color) if not isinstance(color, QColor) else QColor(color)
+        self._color = _coerce_color(color)
         self._show_text = show_text
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -100,26 +112,22 @@ class ColorPicker(QWidget):
         return QColor(self._color)
 
     def set_color(self, color) -> None:
-        """设置颜色（QColor 或 "#RRGGBB" 字符串），发射 ``colorChanged``。"""
-        color = QColor(color) if not isinstance(color, QColor) else QColor(color)
-        if not color.isValid() or color == self._color:
+        """设置颜色（QColor 或 "#RRGGBB" 字符串），发射 ``colorChanged``。
+
+        无效颜色（如解析失败的字符串）抛中文 ``ValueError``，
+        与项目属性校验约定一致；与当前颜色相同时静默忽略。
+        """
+        color = _coerce_color(color)
+        if color == self._color:
             return
         self._color = color
         self._swatch.set_color(color)
         self._label.setText(color.name().upper())
         self.colorChanged.emit(QColor(color))
 
-    def set_size(self, size: str) -> None:
-        """设置尺寸档：``sm`` / ``md`` / ``lg``。"""
-        if size not in _SIZES:
-            raise ValueError(f"未知颜色选择器尺寸: {size!r}")
-        set_property(self, "size", size)
-        edge = _EDGE[size]
-        self._swatch.setFixedSize(edge, edge)
-
-    def size_name(self) -> str:
-        """当前尺寸档名。"""
-        return self.property("uiksize") or "md"
+    def _apply_size(self, size: str) -> None:
+        """SizeMixin 钩子：色块边长随尺寸档调整。"""
+        self._swatch.setFixedSize(_EDGE[size], _EDGE[size])
 
     def set_show_text(self, on: bool) -> None:
         """设置是否显示十六进制文本。"""

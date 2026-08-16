@@ -9,14 +9,12 @@
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QComboBox, QCompleter
 
-from ..theme import set_property
+from ._mixin import SizeMixin
 
 __all__ = ["ComboBox"]
 
-_SIZES = ("sm", "md", "lg")
 
-
-class ComboBox(QComboBox):
+class ComboBox(SizeMixin, QComboBox):
     """下拉选择框。
 
     用途:
@@ -33,7 +31,16 @@ class ComboBox(QComboBox):
 
         city = ComboBox(["北京", "上海", "广州"], searchable=True)
         city.currentTextChanged.connect(print)
+
+    备注:
+        搜索模式下编辑结束（失焦 / 回车）时按**精确匹配**回退：编辑文本
+        与某选项完全相等（区分大小写，如 "abc" 不匹配选项 "Abc"）则选中
+        该选项，否则回退到上次合法选项；无任何选项时清空编辑框。
     """
+
+    #: 合法尺寸档（SizeMixin 校验用）
+    _SIZES = ("sm", "md", "lg")
+    _size_label = "下拉框"
 
     def __init__(self, items=(), size: str = "md", searchable: bool = False,
                  placeholder: str = "", parent=None):
@@ -47,20 +54,6 @@ class ComboBox(QComboBox):
             self.set_searchable(True, placeholder=placeholder)
         self.currentIndexChanged.connect(self._track_valid)
         self._track_valid(self.currentIndex())
-
-    # ------------------------------------------------------------------
-    # 尺寸
-    # ------------------------------------------------------------------
-
-    def set_size(self, size: str) -> None:
-        """设置尺寸档：``sm`` / ``md`` / ``lg``。"""
-        if size not in _SIZES:
-            raise ValueError(f"未知下拉框尺寸: {size!r}")
-        set_property(self, "size", size)
-
-    def size_name(self) -> str:
-        """当前尺寸档名。"""
-        return self.property("uiksize") or "md"
 
     # ------------------------------------------------------------------
     # 搜索过滤

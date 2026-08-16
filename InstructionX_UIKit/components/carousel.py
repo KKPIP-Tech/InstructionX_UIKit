@@ -6,7 +6,9 @@
 """
 
 from PySide6.QtCore import (
+    QAbstractAnimation,
     QEasingCurve,
+    QEvent,
     QParallelAnimationGroup,
     QPoint,
     QPropertyAnimation,
@@ -152,7 +154,9 @@ class Carousel(QWidget):
         self._pages = []
         self._current = -1
         self._anim = None
+        self._anim_dir = 1
         self._autoplay = 0
+        self._hovered = False
 
         self._viewport = QWidget(self)
         self._prev_btn = _ArrowButton("left", self)
@@ -162,8 +166,19 @@ class Carousel(QWidget):
         self._next_btn.clicked.connect(self.next)
         self._dots.clicked.connect(self.go_to)
 
+        # 悬停暂停：走马灯表面被 viewport/页面全铺覆盖，自身
+        # enter/leaveEvent 收不到事件，需对全部子控件安装事件过滤器。
+        for w in (self._viewport, self._prev_btn, self._next_btn, self._dots):
+            w.installEventFilter(self)
+
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.next)
+        # 离开事件后的延迟复核：在子控件间移动时先 Leave 后 Enter，
+        # 需等事件序列结束再决定是否恢复自动播放。
+        self._hover_check = QTimer(self)
+        self._hover_check.setSingleShot(True)
+        self._hover_check.setInterval(0)
+        self._hover_check.timeout.connect(self._check_hover_exit)
         if autoplay:
             self.set_autoplay(autoplay)
         self._update_nav_visibility()
@@ -172,6 +187,7 @@ class Carousel(QWidget):
     def add_page(self, widget: QWidget) -> int:
         """添加一页，返回页索引。"""
         widget.setParent(self._viewport)
+        widget.installEventFilter(self)
         widget.hide()
         self._pages.append(widget)
         self._dots.set_count(len(self._pages))
@@ -180,6 +196,7 @@ class Carousel(QWidget):
             widget.show()
             self._layout_pages()
         self._update_nav_visibility()
+        self._reposition_nav()  # 圆点宽度随页数变化，需重新居中
         return len(self._pages) - 1
 
     def page(self, index: int):
@@ -215,6 +232,7 @@ class Carousel(QWidget):
             direction = -1
         else:
             direction = 1 if index > old_index else -1
+        self._anim_dir = direction
 
         old_page = self._pages[old_index]
         new_page = self._pages[index]
@@ -259,20 +277,42 @@ class Carousel(QWidget):
         """设置自动播放间隔（毫秒），``0`` 停止。"""
         self._autoplay = max(0, int(interval_ms))
         self._timer.stop()
-        if self._autoplay:
+        if self._autoplay and not self._hovered:
             self._timer.start(self._autoplay)
 
     def autoplay_interval(self) -> int:
         return self._autoplay
 
     def enterEvent(self, event) -> None:
-        self._timer.stop()
+        self._set_hover(True)
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:
-        if self._autoplay:
-            self._timer.start(self._autoplay)
+        self._set_hover(False)
         super().leaveEvent(event)
+
+    def eventFilter(self, watched, event) -> bool:
+        # viewport / 页面 / 箭头 / 圆点统一判定悬停（自身 enter/leave 不覆盖子控件）
+        if event.type() == QEvent.Enter:
+            self._set_hover(True)
+        elif event.type() == QEvent.Leave:
+            self._set_hover(False)
+        return super().eventFilter(watched, event)
+
+    def _set_hover(self, hovered: bool) -> None:
+        """悬停状态变化：进入立即暂停；离开延迟复核后再恢复。"""
+        if hovered:
+            self._hovered = True
+            self._hover_check.stop()
+            self._timer.stop()
+        else:
+            self._hovered = False
+            self._hover_check.start()
+
+    def _check_hover_exit(self) -> None:
+        """离开事件序列结束后：若已不在走马灯内则恢复自动播放。"""
+        if self._autoplay and not self._hovered:
+            self._timer.start(self._autoplay)
 
     # ------------------------------------------------------------------ 布局
     def _update_nav_visibility(self) -> None:
@@ -289,14 +329,40 @@ class Carousel(QWidget):
         super().resizeEvent(event)
         w, h = self.width(), self.height()
         self._viewport.setGeometry(0, 0, w, h)
-        self._layout_pages()
+        if self._anim is not None \
+                and self._anim.state() == QAbstractAnimation.Running:
+            # 动画中 resize：同步双方页面几何与动画端点，避免旧页
+            # 停留在旧坐标（原先只重排当前页，旧页错位）。
+            self._sync_anim_geometry(w, h)
+        else:
+            self._layout_pages()
+        self._reposition_nav()
+        self._prev_btn.raise_()
+        self._next_btn.raise_()
+        self._dots.raise_()
+
+    def _sync_anim_geometry(self, w: int, h: int) -> None:
+        """动画进行中：按新尺寸重设两页几何并更新动画起止端点。"""
+        direction = self._anim_dir
+        group = self._anim
+        for i in range(group.animationCount()):
+            anim = group.animationAt(i)
+            page = anim.targetObject()
+            if page is None:
+                continue
+            page.setGeometry(0, 0, w, h)
+            if anim.startValue() == QPoint(0, 0):
+                anim.setEndValue(QPoint(-w * direction, 0))
+            else:
+                anim.setStartValue(QPoint(w * direction, 0))
+
+    def _reposition_nav(self) -> None:
+        """箭头与圆点跟随当前尺寸重新定位（resize 与 add_page 共用）。"""
+        w, h = self.width(), self.height()
         self._prev_btn.move(12, (h - self._prev_btn.height()) // 2)
         self._next_btn.move(w - self._next_btn.width() - 12,
                             (h - self._next_btn.height()) // 2)
         self._dots.move((w - self._dots.width()) // 2, h - self._dots.height() - 8)
-        self._prev_btn.raise_()
-        self._next_btn.raise_()
-        self._dots.raise_()
 
     def sizeHint(self) -> QSize:
         return QSize(480, 240)

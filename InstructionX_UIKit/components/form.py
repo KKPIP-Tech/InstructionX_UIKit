@@ -48,6 +48,9 @@ def _is_empty(value) -> bool:
     """判断取值是否为空（用于必填校验）。"""
     if value is None:
         return True
+    if isinstance(value, bool):
+        # 复选框未勾选（False）视为空，required=True 时校验失败
+        return not value
     if isinstance(value, str):
         return value.strip() == ""
     if isinstance(value, (list, tuple, dict)):

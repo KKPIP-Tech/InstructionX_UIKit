@@ -34,12 +34,12 @@ from PySide6.QtGui import (
     QPixmap,
 )
 from PySide6.QtWidgets import QLineEdit, QStyle, QStyleOptionFrame, QToolButton
+from shiboken6 import isValid as _is_valid
 
 from ..theme import T, ThemeManager, set_property
+from ._mixin import SizeMixin
 
 __all__ = ["LineEdit"]
-
-_SIZES = ("sm", "md", "lg")
 
 #: 各尺寸档的槽位图标边长（取间距令牌，避免魔法数）
 _ICON_TOKEN = {"sm": "space.3", "md": "space.4", "lg": "space.5"}
@@ -50,6 +50,8 @@ _VCENTER_BOTTOM = 2
 _SLOT_GAP = 2
 #: 手工绘制文本距槽位按钮边缘的内缩
 _SLOT_INSET = 3
+#: 清除按钮解析哨兵：已确认不存在内置清除 action（免重复扫描）
+_NO_CLEAR_ACTION = object()
 
 
 def _icon_edge(size: str) -> int:
@@ -133,7 +135,7 @@ def _draw_clear():
     return fn
 
 
-class LineEdit(QLineEdit):
+class LineEdit(SizeMixin, QLineEdit):
     """单行输入框。
 
     用途:
@@ -158,6 +160,10 @@ class LineEdit(QLineEdit):
         顺序固定为 [后缀][清除 ×][眼睛]。
     """
 
+    #: 合法尺寸档（SizeMixin 校验用）
+    _SIZES = ("sm", "md", "lg")
+    _size_label = "输入框"
+
     def __init__(self, text: str = "", placeholder: str = "", size: str = "md",
                  clearable: bool = False, parent=None):
         super().__init__(text, parent)
@@ -169,12 +175,16 @@ class LineEdit(QLineEdit):
         self._prefix_manual = False   # 前缀文本符号超宽，paintEvent 手工绘制
         self._suffix_manual = False   # 后缀文本符号超宽，paintEvent 手工绘制
         self._icons_dpr = 0.0  # 已渲染图标的 DPR（0 = 未渲染）
+        self._slot_buttons = {}       # QAction -> QToolButton 缓存（免每帧扫描）
+        self._clear_action_ref = None  # 内置清除按钮 QAction 缓存
         if placeholder:
             self.setPlaceholderText(placeholder)
         self.set_size(size)
         if clearable:
             self.setClearButtonEnabled(True)
             self._refresh_icons()
+            # 安装后立即解析清除按钮引用（此后 paintEvent 不再扫描）
+            self._slot_button(self._clear_action())
         self._apply_text_margins()
         ThemeManager.instance().theme_changed.connect(self._on_theme_changed)
 
@@ -182,11 +192,8 @@ class LineEdit(QLineEdit):
     # 尺寸与错误态
     # ------------------------------------------------------------------
 
-    def set_size(self, size: str) -> None:
-        """设置尺寸档：``sm`` / ``md`` / ``lg``。"""
-        if size not in _SIZES:
-            raise ValueError(f"未知输入框尺寸: {size!r}")
-        set_property(self, "size", size)
+    def _apply_size(self, size: str) -> None:
+        """SizeMixin 钩子：图标边长随尺寸档变化，重新分类文本符号并重算边距。"""
         # 图标边长随尺寸档变化，重新分类文本符号（方形图标 / 手工绘制）
         if self._prefix_symbol is not None:
             self.set_prefix_icon(self._prefix_symbol)
@@ -194,10 +201,6 @@ class LineEdit(QLineEdit):
             self.set_suffix_icon(self._suffix_symbol)
         self._refresh_icons()
         self._apply_text_margins()
-
-    def size_name(self) -> str:
-        """当前尺寸档名。"""
-        return self.property("uiksize") or "md"
 
     def set_error(self, error: bool) -> None:
         """设置错误态：红色边框（QSS ``[error="true"]`` 选择器）。"""
@@ -228,6 +231,7 @@ class LineEdit(QLineEdit):
         if action is not None:
             self.removeAction(action)
             action.deleteLater()
+            self._slot_buttons.pop(action, None)
             action = None
         setattr(self, symbol_attr, None)
         setattr(self, manual_attr, False)
@@ -243,6 +247,7 @@ class LineEdit(QLineEdit):
             setattr(self, manual_attr, manual)
         action = QAction(qicon, "", self)
         self.addAction(action, position)
+        self._slot_button(action)  # 安装后立即缓存侧槽按钮引用
         self._apply_text_margins()
         return action
 
@@ -313,11 +318,20 @@ class LineEdit(QLineEdit):
             self.setTextMargins(*margins)
 
     def _slot_button(self, action) -> QToolButton:
-        """返回 action 对应的侧槽按钮（QLineEditIconButton），无则 None。"""
+        """返回 action 对应的侧槽按钮（QLineEditIconButton），无则 None。
+
+        按钮引用在安装 / 移除 action 时缓存于 ``_slot_buttons``，
+        paintEvent 不再对子控件做 findChildren 全量扫描；缓存未命中
+        （如外部直接 removeAction）时扫描一次并重建缓存。
+        """
         if action is None:
             return None
+        btn = self._slot_buttons.get(action)
+        if btn is not None and _is_valid(btn) and btn.parent() is self:
+            return btn
         for b in self.findChildren(QToolButton):
             if b.parent() is self and b.defaultAction() is action:
+                self._slot_buttons[action] = b
                 return b
         return None
 
@@ -368,11 +382,30 @@ class LineEdit(QLineEdit):
         return _render_icon(draw, T("color.text.tertiary"), edge, self._icons_dpr)
 
     def _clear_action(self):
-        """返回内置清除按钮的 QAction（Qt 私有对象名，找不到时返回 None）。"""
+        """返回内置清除按钮的 QAction（Qt 私有对象名，找不到时返回 None）。
+
+        结果缓存于 ``_clear_action_ref``（paintEvent 不再逐帧扫描）；
+        「不存在」以 ``_NO_CLEAR_ACTION`` 哨兵缓存，清除按钮开关状态
+        变化时由 ``setClearButtonEnabled`` 覆写复位。
+        """
+        act = self._clear_action_ref
+        if act is not None and act is not _NO_CLEAR_ACTION and _is_valid(act):
+            return act
+        if act is _NO_CLEAR_ACTION:
+            return None
         for act in self.findChildren(QAction):
             if act.objectName() == "_q_qlineeditclearaction":
+                self._clear_action_ref = act
                 return act
+        self._clear_action_ref = _NO_CLEAR_ACTION
         return None
+
+    def setClearButtonEnabled(self, enable: bool) -> None:  # noqa: N802
+        """开启 / 关闭内置清除按钮（覆写以复位清除按钮引用缓存）。"""
+        super().setClearButtonEnabled(enable)
+        self._clear_action_ref = None
+        if enable:
+            self._slot_button(self._clear_action())
 
     def _refresh_icons(self) -> None:
         """重绘全部自绘图标：主题 / 尺寸档 / DPR 变化后保持清晰与配色。"""
@@ -445,10 +478,15 @@ class LineEdit(QLineEdit):
                     self._render_slot_icon(_draw_eye(off=True)), "", self)
                 self._pwd_action.triggered.connect(self._toggle_password)
                 self.addAction(self._pwd_action, QLineEdit.TrailingPosition)
+                self._slot_button(self._pwd_action)  # 缓存眼睛按钮引用
         else:
             self.setEchoMode(QLineEdit.Normal)
             if self._pwd_action is not None:
+                # removeAction 只摘除不销毁，反复切换密码模式会累积旧
+                # action 与图标资源；deleteLater 彻底释放（与 _set_slot_icon 一致）
                 self.removeAction(self._pwd_action)
+                self._slot_buttons.pop(self._pwd_action, None)
+                self._pwd_action.deleteLater()
                 self._pwd_action = None
         self._apply_text_margins()
 

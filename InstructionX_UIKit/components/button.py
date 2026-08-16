@@ -12,18 +12,18 @@ from PySide6.QtWidgets import QPushButton, QSizePolicy, QStyle, QStyleOptionButt
 
 from ..theme import T, ThemeManager, set_property
 from ..tokens import DURATION, EASING
+from ._mixin import SizeMixin
 
 __all__ = ["Button"]
 
 #: 合法变体
 _VARIANTS = ("default", "primary", "dashed", "text", "link", "danger")
-_SIZES = ("sm", "md", "lg")
 _SHAPES = ("circle", "round")
 #: 旋转弧直径（按尺寸档）
 _ARC_D = {"sm": 12, "md": 14, "lg": 16}
 
 
-class Button(QPushButton):
+class Button(SizeMixin, QPushButton):
     """按钮。
 
     用途:
@@ -45,6 +45,10 @@ class Button(QPushButton):
         ok.set_loading(True)                # 显示旋转弧并屏蔽点击
         more = Button("查看更多", variant="link")
     """
+
+    #: 合法尺寸档（SizeMixin 校验用）
+    _SIZES = ("sm", "md", "lg")
+    _size_label = "按钮"
 
     def __init__(self, text: str = "", variant: str = "default", size: str = "md",
                  shape: str = None, block: bool = False, loading: bool = False,
@@ -82,16 +86,6 @@ class Button(QPushButton):
     def variant(self) -> str:
         """当前变体名。"""
         return self.property("variant") or "default"
-
-    def set_size(self, size: str) -> None:
-        """设置尺寸档：``sm`` / ``md`` / ``lg``。"""
-        if size not in _SIZES:
-            raise ValueError(f"未知按钮尺寸: {size!r}")
-        set_property(self, "size", size)
-
-    def size_name(self) -> str:
-        """当前尺寸档名。"""
-        return self.property("uiksize") or "md"
 
     def set_shape(self, shape) -> None:
         """设置形状：``None`` / ``"circle"`` / ``"round"``。"""

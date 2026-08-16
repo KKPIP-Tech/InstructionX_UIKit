@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
 """卡片组件（SPEC §5.2 card）。
 
-带标题 / 额外操作 / 底部槽位的容器卡片，支持 hoverable（悬停浮起）
-与 bordered 变体；背景与边框自绘，亮 / 暗主题实时感知。
+带标题 / 额外操作 / 底部槽位的容器卡片，支持 hoverable（悬停主色描边
+高亮，自绘实现，不使用 QGraphicsDropShadowEffect——项目红线）与
+bordered 变体；背景与边框自绘，亮 / 暗主题实时感知。
 """
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
-from InstructionX_UIKit.theme import T, ThemeManager, apply_shadow, set_property
+from InstructionX_UIKit.theme import T, ThemeManager, set_property
 
 __all__ = ["Card"]
 
@@ -20,7 +21,7 @@ class Card(QFrame):
     参数:
         title: 标题文本（为空则不显示标题区）。
         bordered: 是否描边，默认 True。
-        hoverable: 悬停时浮起（投影 + 主色描边），默认 False。
+        hoverable: 悬停时主色描边高亮，默认 False。
         parent: 父控件。
 
     示例::
@@ -86,11 +87,11 @@ class Card(QFrame):
         return self._title_label.text()
 
     def set_extra(self, widget: QWidget) -> None:
-        """设置标题区右侧的额外操作控件。"""
+        """设置标题区右侧的额外操作控件（替换旧控件，旧控件销毁）。"""
         while self._extra_slot.count():
             item = self._extra_slot.takeAt(0)
             if item.widget() is not None:
-                item.widget().setParent(None)
+                item.widget().deleteLater()
         self._extra_slot.addWidget(widget)
         self._header.setVisible(True)
 
@@ -103,11 +104,14 @@ class Card(QFrame):
         self._body_layout.addWidget(widget)
 
     def set_footer(self, footer) -> None:
-        """设置底部槽：控件或文本（自动包成弱化标签）。"""
+        """设置底部槽：控件或文本（自动包成弱化标签）。
+
+        替换旧内容，旧控件销毁。
+        """
         while self._footer_layout.count():
             item = self._footer_layout.takeAt(0)
             if item.widget() is not None:
-                item.widget().setParent(None)
+                item.widget().deleteLater()
         if isinstance(footer, str):
             label = QLabel(footer, self._footer)
             set_property(label, "role", "secondary")
@@ -125,7 +129,7 @@ class Card(QFrame):
         return self._bordered
 
     def set_hoverable(self, hoverable: bool) -> None:
-        """悬停浮起开关。"""
+        """悬停高亮开关（主色描边，自绘实现）。"""
         self._hoverable = bool(hoverable)
         self.setAttribute(Qt.WA_Hover, hoverable)
         self.update()
@@ -136,15 +140,11 @@ class Card(QFrame):
     # ------------------------------------------------------------------ 事件
     def enterEvent(self, event) -> None:
         self._hovered = True
-        if self._hoverable:
-            apply_shadow(self, "md")
         self.update()
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:
         self._hovered = False
-        if self._hoverable:
-            self.setGraphicsEffect(None)
         self.update()
         super().leaveEvent(event)
 

@@ -102,11 +102,11 @@ class Popover(QWidget):
         self._title_label.setVisible(bool(title))
 
     def set_content(self, content) -> None:
-        """设置内容：控件或文本。"""
+        """设置内容：控件或文本（替换旧内容，旧控件销毁）。"""
         while self._content_layout.count():
             item = self._content_layout.takeAt(0)
             if item.widget() is not None:
-                item.widget().setParent(None)
+                item.widget().deleteLater()
         if isinstance(content, str):
             label = QLabel(content, self._content_host)
             label.setWordWrap(True)
@@ -131,6 +131,8 @@ class Popover(QWidget):
         self.adjustSize()
         pos = self._compute_pos(anchor, placement)
         self.move(pos)
+        # 先置透明再显示：慢机上避免 show 后闪一帧全不透明
+        self.setWindowOpacity(0.0)
         self.show()
         self.raise_()
         self._start_enter_animation(pos)

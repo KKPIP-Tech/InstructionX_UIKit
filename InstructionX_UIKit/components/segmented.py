@@ -17,18 +17,18 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QWidget
 
-from ..theme import T, ThemeManager, set_property
+from ..theme import T, ThemeManager
 from ..tokens import DURATION, EASING, TokenState
+from ._mixin import SizeMixin
 
 __all__ = ["SegmentedControl"]
 
-_SIZES = ("sm", "md", "lg")
 _HEIGHT = {"sm": 24, "md": 32, "lg": 40}
 _PAD = 2.0        # 底槽内边距
 _ITEM_HP = 16.0   # 分段文字左右留白
 
 
-class SegmentedControl(QWidget):
+class SegmentedControl(SizeMixin, QWidget):
     """分段控制器。
 
     用途:
@@ -48,6 +48,10 @@ class SegmentedControl(QWidget):
         seg.set_current(2)
     """
 
+    #: 合法尺寸档（SizeMixin 校验用）
+    _SIZES = ("sm", "md", "lg")
+    _size_label = "分段控制器"
+
     #: 选中下标变化信号
     currentChanged = Signal(int)
 
@@ -61,11 +65,13 @@ class SegmentedControl(QWidget):
         self._thumb_w = 0.0
         self._size_name = "md"
         self.set_size(size)
+        # 构造路径静默初始化（emit=False）：currentChanged 仅在构造完成
+        # 后的变更时发射，构造期间连接监听的应用收不到初始事件是预期行为
         if items:
-            self.set_items(items)
+            self.set_items(items, emit=False)
         if self._items:
             self.set_current(min(max(0, current), len(self._items) - 1),
-                             animate=False)
+                             animate=False, emit=False)
         ThemeManager.instance().theme_changed.connect(self.update)
         # set_token 会话覆盖时重绘（QSS 不感知令牌覆盖，自绘需监听）
         TokenState.instance().token_changed.connect(self.update)
@@ -95,13 +101,19 @@ class SegmentedControl(QWidget):
     # 数据接口
     # ------------------------------------------------------------------
 
-    def set_items(self, items) -> None:
-        """整体替换分段文案列表。"""
+    def set_items(self, items, emit: bool = True) -> None:
+        """整体替换分段文案列表（重置语义：选中回到第一项）。
+
+        参数:
+            items: 新分段文案列表。
+            emit: 是否发射 ``currentChanged``；构造路径传 ``False``
+                静默初始化（见类 docstring）。
+        """
         self._items = [str(x) for x in items]
         self._enabled = [True] * len(self._items)
         self._current = -1
         if self._items:
-            self.set_current(0, animate=False)
+            self.set_current(0, animate=False, emit=emit)
         self.updateGeometry()
         self.update()
 
@@ -134,8 +146,16 @@ class SegmentedControl(QWidget):
             return self._items[self._current]
         return ""
 
-    def set_current(self, index: int, animate: bool = True) -> None:
-        """选中指定分段（默认滑动动画过渡）。"""
+    def set_current(self, index: int, animate: bool = True,
+                    emit: bool = True) -> None:
+        """选中指定分段（默认滑动动画过渡）。
+
+        参数:
+            index: 目标下标（越界或禁用项时忽略）。
+            animate: 是否滑动动画过渡。
+            emit: 是否发射 ``currentChanged``；构造 / 重置路径可传
+                ``False`` 静默设置。
+        """
         if not (0 <= index < len(self._items)):
             return
         if not self._enabled[index]:
@@ -157,15 +177,12 @@ class SegmentedControl(QWidget):
         else:
             self._thumb_x, self._thumb_w = x, w
             self.update()
-        if changed:
+        if changed and emit:
             self.currentChanged.emit(index)
 
-    def set_size(self, size: str) -> None:
-        """设置尺寸档：``sm`` / ``md`` / ``lg``。"""
-        if size not in _SIZES:
-            raise ValueError(f"未知分段控制器尺寸: {size!r}")
+    def _apply_size(self, size: str) -> None:
+        """SizeMixin 钩子：同步内部尺寸档并固定高度。"""
         self._size_name = size
-        set_property(self, "size", size)
         self.setFixedHeight(_HEIGHT[size])
         self.updateGeometry()
 

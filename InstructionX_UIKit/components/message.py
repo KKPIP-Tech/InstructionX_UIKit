@@ -23,9 +23,18 @@ from shiboken6 import isValid as _shiboken_is_valid
 
 
 def _connect_theme(widget, slot) -> None:
-    """连接主题切换信号；控件销毁后自动忽略回调。"""
-    ThemeManager.instance().theme_changed.connect(
-        lambda *_: slot() if _shiboken_is_valid(widget) else None)
+    """连接主题切换信号；组件销毁时断开连接（shiboken 守卫双保险）。"""
+    manager = ThemeManager.instance()
+    receiver = lambda *_: slot() if _shiboken_is_valid(widget) else None
+    manager.theme_changed.connect(receiver)
+
+    def _cleanup(_obj=None):
+        try:
+            manager.theme_changed.disconnect(receiver)
+        except (RuntimeError, TypeError):
+            pass
+
+    widget.destroyed.connect(_cleanup)
 
 __all__ = ["Message"]
 
@@ -78,6 +87,11 @@ class Message(QWidget):
             raise ValueError(
                 f"未知提示类型: {type!r}，应为 {self.TYPES} 之一")
         self._anchor = anchor
+        # 锚点销毁时同步清理：退出活动列表并关闭自身，避免后续
+        # 对死包装器调用 mapToGlobal 抛 RuntimeError。
+        anchor.destroyed.connect(self._on_anchor_destroyed)
+        # 自身销毁时从活动列表移除（deleteLater 直删不走 closeEvent）
+        self.destroyed.connect(self._on_destroyed)
         self._type = type
         self._text = text
         self._closing = False
@@ -96,7 +110,7 @@ class Message(QWidget):
         self._dismiss_timer.setSingleShot(True)
         self._dismiss_timer.setInterval(max(0, int(duration)))
         self._dismiss_timer.timeout.connect(self.dismiss)
-        self._dismiss_timer.start()
+        # 不在构造时启动：showEvent 首次显示时再启动，隐藏期间不空转
         _connect_theme(self, self.update)
 
     # -- 静态管理器 API ---------------------------------------------------
@@ -133,10 +147,25 @@ class Message(QWidget):
     @staticmethod
     def close_all() -> None:
         """立即关闭所有存活提示。"""
+        # 先剔除死包装器（调用方可能已 deleteLater），再逐一关闭
+        Message._active = [m for m in Message._active
+                           if _shiboken_is_valid(m)]
         for m in list(Message._active):
             m.close()
 
     # -- 内部 -------------------------------------------------------------
+    def _on_anchor_destroyed(self, _obj=None) -> None:
+        """锚点销毁：退出活动列表并销毁自身（定位已无意义）。"""
+        if self in Message._active:
+            Message._active.remove(self)
+        self._dismiss_timer.stop()
+        self.deleteLater()
+
+    def _on_destroyed(self, _obj=None) -> None:
+        """自身销毁（deleteLater 等不走 closeEvent 的路径）：清理活动列表。"""
+        Message._active = [m for m in Message._active
+                           if m is not self and _shiboken_is_valid(m)]
+
     def _main_color(self) -> str:
         return {"info": T("color.primary"),
                 "success": T("color.success"),
@@ -167,9 +196,13 @@ class Message(QWidget):
         return QSize(min(w, _MAX_WIDTH), h)
 
     def _siblings(self):
-        return [m for m in Message._active if m._anchor is self._anchor]
+        return [m for m in Message._active
+                if _shiboken_is_valid(m) and m._anchor is self._anchor]
 
     def _target_pos(self) -> QPoint:
+        # 锚点已销毁时返回占位坐标（正常流程下锚点销毁会连带关闭自身）
+        if not _shiboken_is_valid(self._anchor):
+            return QPoint(0, 0)
         base = self._anchor.mapToGlobal(QPoint(0, 0))
         x = base.x() + (self._anchor.width() - self.width()) // 2
         y = base.y() + _TOP
@@ -213,9 +246,20 @@ class Message(QWidget):
     def closeEvent(self, event) -> None:
         if self in Message._active:
             Message._active.remove(self)
-        for m in self._siblings():
-            m._place(entrance=False)
+        if _shiboken_is_valid(self._anchor):
+            for m in self._siblings():
+                m._place(entrance=False)
         super().closeEvent(event)
+
+    def showEvent(self, event) -> None:
+        # 自动消失定时器仅在可见时运行（隐藏期间停止，重新显示后重新计时）
+        super().showEvent(event)
+        if not self._closing:
+            self._dismiss_timer.start()
+
+    def hideEvent(self, event) -> None:
+        self._dismiss_timer.stop()
+        super().hideEvent(event)
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
