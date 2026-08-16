@@ -4,8 +4,8 @@
 页面 = 标题 + 说明 + 分区演示，紧凑排布；亮 / 暗主题切换自动换肤。
 """
 
-from PySide6.QtCore import QRect, Qt, QTimer
-from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPen, QPixmap
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -39,15 +39,15 @@ from InstructionX_UIKit.theme import T, set_property
 from .common import Section, col, hint_label, make_page, row
 from .playground import PlaygroundPanel, with_playground
 
-_POPOVERS = []  # 防止弹出层被 GC
+_POPOVERS = []  # 防止弹出层被 GC（销毁时自动移除，不累积）
 
 
-def _gradient_pixmap(w=240, h=160, c1="#3F5E8C", c2="#6BA98A"):
-    """生成一张渐变测试图。"""
+def _gradient_pixmap(w=240, h=160, c1=None, c2=None):
+    """生成一张渐变测试图（颜色取自主题令牌，暗色主题自动换肤）。"""
     pm = QPixmap(w, h)
     grad = QLinearGradient(0, 0, w, h)
-    grad.setColorAt(0, QColor(c1))
-    grad.setColorAt(1, QColor(c2))
+    grad.setColorAt(0, QColor(c1 or T("color.primary")))
+    grad.setColorAt(1, QColor(c2 or T("color.success")))
     painter = QPainter(pm)
     painter.fillRect(pm.rect(), grad)
     painter.end()
@@ -149,91 +149,71 @@ def create_tree_page() -> QWidget:
 class TimelineEx(Timeline):
     """时间轴游乐场扩展（demo 侧子类，不改动 InstructionX_UIKit）。
 
-    InstructionX_UIKit ``Timeline`` 仅暴露 ``add_item`` / ``set_pending`` 等数据 API，
-    线条样式 / 粗细、节点半径、行距、字号、轴侧等绘制参数没有 setter；
-    这里以子类属性 + 重写 ``paintEvent`` / ``_row_height`` 的方式暴露，
-    数据层面仍完全复用基类 API。
+    绘制参数经基类公开 setter（set_axis_side / set_line / set_dot /
+    set_row_spacing / set_fonts）转发，本类以属性形式暴露给 Playground
+    绑定；数据与绘制完全复用基类实现。
     """
 
     def __init__(self, pending: str = None, parent=None):
         super().__init__(pending, parent)
-        self.line_width = 1.0               # 连接线宽 px
-        self.line_style = Qt.SolidLine      # 连接线样式
-        self.dot_radius = 5                 # 节点半径 px
-        self.extra_spacing = 0              # 每行附加间距 px
-        self.axis_side = "left"             # 轴线位置：left / right
-        self.title_font_size = T("font.md")
-        self.time_font_size = T("font.xs")
+        self._title_font_size = T("font.md")
+        self._time_font_size = T("font.xs")
 
-    def _row_height(self, item) -> int:
-        base = 46 if item["time"] else 30
-        return base + int(self.extra_spacing)
+    @property
+    def line_width(self):
+        return self._line_width
 
-    def paintEvent(self, event) -> None:  # noqa: N802
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        line_color = QColor(T("color.border"))
-        text_primary = QColor(T("color.text.primary"))
-        text_tertiary = QColor(T("color.text.tertiary"))
+    @line_width.setter
+    def line_width(self, v):
+        self.set_line(float(v), self._line_style)
 
-        font_text = painter.font()
-        font_text.setPixelSize(int(self.title_font_size))
-        font_time = painter.font()
-        font_time.setPixelSize(int(self.time_font_size))
+    @property
+    def line_style(self):
+        return self._line_style
 
-        right = self.axis_side == "right"
-        w = self.width()
-        dot_x = w - 16 if right else 16
-        r = int(self.dot_radius)
-        align = (Qt.AlignVCenter | Qt.AlignRight) if right \
-            else (Qt.AlignVCenter | Qt.AlignLeft)
+    @line_style.setter
+    def line_style(self, v):
+        self.set_line(self._line_width, v)
 
-        def text_rect(y, h):
-            if right:
-                return QRect(8, y, dot_x - 20, h)
-            return QRect(36, y, w - 44, h)
+    @property
+    def dot_radius(self):
+        return self._dot_radius
 
-        y = 10
-        prev_dot_y = None
-        for item in self._items:
-            row_h = self._row_height(item)
-            dot_y = y + 11
-            if prev_dot_y is not None:
-                painter.setPen(QPen(line_color, self.line_width, self.line_style))
-                painter.drawLine(dot_x, prev_dot_y, dot_x, dot_y)
-            icon = item["icon"]
-            if isinstance(icon, QIcon) and not icon.isNull():
-                painter.fillRect(QRect(dot_x - 7, dot_y - 7, 14, 14),
-                                 QColor(T("color.bg.base")))
-                icon.paint(painter, QRect(dot_x - 7, dot_y - 7, 14, 14))
-            else:
-                painter.setPen(Qt.NoPen)
-                painter.setBrush(self._color_of(item))
-                painter.drawEllipse(dot_x - r, dot_y - r, r * 2, r * 2)
-            painter.setFont(font_text)
-            painter.setPen(text_primary)
-            painter.drawText(text_rect(y, 22), align, item["text"])
-            if item["time"]:
-                painter.setFont(font_time)
-                painter.setPen(text_tertiary)
-                painter.drawText(text_rect(y + 22, 16), align, item["time"])
-            prev_dot_y = dot_y
-            y += row_h
+    @dot_radius.setter
+    def dot_radius(self, v):
+        self.set_dot(int(v))
 
-        # 尾部 pending：虚线 + 空心节点
-        if self._pending:
-            dot_y = y + 30
-            painter.setPen(QPen(line_color, self.line_width, Qt.DashLine))
-            start_y = prev_dot_y if prev_dot_y is not None else y
-            painter.drawLine(dot_x, start_y, dot_x, dot_y)
-            painter.setPen(QPen(QColor(T("color.primary")), 1.5))
-            painter.setBrush(QColor(T("color.bg.base")))
-            painter.drawEllipse(dot_x - r, dot_y - r, r * 2, r * 2)
-            painter.setFont(font_text)
-            painter.setPen(text_tertiary)
-            painter.drawText(text_rect(dot_y - 11, 22), align,
-                             str(self._pending))
-        painter.end()
+    @property
+    def extra_spacing(self):
+        return self._extra_spacing
+
+    @extra_spacing.setter
+    def extra_spacing(self, v):
+        self.set_row_spacing(int(v))
+
+    @property
+    def axis_side(self):
+        return self._axis_side
+
+    @axis_side.setter
+    def axis_side(self, v):
+        self.set_axis_side(v)
+
+    @property
+    def title_font_size(self):
+        return self._title_font_size
+
+    @title_font_size.setter
+    def title_font_size(self, v):
+        self.set_fonts(title_size=int(v))
+
+    @property
+    def time_font_size(self):
+        return self._time_font_size
+
+    @time_font_size.setter
+    def time_font_size(self, v):
+        self.set_fonts(time_size=int(v))
 
 
 _TL_ITEMS = [
@@ -344,12 +324,13 @@ def create_calendar_page() -> QWidget:
 def create_carousel_page() -> QWidget:
     s = Section("走马灯")
     carousel = Carousel()
-    for i, color in enumerate(["#7C5CFC", "#3E7E5F", "#C08A3E"]):
+    # 演示底色取自语义令牌（primary / success / warning），亮暗主题自动换肤
+    for i, color_key in enumerate(("color.primary", "color.success", "color.warning")):
         page = QLabel(f"第 {i + 1} 屏")
         page.setAlignment(Qt.AlignCenter)
         page.setStyleSheet(
-            f"background-color: {color}; color: white; font-size: 20px; "
-            f"border-radius: 8px; margin: 4px;")
+            f"background-color: {T(color_key)}; color: {T('color.on.primary')}; "
+            f"font-size: 20px; border-radius: 8px; margin: 4px;")
         carousel.add_page(page)
     carousel.setFixedSize(520, 260)
     s.layout().addWidget(row(carousel))
@@ -428,6 +409,8 @@ def create_popover_page() -> QWidget:
     set_property(anchor, "variant", "primary")
     pop = Popover("快捷筛选", "按状态、时间或负责人筛选列表数据。\n点击外部区域关闭。")
     _POPOVERS.append(pop)
+    # 弹层销毁时从防 GC 列表移除（销毁时连接随对象一并释放，不会累积）
+    pop.destroyed.connect(lambda: _POPOVERS.remove(pop))
     anchor.clicked.connect(lambda: pop.show_for(anchor, placement="bottom"))
     s.layout().addWidget(row(anchor))
     s.layout().addWidget(hint_label("点击按钮相对锚点弹出带箭头气泡卡片。", role="tertiary"))

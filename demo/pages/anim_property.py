@@ -11,7 +11,7 @@ from PySide6.QtCore import QPoint, QRect, QTimer, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QStackedWidget, QWidget
 
-from InstructionX_UIKit.anim import property as A
+from InstructionX_UIKit.anim import clear_ripple, property as A
 from InstructionX_UIKit.components.button import Button
 from InstructionX_UIKit.components.switch import Switch
 from InstructionX_UIKit.theme import T, ThemeManager
@@ -193,13 +193,8 @@ def _cards() -> list:
     ripple_state = {"filt": None}
 
     def _ripple(o, rbtn=rbtn, state=ripple_state):
-        old = state["filt"]
-        if old is not None:
-            rbtn.removeEventFilter(old)
-            old.overlay.deleteLater()  # 清掉旧叠加层，避免残留
-            old.deleteLater()
-        # 必须清掉库函数的安装标记，否则 ripple() 会返回带旧参数的存量过滤器
-        rbtn._uik_ripple = None
+        # 清掉旧过滤器/叠加层与安装标记，允许按新参数重装
+        clear_ripple(rbtn)
         state["filt"] = A.ripple(rbtn, **o)
         state["filt"].start(rbtn.rect().center())
         return None
@@ -296,11 +291,12 @@ def _cards() -> list:
     st = _Stage(); gf = QFrame(st); st.place(gf, 150, 66)
 
     def _gflow_colors(palette):
+        # 渐变色带取自语义令牌，暗色主题自动换肤
         if palette == "theme":
             return [T("color.primary"), T("color.success")]
         if palette == "warm":
-            return ["#C08A3E", "#D6473C"]
-        return ["#7C5CFC", "#E05C8A"]
+            return [T("color.warning"), T("color.danger")]
+        return [T("color.primary"), T("color.danger")]
 
     def _gflow_static(gf=gf):
         """未播放时的静态渐变底（否则演示区是一块空白 QFrame）。"""
@@ -321,7 +317,7 @@ def _cards() -> list:
     cards.append(_pcard(
         "gradient_flow 背景渐变", "渐变色带流动（循环）", st, _gflow,
         [("choice", "palette", "色带", "theme",
-          [("主题 蓝→绿", "theme"), ("暖 橙→红", "warm"), ("紫→粉", "violet")]),
+          [("主题 蓝→绿", "theme"), ("暖 橙→红", "warm"), ("蓝→红", "contrast")]),
          ("choice", "direction", "方向", "horizontal",
           ["horizontal", "vertical"]),
          ("int", "duration", "周期", 2400, 500, 6000)],

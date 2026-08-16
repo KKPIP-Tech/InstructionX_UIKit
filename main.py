@@ -28,8 +28,8 @@ from demo.main_window import MainWindow  # noqa: E402
 def main() -> int:
     app = QApplication(sys.argv)
     ThemeManager.instance().apply(app)  # 生成并设置全局 QSS（默认亮色）
+    # MainWindow 构造时已 resize 1280x800，此处不再重复设置
     window = MainWindow()
-    window.resize(1280, 800)
     window.show()
     return app.exec()
 

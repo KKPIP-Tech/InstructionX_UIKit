@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """布局演示的示例数据与卡片构建器（Demo 程序专用）。
 
-InstructionX_UIKit 的 12 个布局预设全部为 API 驱动、不含任何假数据；
+InstructionX_UIKit 的 13 个布局预设全部为 API 驱动、不含任何假数据；
 本模块集中存放演示用的示例内容（原是布局内置的占位数据，已迁入
 Demo），``layouts.py`` 各演示页从这里取数据并传给布局。
 
@@ -378,7 +378,7 @@ def build_dashboard_cards() -> list:
     cards.append(todo_card)
 
     banner_card, banner_lay = titled_card("公告")
-    banner = QLabel("布局预设已覆盖全部 12 个场景；跨度随断点自动重排，窗口收窄时卡片纵向堆叠。")
+    banner = QLabel("布局预设已覆盖全部 13 个场景；跨度随断点自动重排，窗口收窄时卡片纵向堆叠。")
     banner.setProperty("role", "secondary")
     banner.setWordWrap(True)
     banner_lay.addWidget(banner)
