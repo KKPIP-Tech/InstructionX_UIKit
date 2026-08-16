@@ -46,6 +46,7 @@ USAGE = {
     "centered_container": 'create_centered_container(title=..., actions=[...], cards=[(标题, 描述, 色块键)])',
     "waterfall": 'create_waterfall(items=[(标题, 色块键, 档位2-6), ...])',
     "media_left_right": 'create_media_left_right(sections=[(标题, 正文, 色块键)], link_text="了解更多")',
+    "chat_conversation": 'create_chat_conversation(messages=[{"role": "user", "content": ...}, {"role": "assistant", "content": "# markdown"}])',
 }
 
 # ---------------------------------------------------------------------------
@@ -462,4 +463,35 @@ MEDIA_LEFT_RIGHT = dict(
          "color.warning.subtle"),
     ),
     link_text="了解更多",
+)
+
+# ---------------------------------------------------------------------------
+# 流式对话
+# ---------------------------------------------------------------------------
+
+#: 示例对话：{"role": "user" | "assistant", "content": "<markdown>"}
+CHAT_MESSAGES = [
+    {"role": "user", "content": "这个 UI Kit 的 Markdown 组件支持哪些语法？"},
+    {"role": "assistant",
+     "content": "**MarkdownView** 基于 Qt 内置引擎，支持：\n\n"
+                "- 标题、**加粗**、*斜体*、~~删除线~~\n"
+                "- 有序 / 无序 / 任务列表\n"
+                "- `行内代码` 与代码围栏\n"
+                "- 表格、引用、分割线、链接\n\n"
+                "```python\nfrom InstructionX_UIKit.components import MarkdownView\n\n"
+                "view = MarkdownView(\"# 你好\")\n```"},
+    {"role": "user", "content": "代码块会做语法高亮吗？"},
+    {"role": "assistant",
+     "content": "不会。代码块文字颜色与正文一致，仅以等宽字族和底色区分。\n\n"
+                "| 特性 | 状态 |\n|------|------|\n"
+                "| 语法高亮 | 不支持 |\n| 等宽字族 | 支持 |\n| 底色 | `bg.subtle` 令牌 |"},
+]
+
+#: 流式回复演示文本（演示页用 QTimer 逐段追加）
+CHAT_STREAM_REPLY = (
+    "好的，这是一个**流式输出**的演示：\n\n"
+    "1. 调用方收到 token 后调用 `append_to_message(index, chunk)`；\n"
+    "2. 布局自动增长气泡高度并跟随滚动；\n"
+    "3. 用户上翻阅读历史时不会被打断。\n\n"
+    "> 布局本身不承载任何 AI 逻辑，消息数据完全由调用方驱动。"
 )

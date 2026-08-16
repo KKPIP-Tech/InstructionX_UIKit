@@ -7,6 +7,7 @@
 
 from .card_grid import CardGrid, create_card_grid
 from .centered_container import CenteredContainer, create_centered_container
+from .chat_conversation import ChatConversation, create_chat_conversation
 from .dashboard_grid import DashboardGrid, create_dashboard_grid
 from .helpers import (
     TokenColorChip,
@@ -27,6 +28,7 @@ from .waterfall import Waterfall, create_waterfall
 __all__ = [
     "CardGrid", "create_card_grid",
     "CenteredContainer", "create_centered_container",
+    "ChatConversation", "create_chat_conversation",
     "DashboardGrid", "create_dashboard_grid",
     "HeroSection", "HeroIllustration", "create_hero_section",
     "HolyGrail", "create_holy_grail",

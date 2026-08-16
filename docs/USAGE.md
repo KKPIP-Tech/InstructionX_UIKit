@@ -1,6 +1,6 @@
 # USAGE — InstructionX_UIKit 使用方法
 
-> 本文档覆盖安装、快速开始、主题系统、全部 57 个组件、12 个布局、52 个动画预设、图表引擎与蓝图（节点图）组件的最小可运行示例。
+> 本文档覆盖安装、快速开始、主题系统、全部 58 个组件、13 个布局、52 个动画预设、图表引擎与蓝图（节点图）组件的最小可运行示例。
 > 所有示例均与仓库真实 API 一致；离屏验证一律使用 `QT_QPA_PLATFORM=offscreen`。
 
 ## 目录
@@ -523,6 +523,17 @@ pop = Popover(title="筛选", content=QLabel("条件区域"))
 pop.show_for(anchor_button, placement="bottom")    # top/bottom/left/right，空间不足自动翻转
 ```
 
+**MarkdownView**（`markdown_view.py`）—— Markdown 渲染（Qt 内置引擎，原生渲染，无 WebView）。
+
+```python
+from InstructionX_UIKit.components.markdown_view import MarkdownView
+view = MarkdownView("# 标题\n\n**加粗**、`行内代码`、表格、任务列表均支持")
+view.append_markdown("\n\n- 流式追加的一项")      # AI 逐 token 输出场景
+view.linkActivated.connect(print)                  # 点击链接信号（默认系统浏览器打开 http/https）
+```
+
+支持 CommonMark + 部分 GFM（表格 / 任务列表 / 删除线 / 代码围栏）。样式全部来自设计令牌：代码块为等宽字族 + `bg.subtle` 底色，文字颜色与正文一致，**不做语法高亮**。`variant="plain"` 为透明无边框变体（嵌入气泡 / 列表用）。无内容时显示空占位（`set_empty_text()` 可改）。已知限制：脚注 / 内嵌 HTML 不支持，网络图片不加载。
+
 ### 4.3 导航与反馈
 
 **Tabs**（`tabs.py`）—— 标签页：line / card / segmented 三种样式。
@@ -745,6 +756,7 @@ w = TopNavBar()                   # 不传内容：结构 + 空占位
 | `create_centered_container(...)` | `title` / `subtitle` / `actions` / `cards=[(标题, 描述, 色块键)]` / `note` |
 | `create_waterfall(...)` | `items=[(标题, 色块键, 档位2-6[, 元信息])]`（或 QWidget） |
 | `create_media_left_right(...)` | `sections=[(标题, 正文, 色块键)]` / `link_text` |
+| `create_chat_conversation(...)` | `messages=[{"role": "user"/"assistant", "content": markdown}]` / `show_input`；`add_message()` / `append_to_message()` 流式追加 / `messageSubmitted` 信号 |
 
 | 函数 | 适用场景 |
 |---|---|
@@ -760,6 +772,7 @@ w = TopNavBar()                   # 不传内容：结构 + 空占位
 | `create_centered_container()` | 内容限宽 960 的居中容器页 |
 | `create_waterfall()` | 瀑布流：2-4 列不等高卡片 |
 | `create_media_left_right()` | 产品介绍页：图左文右 / 图右文左交替段落 |
+| `create_chat_conversation()` | AI 对话页：Markdown 消息气泡 + 流式追加 + 底部输入区 |
 
 ## 6. 动画用法
 
