@@ -147,8 +147,15 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
     节点以 ``NodeWidget.cache_pixmap()`` 缓存位图由本视口统一绘制
     （GL 纹理采样），平移 / 缩放手势期间节点内容零重绘；节点控件
     本身保持透明，仅承担交互（引脚热区 / 拖动）与动态子控件
-    （SpinnerArc）的载体。带可见 ``body_builder`` 体的节点回退为
-    真实控件自绘（alien 子控件叠加）。
+    （SpinnerArc）的载体。带可见 ``body_builder`` 体的节点平时回退
+    为真实控件自绘（alien 子控件叠加），但视图手势期间同样临时切换
+    为位图代理（``NodeWidget.begin_gesture_proxy``），避免逐帧真实
+    子控件几何落位 + 重绘叠加在 GL 视口上的高额合成开销。
+
+    首帧缺陷规避：无边框 + ``WA_TranslucentBackground`` 顶层窗口下
+    QOpenGLWidget 首帧可能把旧的合成结果送上屏幕（FBO 内容完整但
+    节点不显示，任意一次重绘即恢复），``showEvent`` 中强制一次
+    ``update()`` 规避。
     """
 
     #: 支持节点位图代理绘制
@@ -157,6 +164,11 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
     def __init__(self, canvas) -> None:
         super().__init__(canvas)
         self._init_viewport(canvas)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        """首次显示后强制一次重绘，规避半透明顶层窗口下的首帧合成缺陷。"""
+        super().showEvent(event)
+        self.update()
 
     def paintGL(self) -> None:  # noqa: N802
         p = QPainter(self)
@@ -179,7 +191,8 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
         ox, oy = canvas._offset.x(), canvas._offset.y()
         vw, vh = self.width(), self.height()
         for w in canvas._node_widgets.values():
-            if not w.isVisible() or not w._proxy_state:
+            # uses_proxy 覆盖常规代理（无可见体）与手势代理（手势期全体）
+            if not w.isVisible() or not w.uses_proxy():
                 continue
             node = w.node
             # 内联浮点换算（scene_to_view 等价），避免逐节点 shiboken 开销

@@ -355,25 +355,29 @@ class BlueprintCanvas(QWidget):
         """视图变换（zoom / offset 变化）后的界面同步。
 
         ``gesture=True``（平移拖拽 / 滚轮缩放进行中）且视口支持节点位图
-        代理时：跳过逐节点几何落位，仅重绘视口——代理节点由视口按场景
-        坐标实时绘制，视觉不受控件几何滞后影响；带可见自定义体的节点
-        照常逐帧落位。被跳过的几何在手势结束时由 ``_settle_view_gesture``
-        统一补偿（引脚热区 / 子控件位置随即恢复精确）。
+        代理时：跳过**全部**节点的逐帧几何落位，仅重绘视口——节点由视口
+        按场景坐标实时绘制缓存位图，视觉不受控件几何滞后影响。带可见
+        自定义体的节点在手势开始时被临时切换为位图代理
+        （``NodeWidget.begin_gesture_proxy``）：实测 GL 视口上逐帧对
+        真实子控件树做落位 + 重绘的合成开销极高（最大化窗口 11 节点
+        约 76ms/帧，切换后约 15ms/帧）。被跳过的几何与真实控件在手势
+        结束时由 ``_settle_view_gesture`` 统一补偿恢复。
         """
         if gesture and getattr(self._viewport, "supports_node_proxy", False):
+            if not self._gesture_deferred:
+                for widget in self._node_widgets.values():
+                    widget.begin_gesture_proxy()
             self._gesture_deferred = True
-            for widget in self._node_widgets.values():
-                if not widget.uses_proxy():
-                    widget.apply_view(self.scene_to_view(widget.node.pos),
-                                      self._zoom)
             self.update()
             return
         self._update_view()
 
     def _settle_view_gesture(self) -> None:
-        """视图手势结束（平移释放 / 缩放防抖到点）：补偿节点几何落位。"""
+        """视图手势结束（平移释放 / 缩放防抖到点）：恢复真实控件并补偿几何落位。"""
         if self._gesture_deferred:
             self._gesture_deferred = False
+            for widget in self._node_widgets.values():
+                widget.end_gesture_proxy()
             self._update_view()
 
     # ------------------------------------------------------------------
@@ -532,6 +536,12 @@ class BlueprintCanvas(QWidget):
                 continue
             node.pos = start_pos + delta
             w = self._node_widgets.get(nid)
+            if w is not None and defer:
+                # 带可见自定义体的被拖节点同样切换手势位图代理（幂等）：
+                # 逐帧 apply_view 对真实子控件树做几何落位 + 重绘叠加
+                # GL 合成开销极高（实测单节点拖动约 140ms/帧）；
+                # 代理位图由视口按场景坐标实时绘制，视觉无滞后
+                w.begin_gesture_proxy()
             # 位图代理节点由视口按场景坐标实时绘制，拖动期间无需逐帧落位
             if w is not None and not (defer and w.uses_proxy()):
                 w.apply_view(self.scene_to_view(node.pos), self._zoom)
