@@ -24,6 +24,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPainterPath, QPen, QPolygonF
 
 from ..theme import T
+from ._utils import ON_FILL_WHITE, to_float as _to_float
 from .axes import GridCoord, chart_font, format_value
 from .core import (
     SeriesRenderer,
@@ -54,12 +55,7 @@ def lerp_color(c1, c2, t: float) -> QColor:
     )
 
 
-def _to_float(v, default=None):
-    """宽松数值转换，失败返回 default。"""
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return default
+# 数值工具 _to_float 统一见 charts._utils（语义以过滤 NaN/Inf 版为准）
 
 
 # ---------------------------------------------------------------------------
@@ -449,6 +445,9 @@ class GraphicComponent:
 
     ``left`` / ``top`` 为相对图表内容区的像素偏移，或 ``"center"``
     （水平 / 垂直居中锚点）；shape 内坐标相对该锚点。
+
+    ``image`` 类型（SPEC 标可选）按需后置，当前暂不支持；未知类型
+    静默跳过（不影响其他元素）。
     """
 
     option_key = "graphic"
@@ -690,10 +689,11 @@ class MapSeriesRenderer(SeriesRenderer):
             p.setPen(border)
             p.setBrush(fill)
             p.drawPolygon(poly)
-            # 区域名称标签（多边形包围盒中心，按底色亮度选文字色）
+            # 区域名称标签（多边形包围盒中心，按底色亮度选文字色；
+            # 深色底用 ON_FILL_WHITE 白字豁免，见 charts._utils）
             c = poly.boundingRect().center()
             if fill.lightness() < 130:
-                p.setPen(QColor("#FFFFFF"))
+                p.setPen(QColor(ON_FILL_WHITE))
             else:
                 p.setPen(QColor(T("color.text.primary")))
             label = name
