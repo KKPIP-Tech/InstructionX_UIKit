@@ -28,16 +28,20 @@ LRU 缓存 + 后台异步执行，流式追加时已渲染公式零开销，未�
 替换**就地更新**（不重解析文档、不触碰流式增量状态，因此与流式追加
 任意交错都安全）。主题切换后公式自动按新文本色重绘。
 
-**Mermaid 图表**：闭合的 ```mermaid 代码围栏渲染为图表图片（块级
-居中，按视口可用宽度的 80% 适配缩放，视口尺寸变化时自动重适配），
-由 ``InstructionX_UIKit.mermaid`` 子包渲染：默认经 QWebEnginePage
-执行官方 mermaid.js（项目内唯一破例使用 Web 技术的位置，用户批准），
-排版与光栅化都在 Chromium 内完成（SVG → canvas 2x → PNG dataURL →
-QImage，透明底），官方全量图型可用且与官方渲染逐像素一致；WebEngine 不可用时自动降级为内置 QPainter 自绘渲染器
-（flowchart / sequenceDiagram / pie 子集）。主题令牌着色；与公式
-共享同一套 LRU 缓存 + 后台异步渲染 + 就地资源替换管线。流式追加中
-未闭合的 mermaid 围栏按普通代码围栏降级显示，闭合后重排为图表；
-语法错误时显示失败占位图。
+**Mermaid 图表**：闭合的 ```mermaid 代码围栏渲染为**交互式图表**——
+底层由 ``InstructionX_UIKit.mermaid`` 子包出图决定布局（块级居中，
+按视口可用宽度的 80% 适配，视口尺寸变化时自动重适配），图就绪后
+在其上叠加 ``MermaidView`` 交互查看器（拖动平移、Ctrl+滚轮缩放，
+普通滚轮放行给页面滚动，右上角工具条：放大/缩小/复位/适宽）。
+渲染经 QWebEnginePage 执行官方 mermaid.js（项目内唯一破例使用
+Web 技术的位置，用户批准），排版与光栅化都在 Chromium 内完成
+（SVG → canvas 2x → PNG dataURL → QImage，透明底），官方全量图型
+可用且与官方渲染逐像素一致；WebEngine 不可用时自动降级为内置
+QPainter 自绘渲染器（flowchart / sequenceDiagram / pie 子集，
+查看器降级为自绘静态图画布，缩放平移交互保留）。主题令牌着色；
+与公式共享同一套 LRU 缓存 + 后台异步渲染 + 就地资源替换管线。
+流式追加中未闭合的 mermaid 围栏按普通代码围栏降级显示，闭合后
+重排为图表；语法错误时显示失败占位图（不叠加查看器）。
 
 **流式追加（增量渲染）**：逐 token 追加不再全量重解析——纯文本 /
 常规 markdown 以 ``QTextCursor`` 增量插入（软换行按 Qt 的空白折叠
@@ -62,12 +66,13 @@ import hashlib
 import math
 import re
 
-from PySide6.QtCore import QTimer, QUrl, Signal, Qt
+from PySide6.QtCore import QRect, QTimer, QUrl, Signal, Qt
 from PySide6.QtGui import (
     QColor,
     QDesktopServices,
     QFont,
     QFontMetricsF,
+    QGuiApplication,
     QImage,
     QPainter,
     QPalette,
@@ -90,6 +95,15 @@ def _mermaid_hub():
     try:
         from ..mermaid import MermaidRenderHub
         return MermaidRenderHub.instance()
+    except ImportError:
+        return None
+
+
+def _mermaid_view_cls():
+    """惰性导入交互式图表查看器（包不存在时降级为静态图片）。"""
+    try:
+        from ..mermaid import MermaidView
+        return MermaidView
     except ImportError:
         return None
 
@@ -490,6 +504,10 @@ class MarkdownView(QTextBrowser):
         self._mermaid_mark = f"uikmermaid{id(self):x}z{{}}q"
         self._pending_diagrams = set()  # 等待异步渲染的图表缓存键
         self._diagram_keys = set()      # 文档中全部图表缓存键（resize 重适配用）
+        self._diagram_codes = {}        # 图表缓存键 → Mermaid 源码（叠加查看器用）
+        self._diagram_overlays = {}     # 图表缓存键 → 交互查看器（覆盖在图片上）
+        self._diagram_live = set()      # 查看器已就绪的键（底层图片已换透明图）
+        self._overlay_sync_pending = False  # 叠加层同步防抖（流式期间事件极密）
         # resize 重适配防抖：拖动缩放期间不逐帧重排
         self._fit_timer = QTimer(self)
         self._fit_timer.setSingleShot(True)
@@ -499,6 +517,13 @@ class MarkdownView(QTextBrowser):
         set_property(self, "variant", variant)
         self.setOpenLinks(False)
         self.anchorClicked.connect(self._on_anchor_clicked)
+        # 滚动 / 文档尺寸变化后重定位图表叠加查看器
+        self.verticalScrollBar().valueChanged.connect(
+            lambda *_: self._reposition_overlays())
+        self.horizontalScrollBar().valueChanged.connect(
+            lambda *_: self._reposition_overlays())
+        self.document().documentLayout().documentSizeChanged.connect(
+            lambda *_: self._schedule_overlay_sync())
         ThemeManager.instance().theme_changed.connect(lambda *_: self._render())
         MathRenderHub.instance().image_ready.connect(self._on_math_ready)
         mermaid_hub = _mermaid_hub()
@@ -546,6 +571,9 @@ class MarkdownView(QTextBrowser):
         self._pending_math = set()  # 残留键不再触发无谓重渲染
         self._pending_diagrams = set()
         self._diagram_keys = set()
+        self._diagram_codes = {}
+        self._diagram_live = set()
+        self._destroy_overlays()
         self._render()
 
     def markdown(self) -> str:
@@ -602,6 +630,9 @@ a {{ color: {T("color.primary")}; }}
         self._pending_math = set()
         self._pending_diagrams = set()
         self._diagram_keys = set()
+        self._diagram_codes = {}
+        self._diagram_live = set()
+        self._destroy_overlays()  # setHtml 将重置文档，旧叠加层全部失效
         if self._raw.strip():
             processed, maths, diagrams = _extract_math(
                 self._raw, self._math_mark, self._mermaid_mark)
@@ -620,6 +651,7 @@ a {{ color: {T("color.primary")}; }}
         pal.setColor(QPalette.Link, QColor(T("color.primary")))
         self.setPalette(pal)
         self._reset_incremental()
+        self._schedule_overlay_sync()  # 布局稳定后按图片位置叠加交互查看器
         if at_bottom:
             bar.setValue(bar.maximum())
         else:
@@ -781,6 +813,43 @@ a {{ color: {T("color.primary")}; }}
         scaled.setDevicePixelRatio(dpr)
         return scaled
 
+    def _underlay_image(self, key: str, img: QImage) -> QImage:
+        """查看器已就绪的图表，底层文档图片换为同尺寸全透明图（消除重影）。
+
+        布局尺寸不变（同像素尺寸 + 同 DPR），视觉完全由叠加的交互查看器
+        提供。offscreen / minimal 平台不换：截图验证依赖底层 PNG。
+        """
+        if key not in self._diagram_live:
+            return img
+        blank = QImage(img.size(), QImage.Format_ARGB32_Premultiplied)
+        blank.setDevicePixelRatio(img.devicePixelRatio() or 1.0)
+        blank.fill(Qt.transparent)
+        return blank
+
+    def _blank_underlay(self, key: str) -> None:
+        """叠加查看器就绪信号：把文档中对应的 PNG 资源换成透明图。"""
+        if key in self._diagram_live or key not in self._diagram_keys:
+            return
+        view = self._diagram_overlays.get(key)
+        if view is None or not getattr(view, "web_active", False):
+            return  # 查看器未走 Web 渲染（降级画布）时保留底层 PNG
+        if QGuiApplication.platformName() in ("offscreen", "minimal"):
+            return  # 离屏抓不到 WebEngine 帧，截图验证要靠底层 PNG
+        self._diagram_live.add(key)
+        doc = self.document()
+        res = doc.resource(QTextDocument.ImageResource,
+                           QUrl(self._mermaid_url(key)))
+        cur = res if isinstance(res, QImage) else (
+            res.toImage() if res.isValid() else None)
+        if cur is None or cur.isNull():
+            self._diagram_live.discard(key)
+            return
+        doc.addResource(QTextDocument.ImageResource,
+                        QUrl(self._mermaid_url(key)),
+                        self._underlay_image(key, cur))
+        doc.markContentsDirty(0, doc.characterCount())
+        self.viewport().update()
+
     def _embed_diagrams(self, doc, html: str, diagrams: list, pending: set,
                         centered_urls: set = None) -> str:
         """把 HTML 中的 Mermaid 占位标记替换为图表图片（块级居中）。
@@ -802,10 +871,11 @@ a {{ color: {T("color.primary")}; }}
                 key = hub.key_for(code, style, pt)
                 url = self._mermaid_url(key)
                 self._diagram_keys.add(key)  # resize 时按新宽度重适配
+                self._diagram_codes[key] = code  # 叠加查看器渲染用
                 img = hub.get(key)
                 if img is not None:
                     pending.discard(key)
-                    img = self._diagram_fit(img)
+                    img = self._underlay_image(key, self._diagram_fit(img))
                 else:
                     pending.add(key)
                     hub.request(key, code, style, pt)
@@ -839,7 +909,7 @@ a {{ color: {T("color.primary")}; }}
         if img is None:
             img = self._diagram_placeholder(failed=True)
         else:
-            img = self._diagram_fit(img)
+            img = self._underlay_image(key, self._diagram_fit(img))
         bar = self.verticalScrollBar()
         at_bottom = bar.value() >= bar.maximum() - _SCROLL_MARGIN
         doc = self.document()
@@ -849,6 +919,109 @@ a {{ color: {T("color.primary")}; }}
         if at_bottom:
             bar.setValue(bar.maximum())
         self.viewport().update()
+        self._schedule_overlay_sync()  # 图片就绪后在其上叠加交互查看器
+
+    # ------------------------------------------------------------ 图表叠加查看器
+    def _destroy_overlays(self) -> None:
+        """销毁全部图表叠加查看器（文档重置 / 清空时调用）。"""
+        for view in self._diagram_overlays.values():
+            view.setParent(None)
+            view.deleteLater()
+        self._diagram_overlays = {}
+
+    def _schedule_overlay_sync(self) -> None:
+        """延迟到事件循环下一轮同步叠加层（等文档布局稳定；合并连续触发）。"""
+        if self._overlay_sync_pending:
+            return
+        if self._diagram_keys or self._diagram_overlays:
+            self._overlay_sync_pending = True
+            QTimer.singleShot(0, self._run_overlay_sync)
+
+    def _run_overlay_sync(self) -> None:
+        self._overlay_sync_pending = False
+        self._sync_overlays()
+
+    def _diagram_image_rect(self, key: str, ready_img: QImage):
+        """图表图片在视口中的显示矩形（未找到 / 文档中无资源返回 None）。
+
+        图片独占居中段落：``cursorRect`` 给出图片字符的左上角与行高
+        （行高即图片逻辑高度），宽度取**文档资源**（即宽度适配后的
+        图片）的逻辑宽度。
+        """
+        url = self._mermaid_url(key)
+        doc = self.document()
+        res = doc.resource(QTextDocument.ImageResource, QUrl(url))
+        doc_img = res if isinstance(res, QImage) else (
+            res.toImage() if res.isValid() else None)
+        if doc_img is None or doc_img.isNull():
+            return None
+        w = int(doc_img.width() / (doc_img.devicePixelRatio() or 1.0))
+        for n in range(doc.blockCount()):
+            block = doc.findBlockByNumber(n)
+            it = block.begin()
+            while not it.atEnd():
+                fmt = it.fragment().charFormat()
+                if fmt.isImageFormat() and fmt.toImageFormat().name() == url:
+                    cur = QTextCursor(doc)
+                    cur.setPosition(it.fragment().position())
+                    r = self.cursorRect(cur)
+                    return QRect(r.x(), r.y(), w, r.height())
+                it += 1
+        return None
+
+    def _sync_overlays(self) -> None:
+        """按文档中图表图片的位置创建 / 重定位交互查看器叠加层。
+
+        仅当图表的最终渲染图已缓存（文档里的图片就是最终尺寸）时才创建
+        查看器；未就绪 / 渲染失败的图表保持占位图。已不在文档中的查看器
+        销毁。
+        """
+        cls = _mermaid_view_cls()
+        hub = _mermaid_hub()
+        if cls is None or hub is None:
+            self._destroy_overlays()
+            return
+        alive = set()
+        for key in self._diagram_keys:
+            img = hub.get(key)
+            if img is None:
+                continue
+            rect = self._diagram_image_rect(key, img)
+            if rect is None:
+                continue
+            view = self._diagram_overlays.get(key)
+            if view is None:
+                view = cls(self._diagram_codes.get(key, ""), self.viewport())
+                # 查看器就绪后把底层 PNG 换为透明图，消除双层重影
+                view.rendered.connect(
+                    lambda *_args, k=key: self._blank_underlay(k))
+                self._diagram_overlays[key] = view
+            # 原生子控件反复 setGeometry/show 会闪烁：仅在变化时落位
+            if view.geometry() != rect:
+                view.setGeometry(rect)
+            if not view.isVisible():
+                view.show()
+                view.raise_()
+            alive.add(key)
+        for key in set(self._diagram_overlays) - alive:
+            gone = self._diagram_overlays.pop(key)
+            gone.setParent(None)
+            gone.deleteLater()
+
+    def _reposition_overlays(self) -> None:
+        """滚动 / 重排后重定位已有叠加层（不重建，保留用户缩放状态）。"""
+        if not self._diagram_overlays:
+            return
+        hub = _mermaid_hub()
+        if hub is None:
+            return
+        for key, view in self._diagram_overlays.items():
+            img = hub.get(key)
+            if img is None:
+                continue
+            rect = self._diagram_image_rect(key, img)
+            if rect is not None and rect != view.geometry():
+                view.setGeometry(rect)
 
     def _refit_diagrams(self) -> None:
         """视口宽度变化后，按新宽度重新适配全部图表图片（就地替换资源）。
@@ -871,7 +1044,7 @@ a {{ color: {T("color.primary")}; }}
                 continue
             doc.addResource(QTextDocument.ImageResource,
                             QUrl(self._mermaid_url(key)),
-                            self._diagram_fit(img))
+                            self._underlay_image(key, self._diagram_fit(img)))
             dirty = True
         if not dirty:
             return

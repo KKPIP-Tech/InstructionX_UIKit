@@ -508,12 +508,15 @@ class MermaidRenderHub(QObject):
         except ImportError as exc:
             self._enter_fallback(f"PySide6 WebEngine 组件不可用: {exc!r}")
             return
-        # offscreen / 无 GPU 环境下的稳妥参数（仅当宿主未显式设置时）：
-        # --no-sandbox 避免某些受限环境沙箱进程创建失败，--disable-gpu 强制
-        # 软件渲染，--log-level=3 屏蔽 GPU 初始化失败的 ERROR 刷屏
-        # （gpu_channel_manager.cc 的 kFatalFailure 等，软件渲染下无害）
-        os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS",
-                              "--no-sandbox --disable-gpu --log-level=3")
+        # offscreen / 无 GPU 环境（CI、离屏测试）的稳妥参数（仅当宿主未显式
+        # 设置时）：--no-sandbox 避免沙箱进程创建失败，--disable-gpu 强制软件
+        # 渲染，--log-level=3 屏蔽 Chromium 噪音日志。
+        # 实机不设这些 flag：--disable-gpu 反而触发 Qt WebEngine 的
+        # "GPUInfo not initialized on GpuInfoUpdate" 提示，且损失硬件加速。
+        platform = os.environ.get("QT_QPA_PLATFORM", "").lower()
+        if "offscreen" in platform or "minimal" in platform:
+            os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS",
+                                  "--no-sandbox --disable-gpu --log-level=3")
         try:
             from PySide6.QtCore import QUrl
             self._page = QWebEnginePage(self)

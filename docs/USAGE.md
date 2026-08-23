@@ -542,7 +542,22 @@ view.linkActivated.connect(print)                  # 点击链接信号（默认
 
 **LaTeX 数学公式**：支持 `$...$` 行内公式、`$$...$$` / `\[...\]` / `\(...\)` 与 `\begin{equation}` 等环境的块级公式。公式由 matplotlib mathtext 引擎在后台线程异步渲染为透明底图片（2x 超采样，高 DPI 清晰），结果按（源码, 颜色, 字号）LRU 缓存（上限 512 条）——流式追加触发全文重渲染时命中缓存零耗时。渲染期间公式以等宽源码占位，完成后自动重排；渲染失败回退为源码显示。代码围栏 / 行内代码中的 `$...$` 不会被当作公式，货币写法（`$5`）遵循 Pandoc 规则不误判。块级公式独占段落时自动居中。主题切换后公式按新文本色自动重绘。
 
-**Mermaid 图表**：闭合的 ` ```mermaid ` 代码围栏渲染为图表图片（块级居中，按视口可用宽度的 80% 适配缩放，视口尺寸变化时自动重适配，1080P 宽视口下保持可读）。渲染由 `InstructionX_UIKit.mermaid` 子包完成：默认经隐藏的 QWebEnginePage 执行**官方 mermaid.js**（v10.9.3，随包分发不联网；这是项目内唯一破例使用 Web 技术的位置），排版与光栅化都在 Chromium 内完成（SVG → canvas 2x → PNG，透明底）——官方全量图型可用（flowchart、sequenceDiagram、pie、gantt、classDiagram、stateDiagram、erDiagram、mindmap 等），且与官方渲染逐像素一致；WebEngine 不可用时自动降级为内置 QPainter 自绘渲染器（flowchart / sequenceDiagram / pie 子集）。渲染经 LRU 缓存 + 后台异步执行，与公式共享同一套占位 → 就地资源替换管线；流式追加中未闭合的 mermaid 围栏按普通代码块降级显示，闭合后重排为图表。图表颜色全部来自主题令牌（mermaid `theme: 'base'` + `themeVariables`），主题切换自动重绘。语法错误时显示失败占位图。已知限制：`erDiagram` 中含中文的实体名 / 关系标签需加双引号；WebEngine 首次渲染有页面加载延迟（后续命中缓存零耗时）。
+**Mermaid 图表**：闭合的 ` ```mermaid ` 代码围栏渲染为**交互式图表**（`MermaidView` 查看器叠加在文档中的图位上）：拖动平移、Ctrl+滚轮缩放（普通滚轮留给页面滚动）、右上角工具条（放大 / 缩小 / 复位 / 适宽），像 GitHub 的 Mermaid 展示一样可随意调整。图位块级居中，按视口可用宽度的 80% 适配，视口尺寸变化时自动重适配。渲染由 `InstructionX_UIKit.mermaid` 子包完成：默认经 QWebEnginePage 执行**官方 mermaid.js**（v10.9.3，随包分发不联网；这是项目内唯一破例使用 Web 技术的位置），排版与光栅化都在 Chromium 内完成（SVG → canvas 2x → PNG，透明底）——官方全量图型可用（flowchart、sequenceDiagram、pie、gantt、classDiagram、stateDiagram、erDiagram、mindmap 等），且与官方渲染逐像素一致；WebEngine 不可用时自动降级为内置 QPainter 自绘渲染器（flowchart / sequenceDiagram / pie 子集，查看器降级为自绘画布，交互保留）。渲染经 LRU 缓存 + 后台异步执行，与公式共享同一套占位 → 就地资源替换管线；流式追加中未闭合的 mermaid 围栏按普通代码块降级显示，闭合后重排为图表。图表颜色全部来自主题令牌（mermaid `theme: 'base'` + `themeVariables`），主题切换自动重绘。语法错误时显示失败占位图（不叠加查看器）。已知限制：`erDiagram` 中含中文的实体名 / 关系标签需加双引号；WebEngine 首次渲染有页面加载延迟（后续命中缓存零耗时）。
+
+`MermaidView` 也可脱离 MarkdownView 单独使用（交互查看器）：
+
+```python
+from InstructionX_UIKit.mermaid import MermaidView
+v = MermaidView("flowchart LR\n    A[开始] --> B[结束]")
+v.render_failed.connect(print)     # 语法错误信号；rendered(QSize) 为成功信号
+```
+
+注意：`QWebEngineView` 基于 Qt Quick RHI（Windows 默认 Direct3D11）。若同一顶层窗口里还有 `QOpenGLWidget`（如蓝图 GL 视口）或无边框半透明窗口导致合成走 OpenGL，需在 `QApplication` 创建前统一图形 API：
+
+```python
+from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
+QQuickWindow.setGraphicsApi(QSGRendererInterface.GraphicsApi.OpenGL)
+```
 
 ### 4.3 导航与反馈
 
