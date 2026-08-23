@@ -177,6 +177,21 @@ def main() -> int:
     tm.apply(app)
     pump(120)
 
+    # 退出前清理：offscreen 下 WebEngine 控件（Mermaid 查看器 / 渲染中枢
+    # 隐藏页）若存活到解释器拆除阶段会段错误，须显式销毁并冲刷 deferred 事件
+    from PySide6.QtCore import QEvent
+    win.close()
+    win.deleteLater()
+    app.sendPostedEvents(None, QEvent.DeferredDelete)
+    from InstructionX_UIKit.mermaid import MermaidRenderHub
+    hub = MermaidRenderHub.instance()
+    hub.shutdown()
+    if getattr(hub, "_page", None) is not None:
+        hub._page.deleteLater()
+        hub._page = None
+    app.sendPostedEvents(None, QEvent.DeferredDelete)
+    app.processEvents()
+
     print("-" * 64)
     if _FAILURES:
         print(f"共 {len(_FAILURES)} 项失败: {_FAILURES}")
