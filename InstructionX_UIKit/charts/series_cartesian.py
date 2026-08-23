@@ -118,7 +118,7 @@ def _datum_list(item):
         return None
     out = []
     for x in v:
-        f = _to_float(x)
+        f = _to_float(x, None)
         if f is None:
             return None
         out.append(f)
@@ -322,7 +322,7 @@ class BarSeriesRenderer(SeriesRenderer):
             })
 
     def _resolve_bar_width(self, slot_w):
-        bw = _to_float(self.opt.get("barWidth"))
+        bw = _to_float(self.opt.get("barWidth"), None)
         if bw is None:
             return max(2.0, slot_w * 0.75)
         if 0 < bw <= 1:
@@ -774,7 +774,7 @@ class ScatterSeriesRenderer(SeriesRenderer):
     def _third_dim(self, item):
         v = item.get("value") if isinstance(item, dict) else item
         if isinstance(v, (list, tuple)) and len(v) >= 3:
-            return _to_float(v[2])
+            return _to_float(v[2], None)
         return None
 
     def layout(self, rect: QRectF) -> None:
@@ -783,7 +783,7 @@ class ScatterSeriesRenderer(SeriesRenderer):
         if coord is None:
             return
         single = getattr(coord, "kind", "") == "singleAxis"
-        fixed = _to_float(self.opt.get("symbolSize"))
+        fixed = _to_float(self.opt.get("symbolSize"), None)
         thirds = [self._third_dim(it) for it in self.data()]
         known = [t for t in thirds if t is not None]
         zmin = min(known) if known else 0.0
@@ -964,7 +964,7 @@ class CandlestickSeriesRenderer(SeriesRenderer):
         band = coord.x_axis.band_width(coord.plot.left(), coord.plot.right())
         if band <= 0:
             band = coord.plot.width() / max(1, len(self.data()))
-        w = _to_float(self.opt.get("barWidth"))
+        w = _to_float(self.opt.get("barWidth"), None)
         w = max(3.0, min(w, band * 0.9)) if w else min(band * 0.6, 24.0)
         prev = self.prev_data if isinstance(self.prev_data, list) else None
         for i, item in enumerate(self.data()):
@@ -1091,7 +1091,7 @@ class BoxplotSeriesRenderer(SeriesRenderer):
         band = coord.x_axis.band_width(coord.plot.left(), coord.plot.right())
         if band <= 0:
             band = coord.plot.width() / max(1, len(self.data()))
-        w = _to_float(self.opt.get("barWidth"))
+        w = _to_float(self.opt.get("barWidth"), None)
         w = max(4.0, min(w, band * 0.9)) if w else min(band * 0.5, 28.0)
         for i, item in enumerate(self.data()):
             nums = _datum_list(item)
@@ -1204,13 +1204,13 @@ class HeatmapSeriesRenderer(SeriesRenderer):
             if not isinstance(v, (list, tuple)) or len(v) < 2:
                 continue
             if self._calendar:
-                val = _to_float(v[1])
+                val = _to_float(v[1], None)
                 if val is not None:
                     out.append((v[0], None, val))
             else:
                 if len(v) < 3:
                     continue
-                val = _to_float(v[2])
+                val = _to_float(v[2], None)
                 if val is not None:
                     out.append((v[0], v[1], val))
         return out
@@ -1225,8 +1225,8 @@ class HeatmapSeriesRenderer(SeriesRenderer):
             if isinstance(in_range.get("colors"), list) \
                     and in_range["colors"]:
                 colors = in_range["colors"]
-            vmin = _to_float(vm.get("min"))
-            vmax = _to_float(vm.get("max"))
+            vmin = _to_float(vm.get("min"), None)
+            vmax = _to_float(vm.get("max"), None)
         if colors is None:
             colors = [T("color.primary.subtle"), T("color.primary")]
         vals = [v for _, _, v in items]
@@ -1337,8 +1337,8 @@ class ParallelSeriesRenderer(SeriesRenderer):
             for d in pa:
                 if isinstance(d, dict):
                     dims.append({"name": str(d.get("name") or f"dim{len(dims)}"),
-                                 "min": _to_float(d.get("min")),
-                                 "max": _to_float(d.get("max"))})
+                                 "min": _to_float(d.get("min"), None),
+                                 "max": _to_float(d.get("max"), None)})
                 else:
                     dims.append({"name": str(d), "min": None, "max": None})
             return dims, rows
@@ -1354,7 +1354,7 @@ class ParallelSeriesRenderer(SeriesRenderer):
         self._rows = []
         rows = self._raw_rows()
         dims, rows = self._dims(rows)
-        rows = [r for r in rows if all(_to_float(x) is not None for x in r)]
+        rows = [r for r in rows if all(_to_float(x, None) is not None for x in r)]
         if not dims or not rows:
             return
         n = len(dims)
@@ -1486,7 +1486,7 @@ class ThemeRiverSeriesRenderer(SeriesRenderer):
             v = item.get("value") if isinstance(item, dict) else item
             if not isinstance(v, (list, tuple)) or len(v) < 3:
                 continue
-            t, val, name = v[0], _to_float(v[1]), str(v[2])
+            t, val, name = v[0], _to_float(v[1], None), str(v[2])
             if val is None:
                 continue
             t = str(t)

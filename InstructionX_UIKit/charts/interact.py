@@ -588,7 +588,7 @@ class VisualMapComponent:
 
     def map_color(self, v) -> QColor:
         """值 → 颜色（按 min..max 归一后在色带上分段线性插值）。"""
-        fv = _to_float(v)
+        fv = _to_float(v, None)
         if fv is None:
             return QColor(T("color.bg.muted"))
         frac = _clamp((fv - self.min) / (self.max - self.min), 0.0, 1.0)
