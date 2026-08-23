@@ -11,7 +11,10 @@
 CSS 生效（正文字族 / 字阶 / 颜色、标题字阶、代码块 ``bg.subtle`` 底色
 + ``MONO_FAMILY``、表格边框、链接 ``color.primary``）。主题切换时重新
 生成样式表并重渲染，无需重启（实测 toHtml 把样式烘入内联 span，
-仅换默认样式表无法重着色，必须重渲染）。
+仅换默认样式表无法重着色，必须重渲染）。代码块 / 表格与正文段落
+之间带令牌间距（margin）；代码块经单元格表格包裹获得内边距
+（Qt 富文本不支持块级 padding，且 ``insertHtml`` 不解析默认样式表，
+间距与内边距均以行内属性烘焙，详见 ``_polish_block_spacing``）。
 
 按设计约定不做语法高亮；代码块文字颜色与正文一致
 （``color.text.primary``），仅以等宽字族 + ``bg.subtle`` 底色区分。
@@ -127,6 +130,44 @@ def _unescape_display(text: str) -> str:
 
 #: <body> 标签（大小写不敏感）
 _BODY_TAG_RE = re.compile(r"<body[^>]*>", re.IGNORECASE)
+
+
+#: 连续 <pre> 行组（Qt 把围栏导出为每行一个 <pre>，行间仅空白分隔）
+_PRE_RUN_RE = re.compile(r"(?:<pre\b[^>]*>.*?</pre>\s*)+", re.S)
+
+#: 数据表格标签（Qt 导出的 margin 已烘焙为 0，需按令牌替换）
+_TABLE_TAG_RE = re.compile(r"<table\b[^>]*>")
+
+
+def _polish_block_spacing(html: str) -> str:
+    """烘焙代码块与表格的间距 / 内边距（令牌驱动）。
+
+    - 连续 ``<pre>`` 行组包进全宽单元格表格：Qt 富文本 CSS 子集不支持
+      块级 padding，QTextBlockFormat 边距会连同背景一起缩进（实测），
+      ``td`` 的 padding / background 是唯一可用的内边距手段；包裹后
+      代码块在文档结构上等价于单列表格，增量插入走既有表格路径。
+    - 数据表格的 ``margin-top/bottom:0px`` 替换为令牌间距。
+
+    所有样式必须以行内属性烘焙进 HTML：``insertHtml`` 导入片段时不解析
+    文档默认样式表（实测），类选择器 CSS 仅对 ``setHtml`` 全量路径生效。
+    """
+    gap = T("space.2")
+    pad_v, pad_h = T("space.2"), T("space.3")
+    bg = T("color.bg.subtle")
+
+    def _table_tag(m):
+        return (m.group(0)
+                .replace("margin-top:0px", f"margin-top:{gap}px")
+                .replace("margin-bottom:0px", f"margin-bottom:{gap}px"))
+
+    html = _TABLE_TAG_RE.sub(_table_tag, html)
+    codeblock_open = (
+        f'<table border="0" width="100%" cellspacing="0" cellpadding="0" '
+        f'style="margin-top:{gap}px; margin-bottom:{gap}px;">'
+        f'<tr><td bgcolor="{bg}" style="padding: {pad_v}px {pad_h}px;">')
+    return _PRE_RUN_RE.sub(
+        lambda m: codeblock_open + m.group(0).rstrip() + "</td></tr></table>",
+        html)
 
 
 def _insert_fresh_block(cur: QTextCursor) -> None:
@@ -456,8 +497,8 @@ h2 {{ font-size: {T("font.title.md")}px; font-weight: 600; color: {T("color.text
 h3 {{ font-size: {T("font.title.sm")}px; font-weight: 600; color: {T("color.text.primary")}; }}
 h4, h5, h6 {{ font-size: {T("font.lg")}px; font-weight: 600; color: {T("color.text.primary")}; }}
 code {{ font-family: {MONO_FAMILY}; color: {T("color.text.primary")}; }}
-pre {{ font-family: {MONO_FAMILY}; color: {T("color.text.primary")};
-      background-color: {T("color.bg.subtle")}; }}
+pre {{ font-family: {MONO_FAMILY}; color: {T("color.text.primary")}; }}
+table {{ border: 1px solid {T("color.border")}; }}
 blockquote {{ color: {T("color.text.secondary")}; margin-left: {T("space.3")}px; }}
 table {{ border: 1px solid {T("color.border")}; }}
 td, th {{ border: 1px solid {T("color.border")};
@@ -484,7 +525,7 @@ a {{ color: {T("color.primary")}; }}
             html = doc.toHtml()
             if maths:
                 html = self._embed_math(doc, html, maths, self._pending_math)
-            doc.setHtml(html)
+            doc.setHtml(_polish_block_spacing(html))
         else:
             doc.clear()
         # 链接颜色走调色板（CSS a 选择器对部分 Qt 版本不生效，双保险）
@@ -951,7 +992,7 @@ a {{ color: {T("color.primary")}; }}
         if maths:
             html = self._embed_math(self.document(), html, maths,
                                     self._pending_math, centered)
-        return html, centered
+        return _polish_block_spacing(html), centered
 
     def _apply_math_alignment(self, first_block: int, centered: set) -> None:
         """把新插入区域中含块级公式图片的段落设为居中。"""
