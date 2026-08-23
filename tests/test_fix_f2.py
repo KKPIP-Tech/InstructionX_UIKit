@@ -15,8 +15,9 @@
   箭头为 ~8px 等腰三角形且对准锚点中心；箭头与主体填充色一致；
   箭头与主体相接带无杂色（无缝无黑边）；120ms 淡入 + 上移入场动画；
   暗色描边取 border.strong。
-- before/after 对比：tests/shots/fixf2_*_before.png 为修复前（HEAD）工件，
-  后缀区墨迹宽度对比证明修复生效。
+- before/after 对比：tests/shots/fixf2_*_before.png 为修复前一次性历史工件
+  （gitignored，全新检出不存在）；存在时做后缀区墨迹宽度对比证明修复生效，
+  缺失时跳过，修复生效由 after 侧绝对断言（真实字宽 / 不相交）兜底。
 任何异常即失败，退出码 1。
 """
 
@@ -229,14 +230,33 @@ def _():
     suffix_btn = e._slot_button(e._suffix_action)
     clear_btn = e._slot_button(e._clear_action())
     assert_true(suffix_btn is not None and clear_btn is not None, "槽位按钮缺失")
-    # 后缀墨迹带（蓝灰判据，避免正文抗锯齿边缘被误判为 tert 色）
-    suf = _slot_ink_bbox(img, tert, range(0, clear_btn.x()), range(1, 31))
-    assert_true(suf is not None, "未找到后缀墨迹")
+    # 后缀墨迹定位：正文抗锯齿产生的蓝灰像素与 text.tertiary 色距 <24，
+    # 直接全图匹配会把正文笔画误判为后缀（本机实测 x≈17 处假阳性）。
+    # 后缀 "@gmail.com" 是紧贴清除按钮左侧的连续长墨迹带（实测 x≈141..204、
+    # 宽 ~60px），正文误判像素则稀疏孤立；故取最宽连续簇（间隙 <=2px 合并）
+    # 作为后缀墨迹带。
+    xs = set()
+    for y in range(1, 31):
+        for x in range(0, clear_btn.x()):
+            c = img.pixelColor(x, y)
+            if (_near(c, tert, 24) and c.alpha() >= 120
+                    and c.blue() - c.red() >= 10):
+                xs.add(x)
+    assert_true(xs, "未找到后缀墨迹")
+    clusters = []
+    for x in sorted(xs):
+        if clusters and x - clusters[-1][1] <= 3:
+            clusters[-1][1] = x
+        else:
+            clusters.append([x, x])
+    suf_x0, suf_x1 = max(clusters, key=lambda cl: cl[1] - cl[0])
+    assert_true(suf_x1 - suf_x0 + 1 >= 30,
+                f"后缀墨迹簇过窄（疑似正文误判）: {suf_x1 - suf_x0 + 1}px")
     # 正文墨迹右缘不得进入后缀墨迹带
-    txt = _ink_bbox(img, dark, range(0, suf[1] + 1), range(1, 31), tol=60)
+    txt = _ink_bbox(img, dark, range(0, suf_x1 + 1), range(1, 31), tol=60)
     if txt is not None:
-        assert_true(txt[1] < suf[0],
-                    f"正文与后缀墨迹相交: text_x1={txt[1]} suffix_x0={suf[0]}")
+        assert_true(txt[1] < suf_x0,
+                    f"正文与后缀墨迹相交: text_x1={txt[1]} suffix_x0={suf_x0}")
     e.close()
 
 
@@ -301,22 +321,25 @@ def _():
     after_w = suf[1] - suf[0] + 1
     assert_true(after_w > 20, f"修复后后缀墨迹宽 {after_w}px，疑似仍被压缩")
 
-    # 修复前工件：同位置后缀被压入 16px 方形图标（墨迹宽度明显更小）
+    # 修复前工件（fixf2_*_before.png）为修复波次当时以旧代码人工生成的一次性
+    # 历史产物，tests/shots/ 被 gitignore，全新检出必然缺失——缺失时跳过对比，
+    # 「修复仍生效」由上方 after 后缀墨迹宽度 >20px 的绝对断言兜底
     before_path = SHOTS / "fixf2_lineedit_light_before.png"
-    assert_true(before_path.exists(), f"缺少 before 截图: {before_path}")
-    from PySide6.QtGui import QImage
-    before = QImage(str(before_path))
-    suf_b = _ink_bbox(before, tert, range(240, 296), md_row_y)
-    if suf_b is not None:
-        before_w = suf_b[1] - suf_b[0] + 1
-        assert_true(after_w > before_w,
-                    f"before/after 无差异: before={before_w} after={after_w}")
-        print(f"  后缀墨迹宽度: before={before_w}px -> after={after_w}px")
+    if before_path.exists():
+        from PySide6.QtGui import QImage
+        before = QImage(str(before_path))
+        suf_b = _ink_bbox(before, tert, range(240, 296), md_row_y)
+        if suf_b is not None:
+            before_w = suf_b[1] - suf_b[0] + 1
+            assert_true(after_w > before_w,
+                        f"before/after 无差异: before={before_w} after={after_w}")
+            print(f"  后缀墨迹宽度: before={before_w}px -> after={after_w}px")
+    else:
+        print(f"  提示: 缺少修复前工件 {before_path.name}，跳过 before/after 对比")
     for mode in ("light", "dark"):
-        for kind in ("before", "after"):
-            p = SHOTS / f"fixf2_lineedit_{mode}_{kind}.png"
-            assert_true(p.exists() and p.stat().st_size > 1024,
-                        f"截图缺失或过小: {p}")
+        p = SHOTS / f"fixf2_lineedit_{mode}_after.png"
+        assert_true(p.exists() and p.stat().st_size > 1024,
+                    f"截图缺失或过小: {p}")
     print(f"  截图: {SHOTS / 'fixf2_lineedit_light_after.png'}")
     print(f"  截图: {SHOTS / 'fixf2_lineedit_dark_after.png'}")
 
@@ -448,13 +471,14 @@ def _():
         tm.apply(_APP)
         _APP.processEvents()
 
+    # 仅校验本次运行产出的 after 截图；before 为修复波次的历史工件
+    # （gitignored，全新检出不存在），不参与存在性断言
     for mode in ("light", "dark"):
         for placement in ("top", "bottom", "left", "right"):
-            for kind in ("before", "after"):
-                p = SHOTS / f"fixf2_popover_{placement}_{mode}_{kind}.png"
-                assert_true(p.exists() and p.stat().st_size > 512,
-                            f"截图缺失或过小: {p}")
-    print(f"  截图: {SHOTS}/fixf2_popover_<方位>_<主题>_[before|after].png")
+            p = SHOTS / f"fixf2_popover_{placement}_{mode}_after.png"
+            assert_true(p.exists() and p.stat().st_size > 512,
+                        f"截图缺失或过小: {p}")
+    print(f"  截图: {SHOTS}/fixf2_popover_<方位>_<主题>_after.png")
 
 
 def main() -> int:

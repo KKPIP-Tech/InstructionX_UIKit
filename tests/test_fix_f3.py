@@ -481,11 +481,14 @@ def _():
 # ---------------------------------------------------------------------------
 
 def _reveal_fully_shown(child):
-    """完全渐显判据：无残留效果（已摘除）或打标效果 opacity==1。"""
+    """完全渐显判据：控件已恢复显示（不再处于预隐藏 / 渐显隐藏态），
+    且无残留的渐显打标效果（_uik_reveal）。"""
+    if child.isHidden():
+        return False
     eff = child.graphicsEffect()
     if eff is None:
         return True
-    return bool(eff.property("_uik_reveal")) and eff.opacity() >= 0.999
+    return not bool(eff.property("_uik_reveal"))
 
 
 @case("ScrollReveal 演示卡场景（小视口 / 先构建后显示）滚动渐显")
@@ -517,25 +520,25 @@ def _():
     vp_h = reveal.viewport().height()
     if vp_h < 100:
         raise AssertionError(f"视口高度异常: {vp_h}")
-    # 视口外下方块此时应被预隐藏（opacity=0 的打标效果）
+    # 视口外下方块此时应被预隐藏（8e9f6aa 起改为 hide + retainSizeWhenHidden
+    # 保留布局占位，不再使用 QGraphicsOpacityEffect opacity=0）
     below = [b for b in blocks
              if b.mapTo(reveal.viewport(), QPoint(0, 0)).y() >= vp_h]
     if not below:
         raise AssertionError("演示场景应存在视口外块")
     for b in below:
-        eff = b.graphicsEffect()
-        if eff is None or eff.opacity() != 0.0:
-            raise AssertionError("视口外块应预隐藏为 opacity=0")
+        if not b.isHidden():
+            raise AssertionError("视口外块应预隐藏为 isHidden")
+        if not b.sizePolicy().retainSizeWhenHidden():
+            raise AssertionError("预隐藏块应保留布局占位（retainSizeWhenHidden）")
     # 播放路径：滚到底
     sb = reveal.verticalScrollBar()
     sb.setValue(sb.maximum())
     pump(600)
     for i, b in enumerate(blocks):
         if not _reveal_fully_shown(b):
-            eff = b.graphicsEffect()
             raise AssertionError(
-                f"滚到底后块 {i} 应完全渐显: "
-                f"{None if eff is None else eff.opacity()}")
+                f"滚到底后块 {i} 应完全渐显: hidden={b.isHidden()}")
         if not b.isVisible():
             raise AssertionError(f"块 {i} 应保持逻辑可见（布局不被破坏）")
     shot(reveal, "scrollreveal_bottom")

@@ -744,7 +744,12 @@ def _():
     menu.search_edit.returnPressed.emit()
     app.processEvents()
     assert_eq(chosen, ["probe"], "回车应选第一项")
-    menu.close()
+    # 新契约（708f905 起）：选定条目即 close() 自毁（WA_DeleteOnClose），
+    # 此处收尾关闭时菜单可能已销毁，需容错
+    try:
+        menu.close()
+    except RuntimeError:
+        pass
 
     # 节点右键菜单
     fired = []

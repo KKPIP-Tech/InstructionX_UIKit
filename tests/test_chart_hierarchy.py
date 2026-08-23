@@ -343,12 +343,13 @@ def _():
     chart = make_chart()
     render(chart, GAUGE_OPTION)
     r = chart.series_renderers[0]
-    # 正上方（90°）位于表盘弧内
-    pt = r._pt(90, r._radius * 0.9)
+    # 正上方（内部角 270°，自 3 点方向顺时针）位于表盘弧内；
+    # 347c5ba 起对齐 ECharts 角度约定，默认开口在底部
+    pt = r._pt(270, r._radius * 0.9)
     hit = r.hit_test(pt)
     assert_true(hit is not None and hit["value"] == 66, f"gauge hit: {hit}")
-    # 正下方（270°）位于开口缺口
-    pt_gap = r._pt(270, r._radius * 0.9)
+    # 正下方（内部角 90°）位于开口缺口
+    pt_gap = r._pt(90, r._radius * 0.9)
     assert_true(r.hit_test(pt_gap) is None, "gauge 缺口误命中")
     chart.deleteLater()
 

@@ -151,6 +151,9 @@ def _():
     for key, title in metas:
         sec = QLabel(f"{title}\n" + "配置项示例文本\n" * 5)
         sec.setFrameShape(QFrame.StyledPanel)
+        # 段落需足够高：滚动条最大行程须容纳 notify 段落顶到视口顶部，
+        # 否则 setValue 被钳制，联动高亮永远停在上一段
+        sec.setMinimumHeight(200)
         vbox.addWidget(sec)
         sections.append(sec)
     area.setWidget(content)
