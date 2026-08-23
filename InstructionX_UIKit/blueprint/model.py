@@ -19,11 +19,15 @@
     data = graph.to_dict()                            # JSON 可序列化
 """
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 
 from PySide6.QtCore import QObject, QPointF, QSizeF, Signal
+
+#: 本模块日志器（库自包含，统一走标准库 logging）
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "PinDirection",
@@ -94,11 +98,23 @@ class Pin:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Pin":
-        """由 ``to_dict`` 结果重建引脚。"""
+        """由 ``to_dict`` 结果重建引脚。
+
+        未知 ``direction`` 值不回抛异常：回退 ``Input`` 并记 WARNING
+        （容忍外部序列化数据漂移，避免整图反序列化失败）。
+        """
+        raw_dir = data.get("direction", "input")
+        try:
+            direction = PinDirection(raw_dir)
+        except ValueError:
+            logger.warning(
+                "未知引脚方向 %r（引脚 %r），回退 input",
+                raw_dir, data.get("id"))
+            direction = PinDirection.Input
         return cls(
             id=data["id"],
             name=data.get("name", data["id"]),
-            direction=PinDirection(data.get("direction", "input")),
+            direction=direction,
             data_type=data.get("data_type", "any"),
             multi=bool(data.get("multi", False)),
         )
@@ -151,6 +167,11 @@ class BlueprintNode(QObject):
         .status: ``"idle" | "running" | "done" | "error"``。
         .elapsed_ms: 最近一次运行耗时（毫秒），未运行为 ``None``。
         .accent: 标题栏强调色（令牌键或 hex，来自注册表，可为 ``None``）。
+
+    注意：``title`` / ``properties`` 为裸属性，**直接赋值不发射
+    ``changed``**，界面（节点外观 / 标题栏宽度）不会自动重排。请使用
+    ``set_title()`` / ``set_properties()``；确需直接赋值时手动
+    ``node.changed.emit()``。
     """
 
     #: 节点任意数据变化（标题 / 引脚 / 属性 / 位置）
@@ -197,6 +218,25 @@ class BlueprintNode(QObject):
     def set_elapsed_ms(self, value) -> None:
         """设置耗时（毫秒或 ``None``），触发重绘以更新耗时徽标。"""
         self._elapsed_ms = None if value is None else float(value)
+        self.changed.emit()
+
+    # -- 标题 / 属性 ------------------------------------------------------
+    def set_title(self, title: str) -> None:
+        """设置节点标题并发射 ``changed``（画布据此重排标题栏宽度等）。
+
+        直接赋值 ``node.title = ...`` 不发射信号、界面不重排，绕过本
+        方法时需手动 ``node.changed.emit()``。
+        """
+        self.title = str(title)
+        self.changed.emit()
+
+    def set_properties(self, properties: dict) -> None:
+        """整体替换属性字典并发射 ``changed``（节点体重建展示）。
+
+        直接修改 ``node.properties`` 同样不发射信号，需手动
+        ``node.changed.emit()``（见 ``set_title``）。
+        """
+        self.properties = dict(properties)
         self.changed.emit()
 
     # -- 引脚 ------------------------------------------------------------

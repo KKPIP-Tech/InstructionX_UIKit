@@ -652,11 +652,11 @@ class BlueprintDemoPage(QWidget):
         n_start = self.canvas.add_node_at("start", QPointF(40, 180))
         n_load = self.canvas.add_node_at("load_image", QPointF(300, 180))
         n_pre = self.canvas.add_node_at("normalize", QPointF(560, 180))
-        n_pre.title = "预处理（归一化）"
+        n_pre.set_title("预处理（归一化）")
         n_cnn = self.canvas.add_node_at("cnn", QPointF(840, 180))
-        n_cnn.title = "模型推理（CNN）"
+        n_cnn.set_title("模型推理（CNN）")
         n_post = self.canvas.add_node_at("edge_detect", QPointF(1140, 180))
-        n_post.title = "后处理（边缘检测）"
+        n_post.set_title("后处理（边缘检测）")
         n_save = self.canvas.add_node_at("save_result", QPointF(1440, 180))
         # exec 链
         g.add_edge(n_start.id, "out", n_load.id, "in")

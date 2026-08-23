@@ -23,9 +23,18 @@ from shiboken6 import isValid as _shiboken_is_valid
 
 
 def _connect_theme(widget, slot) -> None:
-    """连接主题切换信号；控件销毁后自动忽略回调。"""
-    ThemeManager.instance().theme_changed.connect(
-        lambda *_: slot() if _shiboken_is_valid(widget) else None)
+    """连接主题切换信号；组件销毁时断开连接（shiboken 守卫双保险）。"""
+    manager = ThemeManager.instance()
+    receiver = lambda *_: slot() if _shiboken_is_valid(widget) else None
+    manager.theme_changed.connect(receiver)
+
+    def _cleanup(_obj=None):
+        try:
+            manager.theme_changed.disconnect(receiver)
+        except (RuntimeError, TypeError):
+            pass
+
+    widget.destroyed.connect(_cleanup)
 
 __all__ = ["Notification"]
 
@@ -75,6 +84,11 @@ class Notification(QWidget):
             raise ValueError(
                 f"未知通知类型: {type!r}，应为 {self.TYPES} 之一")
         self._anchor = anchor
+        # 锚点销毁时同步清理：退出活动列表并关闭自身，避免后续
+        # 对死包装器调用 mapToGlobal 抛 RuntimeError。
+        anchor.destroyed.connect(self._on_anchor_destroyed)
+        # 自身销毁时从活动列表移除（deleteLater 直删不走 closeEvent）
+        self.destroyed.connect(self._on_destroyed)
         self._type = type
         self._title = title
         self._message = message
@@ -151,11 +165,26 @@ class Notification(QWidget):
     @staticmethod
     def close_all() -> None:
         """立即关闭所有存活通知。"""
+        # 先剔除死包装器（调用方可能已 deleteLater），再逐一关闭
+        Notification._active = [n for n in Notification._active
+                                if _shiboken_is_valid(n)]
         for n in list(Notification._active):
             n._timer.stop()
             n.close()
 
     # -- 内部 -------------------------------------------------------------
+    def _on_anchor_destroyed(self, _obj=None) -> None:
+        """锚点销毁：退出活动列表并销毁自身（定位已无意义）。"""
+        if self in Notification._active:
+            Notification._active.remove(self)
+        self._timer.stop()
+        self.deleteLater()
+
+    def _on_destroyed(self, _obj=None) -> None:
+        """自身销毁（deleteLater 等不走 closeEvent 的路径）：清理活动列表。"""
+        Notification._active = [n for n in Notification._active
+                                if n is not self and _shiboken_is_valid(n)]
+
     def _main_color(self) -> str:
         return {"info": T("color.primary"),
                 "success": T("color.success"),
@@ -163,9 +192,14 @@ class Notification(QWidget):
                 "error": T("color.danger")}[self._type]
 
     def _siblings(self):
-        return [n for n in Notification._active if n._anchor is self._anchor]
+        return [n for n in Notification._active
+                if _shiboken_is_valid(n) and n._anchor is self._anchor]
 
     def _target_pos(self) -> QPoint:
+        # 锚点已销毁时返回占位坐标：正常流程下锚点销毁会连带关闭自身，
+        # 此守卫兜底动画回调等边界路径，避免死包装器 mapToGlobal 崩溃。
+        if not _shiboken_is_valid(self._anchor):
+            return QPoint(0, 0)
         base = self._anchor.mapToGlobal(QPoint(0, 0))
         y = base.y() + _MARGIN
         for n in self._siblings():
@@ -227,8 +261,20 @@ class Notification(QWidget):
         super().closeEvent(event)
 
     def _reflow(self) -> None:
+        if not _shiboken_is_valid(self._anchor):
+            return
         for n in self._siblings():
             n._move_to_stack(animate=True)
+
+    def showEvent(self, event) -> None:
+        # 倒计时定时器仅在可见时运行（隐藏/关闭期间不空转）
+        super().showEvent(event)
+        if self._duration > 0 and self._elapsed.isValid() and not self._closing:
+            self._timer.start()
+
+    def hideEvent(self, event) -> None:
+        self._timer.stop()
+        super().hideEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
         hover = self._close_rect().contains(event.position().toPoint())

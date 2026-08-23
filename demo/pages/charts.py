@@ -326,10 +326,15 @@ def _build_boxplot(o):
     }
 
 
+#: 热力图色带（数据可视化专用，故意硬编码、豁免主题令牌：色带是图表的
+#: 数值编码维度，非主题语义色，亮 / 暗主题下保持同一套色带以稳定对比）
 _HEAT_RAMP = {
     "blue": ["#EBEFF5", "#3F5E8C"],
     "warm": ["#FDF3E3", "#D6473C"],
 }
+
+#: 仪表盘分段色带（同 _HEAT_RAMP：数据可视化色带，豁免主题令牌）
+_GAUGE_RAMP = [[0.6, "#3FA46A"], [0.85, "#C78A2B"], [1.0, "#E64545"]]
 
 
 def _build_heatmap_grid(o):
@@ -472,8 +477,7 @@ def _build_gauge(o):
     if o["progress"]:
         series["progress"] = {"show": True, "width": 10}
     if o["segments"]:
-        series["axisLine"] = {"lineStyle": {"width": 10, "color": [
-            [0.6, "#3FA46A"], [0.85, "#C78A2B"], [1.0, "#E64545"]]}}
+        series["axisLine"] = {"lineStyle": {"width": 10, "color": _GAUGE_RAMP}}
     return {"tooltip": {"show": False}, "series": [series]}
 
 

@@ -14,9 +14,18 @@ from shiboken6 import isValid as _shiboken_is_valid
 
 
 def _connect_theme(widget, slot) -> None:
-    """连接主题切换信号；控件销毁后自动忽略回调。"""
-    ThemeManager.instance().theme_changed.connect(
-        lambda *_: slot() if _shiboken_is_valid(widget) else None)
+    """连接主题切换信号；组件销毁时断开连接（shiboken 守卫双保险）。"""
+    manager = ThemeManager.instance()
+    receiver = lambda *_: slot() if _shiboken_is_valid(widget) else None
+    manager.theme_changed.connect(receiver)
+
+    def _cleanup(_obj=None):
+        try:
+            manager.theme_changed.disconnect(receiver)
+        except (RuntimeError, TypeError):
+            pass
+
+    widget.destroyed.connect(_cleanup)
 
 __all__ = ["Skeleton"]
 
@@ -51,6 +60,7 @@ class Skeleton(QWidget):
         self._rows = max(0, int(rows))
         self._button = bool(button)
         self._phase = 0.0
+        self._active = True  # 期望动画状态（与可见性无关）
         self._timer = QTimer(self)
         self._timer.setInterval(40)
         self._timer.timeout.connect(self._advance)
@@ -67,17 +77,30 @@ class Skeleton(QWidget):
             self.stop()
 
     def is_active(self) -> bool:
-        return self._timer.isActive()
+        """是否启用微光动画（期望状态，与可见性无关）。"""
+        return self._active
 
     def start(self) -> None:
-        """启动微光动画。"""
-        if not self._timer.isActive():
+        """启动微光动画（可见时定时器立即运行）。"""
+        self._active = True
+        if self.isVisible() and not self._timer.isActive():
             self._timer.start()
 
     def stop(self) -> None:
         """停止微光动画。"""
+        self._active = False
         self._timer.stop()
         self.update()
+
+    def showEvent(self, event) -> None:
+        # 可见时按期望状态启停定时器，隐藏期间不空转
+        super().showEvent(event)
+        if self._active:
+            self._timer.start()
+
+    def hideEvent(self, event) -> None:
+        self._timer.stop()
+        super().hideEvent(event)
 
     # -- 内部 -------------------------------------------------------------
     def _update_minimum(self) -> None:

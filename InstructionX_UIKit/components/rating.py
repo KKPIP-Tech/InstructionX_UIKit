@@ -63,7 +63,7 @@ class Rating(QWidget):
         self._read_only = bool(read_only)
         self._star = max(12, int(star_size))
         self._gap = 4
-        self._value = self._normalize(value)
+        self._value = self._normalize(self._finite(value))
         self._display = float(self._value)
         self._hover = None
         self._anim = QVariantAnimation(self)
@@ -86,8 +86,11 @@ class Rating(QWidget):
         return self._value
 
     def set_value(self, value: float, animate: bool = True) -> None:
-        """设置分值（默认平滑过渡），发射 ``valueChanged``。"""
-        value = self._normalize(value)
+        """设置分值（默认平滑过渡），发射 ``valueChanged``。
+
+        分值必须为有限数值（NaN / ±inf 抛 ``ValueError``）。
+        """
+        value = self._normalize(self._finite(value))
         if value == self._value:
             return
         self._value = value
@@ -111,6 +114,14 @@ class Rating(QWidget):
         self._read_only = bool(on)
         self.setMouseTracking(not on)
         self.setCursor(Qt.PointingHandCursor if not on else Qt.ArrowCursor)
+
+    @staticmethod
+    def _finite(value) -> float:
+        """把输入转换为 float 并校验为有限数值（NaN / inf 抛中文 ValueError）。"""
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError(f"非法分值: {value!r}，必须为有限数值")
+        return value
 
     def _normalize(self, value: float) -> float:
         value = max(0.0, min(float(self._count), float(value)))

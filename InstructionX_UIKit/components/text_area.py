@@ -9,6 +9,7 @@ from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import QLabel, QTextEdit
 
 from ..theme import set_property
+from ._mixin import QWIDGETSIZE_MAX
 
 __all__ = ["TextArea"]
 
@@ -128,7 +129,7 @@ class TextArea(QTextEdit):
             self._adjust_height()
         else:
             self.setMinimumHeight(0)
-            self.setMaximumHeight(16777215)
+            self.setMaximumHeight(QWIDGETSIZE_MAX)
             self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
     def _row_height(self) -> int:

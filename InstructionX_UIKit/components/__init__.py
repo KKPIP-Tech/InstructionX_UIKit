@@ -27,6 +27,7 @@ from .icon_button import IconButton
 from .image_view import ImageView
 from .line_edit import LineEdit
 from .list_view import ListItemDelegate, ListWidget
+from .markdown_view import MarkdownView
 from .message import Message
 from .nav_menu import NavMenu
 from .notification import Notification

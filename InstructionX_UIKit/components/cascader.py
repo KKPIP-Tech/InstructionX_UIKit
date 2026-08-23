@@ -11,13 +11,12 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QHBoxLayout, QMenu, QPushButton, QWidget
 
 from ..theme import set_property
+from ._mixin import SizeMixin
 
 __all__ = ["Cascader"]
 
-_SIZES = ("sm", "md", "lg")
 
-
-class Cascader(QWidget):
+class Cascader(SizeMixin, QWidget):
     """级联选择器。
 
     用途:
@@ -41,6 +40,10 @@ class Cascader(QWidget):
         ])
         cas.pathChanged.connect(lambda path: print("选中路径:", path))
     """
+
+    #: 合法尺寸档（SizeMixin 校验用）
+    _SIZES = ("sm", "md", "lg")
+    _size_label = "级联选择器"
 
     #: 选中路径变化信号（参数为 value 列表）
     pathChanged = Signal(list)
@@ -92,7 +95,11 @@ class Cascader(QWidget):
         return list(self._labels)
 
     def set_path(self, values, emit: bool = False) -> bool:
-        """按 value 路径选中，返回路径是否完整有效。"""
+        """按 value 路径选中，返回路径是否完整有效。
+
+        ``values`` 支持任意可迭代对象（含生成器），入参立即物化。
+        """
+        values = list(values)  # 生成器一次性迭代：先物化避免被 for 耗尽
         labels = []
         nodes = self._options
         for value in values:
@@ -114,16 +121,9 @@ class Cascader(QWidget):
         self._labels = []
         self._button.setText(self._placeholder)
 
-    def set_size(self, size: str) -> None:
-        """设置尺寸档：``sm`` / ``md`` / ``lg``。"""
-        if size not in _SIZES:
-            raise ValueError(f"未知级联选择器尺寸: {size!r}")
-        set_property(self, "size", size)
+    def _apply_size(self, size: str) -> None:
+        """SizeMixin 钩子：触发按钮同步尺寸档。"""
         set_property(self._button, "size", size)
-
-    def size_name(self) -> str:
-        """当前尺寸档名。"""
-        return self.property("uiksize") or "md"
 
     # ------------------------------------------------------------------
     # 弹出与菜单构建

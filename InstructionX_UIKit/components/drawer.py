@@ -31,9 +31,18 @@ from shiboken6 import isValid as _shiboken_is_valid
 
 
 def _connect_theme(widget, slot) -> None:
-    """连接主题切换信号；控件销毁后自动忽略回调。"""
-    ThemeManager.instance().theme_changed.connect(
-        lambda *_: slot() if _shiboken_is_valid(widget) else None)
+    """连接主题切换信号；组件销毁时断开连接（shiboken 守卫双保险）。"""
+    manager = ThemeManager.instance()
+    receiver = lambda *_: slot() if _shiboken_is_valid(widget) else None
+    manager.theme_changed.connect(receiver)
+
+    def _cleanup(_obj=None):
+        try:
+            manager.theme_changed.disconnect(receiver)
+        except (RuntimeError, TypeError):
+            pass
+
+    widget.destroyed.connect(_cleanup)
 
 __all__ = ["Drawer"]
 
@@ -177,7 +186,7 @@ class Drawer(QDialog):
         self._title.setText(text)
 
     def set_content(self, widget: QWidget) -> None:
-        """设置内容区控件（替换原有内容）。"""
+        """设置内容区控件（替换原有内容，旧控件销毁）。"""
         while self._body_layout.count():
             item = self._body_layout.takeAt(0)
             w = item.widget()

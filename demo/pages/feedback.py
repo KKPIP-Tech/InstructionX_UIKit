@@ -5,8 +5,7 @@
 触发按钮演示；其余以内联变体演示。亮 / 暗主题切换自动换肤。
 """
 
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPen
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -16,6 +15,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from shiboken6 import isValid as _is_valid
 
 from InstructionX_UIKit.components.alert import Alert
 from InstructionX_UIKit.components.anchor import Anchor
@@ -41,7 +41,18 @@ from InstructionX_UIKit.theme import T, set_property
 from .common import Section, col, hint_label, make_page, row
 from .playground import PlaygroundPanel, swap_widget, with_playground
 
-_KEEP = []  # 防止弹出层 / 引导层被 GC
+_KEEP = []  # 防止弹出层 / 引导层被 GC（关闭 / 销毁时移除，不累积）
+
+
+def _keep_alive(widget):
+    """持有弹出层强引用，销毁时自动从 ``_KEEP`` 移除（防 GC 且不累积）。"""
+    _KEEP.append(widget)
+    widget.destroyed.connect(lambda: _release(widget))
+
+
+def _release(widget):
+    if widget in _KEEP:
+        _KEEP.remove(widget)
 
 
 def _primary(text):
@@ -161,122 +172,49 @@ def create_pagination_page() -> QWidget:
 class StepsEx(Steps):
     """步骤条游乐场扩展（demo 侧子类，不改动 InstructionX_UIKit）。
 
-    InstructionX_UIKit ``Steps`` 的方向为构造参数，节点半径 / 连接线宽与样式为模块
-    常量、无 setter；这里以子类属性 + 重写绘制方法暴露这些演示参数，
-    并额外提供「点击节点切换当前步骤」开关（基类无鼠标交互）。
+    节点半径 / 连接线参数经基类公开 setter（set_node / set_link）转发，
+    以属性形式暴露给 Playground 绑定；「点击节点切换当前步骤」为
+    demo 专属交互（基类无鼠标交互），数据经公开 steps() / orientation()。
     """
 
     def __init__(self, orientation=Qt.Horizontal, parent=None):
         super().__init__(orientation, parent)
-        self.node_radius = 12            # 节点半径 px
-        self.link_width = 2.0            # 连接线宽 px
-        self.link_style = Qt.SolidLine   # 连接线样式
-        self.clickable = False           # 点击节点切换当前步骤
+        self.clickable = False  # 点击节点切换当前步骤
 
-    # -- 参数化绘制（逻辑与基类一致，仅替换半径 / 线宽 / 线型） ------------
-    def _paint_horizontal(self, p) -> None:
-        n = len(self._steps)
-        if n == 0:
-            return
-        r = self.node_radius
-        title_font, desc_font = self._fonts()
-        seg = self.width() / n
-        cy = 26.0
-        for i, st in enumerate(self._steps):
-            status = self.status_of(i)
-            x0 = i * seg
-            cx = x0 + r + 4
-            fm = QFontMetrics(title_font)
-            title_w = fm.horizontalAdvance(st["title"])
-            text_x = cx + r + 8
-            if i < n - 1:
-                x_start = text_x + title_w + 10
-                x_end = (i + 1) * seg + 2
-                if x_end > x_start:
-                    color = T("color.primary") if status == "finish" \
-                        else T("color.border")
-                    pen = QPen(QColor(color))
-                    pen.setWidthF(self.link_width)
-                    pen.setStyle(self.link_style)
-                    p.setPen(pen)
-                    p.drawLine(QPointF(x_start, cy), QPointF(x_end, cy))
-            self._draw_node(p, cx, cy, status, i)
-            self._draw_texts(p, st, status, text_x, cy, title_font, desc_font,
-                             align_top=False)
+    @property
+    def node_radius(self):
+        return self._node_r
 
-    def _paint_vertical(self, p) -> None:
-        n = len(self._steps)
-        if n == 0:
-            return
-        r = self.node_radius
-        title_font, desc_font = self._fonts()
-        row = max(56.0, self.height() / max(n, 1))
-        cx = 20.0
-        for i, st in enumerate(self._steps):
-            status = self.status_of(i)
-            cy = i * row + r + 6
-            if i < n - 1:
-                y_start = cy + r + 4
-                y_end = (i + 1) * row + 6 - 4
-                if y_end > y_start:
-                    color = T("color.primary") if status == "finish" \
-                        else T("color.border")
-                    pen = QPen(QColor(color))
-                    pen.setWidthF(self.link_width)
-                    pen.setStyle(self.link_style)
-                    p.setPen(pen)
-                    p.drawLine(QPointF(cx, y_start), QPointF(cx, y_end))
-            self._draw_node(p, cx, cy, status, i)
-            self._draw_texts(p, st, status, cx + r + 10, cy,
-                             title_font, desc_font, align_top=False)
+    @node_radius.setter
+    def node_radius(self, v):
+        self.set_node(int(v))
 
-    def _draw_node(self, p, cx, cy, status, index) -> None:
-        r = self.node_radius
-        fill, border, glyph, _title = self._colors(status)
-        rect = QRectF(cx - r, cy - r, r * 2, r * 2)
-        p.setBrush(fill)
-        pen = QPen(border)
-        pen.setWidthF(1.6)
-        p.setPen(pen)
-        p.drawEllipse(rect)
-        scale = r / 12.0  # 基类字形按 r=12 设计，随半径缩放
-        if status == "finish":
-            pen = QPen(glyph)
-            pen.setWidthF(1.8)
-            pen.setCapStyle(Qt.RoundCap)
-            pen.setJoinStyle(Qt.RoundJoin)
-            p.setPen(pen)
-            p.drawPolyline([
-                QPointF(cx - 5.0 * scale, cy + 0.5 * scale),
-                QPointF(cx - 1.5 * scale, cy + 4.0 * scale),
-                QPointF(cx + 5.5 * scale, cy - 3.5 * scale),
-            ])
-        elif status == "error":
-            pen = QPen(glyph)
-            pen.setWidthF(1.8)
-            pen.setCapStyle(Qt.RoundCap)
-            p.setPen(pen)
-            p.drawLine(QPointF(cx - 3.5 * scale, cy - 3.5 * scale),
-                       QPointF(cx + 3.5 * scale, cy + 3.5 * scale))
-            p.drawLine(QPointF(cx + 3.5 * scale, cy - 3.5 * scale),
-                       QPointF(cx - 3.5 * scale, cy + 3.5 * scale))
-        else:
-            font = QFont(self.font())
-            font.setPixelSize(T("font.sm"))
-            font.setWeight(QFont.DemiBold)
-            p.setFont(font)
-            p.setPen(glyph)
-            p.drawText(rect, Qt.AlignCenter, str(index + 1))
+    @property
+    def link_width(self):
+        return self._link_width
+
+    @link_width.setter
+    def link_width(self, v):
+        self.set_link(float(v), self._link_style)
+
+    @property
+    def link_style(self):
+        return self._link_style
+
+    @link_style.setter
+    def link_style(self, v):
+        self.set_link(self._link_width, v)
 
     # -- 点击切换当前步骤（基类无此交互，可选开启） ------------------------
     def mousePressEvent(self, event) -> None:  # noqa: N802
-        if self.clickable and self._steps:
-            n = len(self._steps)
+        if self.clickable and self.steps():
+            n = len(self.steps())
             pos = event.position()
-            if self._orientation == Qt.Horizontal:
+            if self.orientation() == Qt.Horizontal:
                 idx = int(pos.x() // (self.width() / n))
             else:
                 idx = int(pos.y() // max(56.0, self.height() / max(n, 1)))
+            idx = max(0, min(idx, n - 1))
             self.set_current(idx)
         super().mousePressEvent(event)
 
@@ -323,12 +261,13 @@ def create_steps_page() -> QWidget:
     def apply_status(idx):
         def apply(v):
             state["status"][idx] = v
-            if st is None or idx >= len(st._steps):
+            if st is None:
                 return
-            if v is None:  # 无公开「清除显式状态」API：属性赋值恢复自动推导
-                st._steps[idx]["status"] = None
-                st.update()
-            else:
+            if v is None:
+                # 基类公开 clear_status 清除显式状态，恢复按 current 推导
+                if idx < len(st.steps()):
+                    st.clear_status(idx)
+            elif idx < len(st.steps()):
                 st.set_status(idx, v)
         return apply
 
@@ -417,9 +356,16 @@ def create_drawer_page() -> QWidget:
 
 
 def _open_drawer(btn, position):
+    # 同位置仅保留最新抽屉：旧抽屉滑出（其父为窗口，销毁时统一回收），
+    # 列表不随重复打开累积
+    for old in list(_KEEP):
+        if isinstance(old, Drawer) and old.position() == position \
+                and _is_valid(old):
+            _release(old)
+            old.close()
     dr = Drawer(btn.window(), position=position, size=300, title=f"{position} 抽屉")
     dr.set_content(QLabel(f"从 {position} 边滑入的抽屉内容。"))
-    _KEEP.append(dr)
+    _keep_alive(dr)
     dr.open()
 
 
@@ -513,7 +459,14 @@ def create_tour_page() -> QWidget:
         tour = Tour(start.window())
         tour.add_step(target1, "第一步", "这是目标按钮 A 的引导说明。")
         tour.add_step(target2, "第二步", "这是目标按钮 B 的引导说明。")
-        _KEEP.append(tour)
+        _keep_alive(tour)
+        # 引导结束（完成 / 跳过）即移除引用并销毁：Tour 仅隐藏不销毁，
+        # 不主动清理会导致 _KEEP 随重复引导累积
+        def _done():
+            _release(tour)
+            tour.deleteLater()
+        tour.finished.connect(_done)
+        tour.skipped.connect(_done)
         tour.start()
 
     start.clicked.connect(_start)

@@ -39,6 +39,7 @@ from PySide6.QtWidgets import QWidget
 
 from ..theme import T, ThemeManager
 from ..tokens import DURATION, EASING
+from ._utils import warn_once
 from .axes import (
     CalendarCoord,
     Coord,
@@ -239,6 +240,20 @@ class SeriesRenderer:
         """tooltip axis 触发：返回 {"name","value","series","color"} 或 None。"""
         return None
 
+    def _full_index(self, index):
+        """tooltip 局部下标 → 全量数据下标（dataZoom category 窗口偏移换算）。
+
+        ``coord.invert_x`` 返回窗口内下标；本方法经 ``AxisModel.window_offset``
+        加回窗口起始偏移，使 ``value_at_index`` 按全量数据取数。
+        """
+        if not isinstance(index, int):
+            return index
+        coord = self.chart.coord_for(self.opt)
+        axis = getattr(coord, "x_axis", None)
+        if axis is not None and getattr(axis, "type", "") == "category":
+            return index + axis.window_offset()
+        return index
+
 
 # ---------------------------------------------------------------------------
 # 动画驱动
@@ -365,8 +380,9 @@ class Legend:
     """图例组件：横/纵排布、点击切换系列显隐、主题感知。
 
     option：{"show": True, "orient": "horizontal|vertical",
-    "top|bottom|left|right": ...}。条目由 ChartWidget 按系列名 + 调色板注入
-    （``set_items([(name, color), ...])``）。
+    "top|bottom|left|right": ...}。条目由 ChartWidget 按系列名注入
+    （``set_items([(name, color), ...])``，color 仅为兜底值）——绘制时色块
+    经 chart 实时取系列当前色，主题切换后无需重建即生效。
     """
 
     #: 条目点击回调：chart 注入 ``legend.on_toggle = chart.set_series_visible``
@@ -390,6 +406,14 @@ class Legend:
 
     def set_items(self, items: list) -> None:
         self._items = [(str(n), c) for n, c in (items or []) if str(n)]
+
+    def _item_color(self, name: str):
+        """条目实时色：按系列名从 chart 当前渲染器取色（主题感知），
+        找不到渲染器时返回 None（调用方退回 set_items 的兜底色）。"""
+        for r in self.chart.series_renderers:
+            if r.name == name:
+                return r.color()
+        return None
 
     @property
     def shown(self) -> bool:
@@ -464,9 +488,12 @@ class Legend:
         font = chart_font(T("font.xs"))
         p.setFont(font)
         fm = QFontMetricsF(font)
-        for (name, color), r in zip(self._items, self._item_rects):
+        for (name, fallback), r in zip(self._items, self._item_rects):
             enabled = self.chart.is_series_visible(name)
-            swatch = QColor(color) if enabled else QColor(T("color.text.disabled"))
+            live = self._item_color(name) if enabled else None
+            swatch = QColor(live) if live is not None else QColor(fallback)
+            if not enabled:
+                swatch = QColor(T("color.text.disabled"))
             text_c = QColor(T("color.text.primary")) if enabled \
                 else QColor(T("color.text.disabled"))
             # 色块（圆角小方块）
@@ -583,16 +610,14 @@ class Tooltip:
         p.setBrush(QColor(T("color.bg.elevated")))
         p.setPen(QPen(QColor(T("color.border")), 1))
         p.drawRoundedRect(box, radius, radius)
-        # 文本行
+        # 文本行（缩进仅对带圆点的行生效；标题行 color 为 None 不缩进）
         ty = box.top() + pad_y
-        has_dot = any(c is not None for c, _ in rows)
         for color, label in rows:
             tx = box.left() + pad_x
-            if has_dot:
-                if color is not None:
-                    p.setPen(Qt.NoPen)
-                    p.setBrush(QColor(color))
-                    p.drawEllipse(QRectF(tx, ty + line_h / 2 - dot / 2, dot, dot))
+            if color is not None:
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(color))
+                p.drawEllipse(QRectF(tx, ty + line_h / 2 - dot / 2, dot, dot))
                 tx += dot + 5
             p.setPen(QColor(T("color.text.primary")))
             p.drawText(QRectF(tx, ty, box.right() - pad_x - tx, line_h),
@@ -618,6 +643,9 @@ class ChartWidget(QWidget):
 
     resizeEvent 自动重排；构造时连接
     ``ThemeManager.instance().theme_changed`` → 重取 T() 配色并 update()。
+
+    性能：``_layout_all`` 带布局缓存 + 脏标记（见 ``invalidate_layout``），
+    悬停 / 无动画重绘不再全量重排；动画进行中按历史行为每帧重算。
     """
 
     def __init__(self, parent: QWidget = None):
@@ -629,38 +657,65 @@ class ChartWidget(QWidget):
         self._coords = []        # [Coord]
         self._components = []    # [C4 组件实例]
         self._series_state = {}  # name -> bool（legend 显隐状态）
+        self._opt_version = 0    # option 版本号（set_option/update_option 递增）
+        self._layout_key = None  # 布局缓存键（脏标记，见 invalidate_layout）
         self.title = Title()
         self.legend = Legend(self)
         self.tooltip = Tooltip(self)
         self.legend.on_toggle = self.set_series_visible
         self.anim = ChartAnimation(self.update, self)
-        ThemeManager.instance().theme_changed.connect(self._on_theme_changed)
+        # 主题连接：接收者为本控件（PySide 以接收者销毁自动断连）；另在
+        # destroyed 时显式 disconnect（保守双保险，防单例信号强引用滞留）
+        self._theme_slot = self._on_theme_changed
+        ThemeManager.instance().theme_changed.connect(self._theme_slot)
+        self.destroyed.connect(self._disconnect_theme)
+
+    def _disconnect_theme(self, *_args) -> None:
+        """销毁路径显式断开主题单例信号连接（保守处理，见 §七.21）。"""
+        try:
+            ThemeManager.instance().theme_changed.disconnect(self._theme_slot)
+        except (RuntimeError, TypeError):
+            pass
 
     # ------------------------------------------------------------------ API
     def set_option(self, option: dict) -> None:
         """全量设置 option（dict，schema 见 CHART_SPEC §4）并播放入场动画。"""
         self._option = copy.deepcopy(option) if isinstance(option, dict) else {}
+        self._opt_version += 1
         self._rebuild()
         self.anim.start()
         self.update()
 
     def update_option(self, option: dict) -> None:
-        """合并更新 option（dict 深合并 / list 替换），旧→新数据插值动画。"""
+        """合并更新 option 并播放旧→新数据插值动画。
+
+        合并语义：dict 深合并；**list 值（如 ``series``）整体替换**而非
+        按项合并（ECharts 的按 id/name 合并为简化语义，未实现）。旧系列
+        数据按 **name** 匹配注入新渲染器的 ``prev_data`` 供 anim_t 插值，
+        名字匹配不到（系列被删除 / 改名）时不插值（从入场路径变形）。
+        """
         if not isinstance(option, dict):
             return
-        prev_data = [list(r.data()) for r in self._series]
+        prev_by_name = {r.name: list(r.data()) for r in self._series}
         _deep_merge(self._option, option)
+        self._opt_version += 1
         self._rebuild()
-        # 旧数据注入新渲染器（同序号），供 anim_t 插值
-        for i, r in enumerate(self._series):
-            if i < len(prev_data):
-                r.prev_data = prev_data[i]
+        # 旧数据按 name 注入新渲染器（增删 / 重排后不再序号错位）
+        for r in self._series:
+            r.prev_data = prev_by_name.get(r.name)
         self.anim.start()
         self.update()
 
     def option(self) -> dict:
-        """当前 option（拷贝）。"""
+        """当前 option（拷贝，公共 API 契约）。
+
+        内部每帧热路径请用 ``_option_ref()``（无拷贝），避免逐帧 deepcopy。
+        """
         return copy.deepcopy(self._option)
+
+    def _option_ref(self) -> dict:
+        """当前 option 的内部引用（无拷贝；仅 charts 包内部热路径使用）。"""
+        return self._option
 
     @property
     def series_renderers(self) -> list:
@@ -716,7 +771,11 @@ class ChartWidget(QWidget):
         return self.primary_coord()
 
     def set_series_visible(self, name, visible: bool = None) -> None:
-        """按名称设置系列显隐（legend 点击；visible 缺省为取反）。"""
+        """按名称设置系列显隐（legend 点击；visible 缺省为取反）。
+
+        显隐影响堆叠基线等布局结果 → 失效布局缓存；并通知定时器驱动型
+        渲染器（lines trailEffect / effectScatter）恢复或暂停动画。
+        """
         name = str(name)
         if visible is None:
             visible = not self._series_state.get(name, True)
@@ -724,6 +783,13 @@ class ChartWidget(QWidget):
         for r in self._series:
             if r.name == name:
                 r.visible = bool(visible)
+                hook = getattr(r, "_on_visible_changed", None)
+                if callable(hook):
+                    try:
+                        hook()
+                    except Exception:
+                        pass
+        self._layout_key = None
         self.update()
 
     def is_series_visible(self, name) -> bool:
@@ -736,8 +802,9 @@ class ChartWidget(QWidget):
 
     # ------------------------------------------------------------- 内部构建
     def _rebuild(self) -> None:
-        """按当前 option 重建组件 / 坐标系 / 系列渲染器。"""
+        """按当前 option 重建组件 / 坐标系 / 系列渲染器（并使布局缓存失效）。"""
         opt = self._option
+        self._layout_key = None
         self.title.set_option(opt.get("title") or {})
         self.legend.set_option(opt.get("legend") or {})
         self.tooltip.set_option(opt.get("tooltip") or {})
@@ -748,17 +815,26 @@ class ChartWidget(QWidget):
         # 缺省且落在 grid 的直角系列（bar/line/scatter/... 见
         # GRID_SERIES_TYPES）时创建；纯无坐标 option（pie/radar/gauge/
         # sankey/...）不创建任何 Coord，不再兜底绘制轴线网格。
+        # 单个坐标构造失败降级跳过并记录（坐标构造自身已对非法输入容灾）。
         self._coords = []
         if "calendar" in opt:
-            self._coords.append(CalendarCoord(self, opt))
+            c = self._make_coord(CalendarCoord, "calendar")
+            if c is not None:
+                self._coords.append(c)
         if "polar" in opt or "radiusAxis" in opt or "angleAxis" in opt:
-            self._coords.append(PolarCoord(self, opt))
+            c = self._make_coord(PolarCoord, "polar")
+            if c is not None:
+                self._coords.append(c)
         if "singleAxis" in opt:
-            self._coords.append(SingleAxisCoord(self, opt))
+            c = self._make_coord(SingleAxisCoord, "singleAxis")
+            if c is not None:
+                self._coords.append(c)
         need_grid = ("xAxis" in opt or "yAxis" in opt or "grid" in opt
                      or _needs_grid_coord(series_opts))
         if need_grid:
-            self._coords.insert(0, GridCoord(self, opt))
+            grid = self._make_coord(GridCoord, "grid")
+            if grid is not None:
+                self._coords.insert(0, grid)
         for c in self._coords:
             c.set_series(series_opts)
 
@@ -771,8 +847,13 @@ class ChartWidget(QWidget):
                 continue  # 未注册类型（C2/C3 尚未提供）安全跳过
             try:
                 r = cls(self, s)
-            except Exception:
-                continue  # 单个系列构造失败不拖垮整图
+            except Exception as exc:
+                # 单个系列构造失败不拖垮整图，但至少可见一次
+                warn_once(f"series-ctor:{type_name}",
+                          f"系列构造失败（type={type_name}）: {exc!r}")
+                continue
+            # 注入 option 内序号：bar 槽位等按序号定位自身，不依赖字典相等
+            r._series_index = i
             if not r.name:
                 r.name = f"series{i}"
                 r.opt.setdefault("name", r.name)
@@ -794,12 +875,23 @@ class ChartWidget(QWidget):
         for i, r in enumerate(self._series):
             items.append((r.name, self.color_for_series(r)))
         self.legend.set_items(items)
-        self._layout_all()
+        self._layout_all(force=True)
+
+    def _make_coord(self, cls, kind: str):
+        """构造单个坐标系：失败降级为 None 并记录一次（不拖垮整图）。"""
+        try:
+            return cls(self, self._option)
+        except Exception as exc:
+            warn_once(f"coord-ctor:{kind}",
+                      f"坐标构造失败（{kind}）: {exc!r}")
+            return None
 
     def _spawn_component(self, cls, comp_opt, series_opt) -> None:
         try:
             comp = cls(self, comp_opt)
-        except Exception:
+        except Exception as exc:
+            warn_once(f"component-ctor:{getattr(cls, '__name__', cls)!r}",
+                      f"组件构造失败（{getattr(cls, 'option_key', '')}）: {exc!r}")
             return
         if series_opt is not None:
             comp.series_opt = series_opt
@@ -833,22 +925,62 @@ class ChartWidget(QWidget):
             self.legend.layout(band)
         return content
 
-    def _layout_all(self) -> None:
+    def invalidate_layout(self) -> None:
+        """使布局缓存失效（下次绘制 / 布局时全量重排）。
+
+        失效来源汇总（与缓存键同构）：set_option / update_option / _rebuild
+        （option 版本）、resizeEvent（视口尺寸）、主题切换、dataZoom 窗口
+        交互（滚轮 / 拖拽 / restore，见 interact.py）、系列显隐（堆叠基线）。
+        动画进行中不缓存（每帧重算，与历史行为一致）。
+        """
+        self._layout_key = None
+
+    def _layout_cache_key(self):
+        """布局缓存键：option 版本 / 视口尺寸 / 主题 / dataZoom 窗口状态。
+
+        键命中即可安全跳过布局——所有布局输入（option、坐标 rect、dataZoom
+        窗口、图例条目标题几何）都被上述成员覆盖；缓存只跳过、绝不跳过
+        *已经发生变更* 的重排（保守策略：宁可缓存不生效也不可缓存陈旧结果）。
+        """
+        try:
+            theme = ThemeManager.instance().mode
+        except Exception:
+            theme = None
+        dz = tuple((getattr(c, "start", 0.0), getattr(c, "end", 100.0))
+                   for c in self._components
+                   if getattr(c, "option_key", "") == "dataZoom")
+        return (self._opt_version, self.width(), self.height(), theme, dz)
+
+    def _layout_all(self, force: bool = False) -> None:
+        """全量布局：坐标系 / 系列 / 组件几何。
+
+        布局缓存：键命中直接返回（悬停 / 无动画重绘零成本）；动画进行中
+        不缓存（每帧重算，ChartAnimation 视觉行为与历史一致）。
+        """
+        if force:
+            self._layout_key = None
+        elif not self.anim.is_running():
+            key = self._layout_cache_key()
+            if key == self._layout_key:
+                return
+            self._layout_key = key
         content = self._content_rect()
         for c in self._coords:
             c.layout(content)
         for r in self._series:
             try:
                 r.layout(content)
-            except Exception:
-                pass
+            except Exception as exc:
+                warn_once(f"series-layout:{r.__class__.__name__}",
+                          f"系列布局异常（{r.name}）: {exc!r}")
         for comp in self._components:
             layout = getattr(comp, "layout", None)
             if callable(layout):
                 try:
                     layout(content)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    warn_once(f"component-layout:{comp.__class__.__name__}",
+                              f"组件布局异常（{comp.__class__.__name__}）: {exc!r}")
 
     # ------------------------------------------------------------- Qt 事件
     def resizeEvent(self, event) -> None:
@@ -857,7 +989,9 @@ class ChartWidget(QWidget):
         self.update()
 
     def _on_theme_changed(self, _mode) -> None:
-        # 配色全部经 T() 实时取，重绘即生效
+        # 配色全部经 T() 实时取，重绘即生效；主题可能影响字体度量等布局
+        # 输入，保守失效布局缓存（下一次绘制全量重排一次）
+        self._layout_key = None
         self.update()
 
     def paintEvent(self, event) -> None:
@@ -873,8 +1007,10 @@ class ChartWidget(QWidget):
                 continue
             try:
                 r.paint(p, t)
-            except Exception:
-                pass  # 单系列绘制异常不影响整图
+            except Exception as exc:
+                # 单系列绘制异常不影响整图，但至少可见一次
+                warn_once(f"series-paint:{r.__class__.__name__}",
+                          f"系列绘制异常（{r.name}）: {exc!r}")
         for comp in self._components:
             paint = getattr(comp, "paint", None)
             if callable(paint):
@@ -883,10 +1019,12 @@ class ChartWidget(QWidget):
                 except TypeError:
                     try:
                         paint(p)
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
+                    except Exception as exc:
+                        warn_once(f"component-paint:{comp.__class__.__name__}",
+                                  f"组件绘制异常（{comp.__class__.__name__}）: {exc!r}")
+                except Exception as exc:
+                    warn_once(f"component-paint:{comp.__class__.__name__}",
+                              f"组件绘制异常（{comp.__class__.__name__}）: {exc!r}")
         self.legend.paint(p)
         title_rect = QRectF(0, 0, self.width(), self.title.height())
         self.title.paint(p, title_rect)
@@ -1121,12 +1259,13 @@ class SimpleLineSeriesRenderer(SeriesRenderer):
                 "dataIndex": best, "x": x}
 
     def value_at_index(self, index: int):
-        if not isinstance(index, int) or not (0 <= index < len(self._entries)):
+        idx = self._full_index(index)  # dataZoom 窗口偏移换算
+        if not isinstance(idx, int) or not (0 <= idx < len(self._entries)):
             return None
-        x, y = self._entries[index]
+        x, y = self._entries[idx]
         if y is None:
             return None
-        pos = self._points[index] if index < len(self._points) else None
+        pos = self._points[idx] if idx < len(self._points) else None
         return {"name": self.name, "value": y, "series": self.name, "pos": pos}
 
 

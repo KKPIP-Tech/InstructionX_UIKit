@@ -3,7 +3,10 @@
 
 圆形 / 方形头像，支持图片、图标、文字三种来源，图片加载失败时
 自动回退到图标或文字；自绘实现，亮 / 暗主题实时感知。
+文字头像底色由 zlib.crc32 稳定哈希决定（跨进程一致，截图回归稳定）。
 """
+
+import zlib
 
 from PySide6.QtCore import QRect, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPixmap
@@ -113,8 +116,13 @@ class Avatar(QLabel):
         return path
 
     def _bg_color(self) -> QColor:
-        """文字头像底色：由名字哈希在语义色板中取值（主题感知）。"""
-        key = _PALETTE_KEYS[hash(self._text) % len(_PALETTE_KEYS)]
+        """文字头像底色：由名字稳定哈希在语义色板中取值（主题感知）。
+
+        使用 zlib.crc32 而非内置 hash：内置 hash 受 PYTHONHASHSEED 影响
+        跨进程随机，同一名字在不同进程/截图回归中会得到不同底色。
+        """
+        key = _PALETTE_KEYS[zlib.crc32(self._text.encode("utf-8"))
+                           % len(_PALETTE_KEYS)]
         return QColor(T(key))
 
     def paintEvent(self, event) -> None:

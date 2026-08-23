@@ -30,10 +30,10 @@ USAGE = {
     # -- 设计令牌 / 基础 --------------------------------------------------
     "tokens": 'from InstructionX_UIKit.theme import T, ThemeManager  # T("color.primary") 取令牌',
     "basic_widgets": 'from InstructionX_UIKit.components import Button, LineEdit, CheckBox  # 标准控件换肤',
-    "charts": 'from InstructionX_UIKit.charts import ChartView  # set_option({...}) 数据驱动渲染',
+    "charts": 'from InstructionX_UIKit.charts import ChartWidget  # set_option({...}) 数据驱动渲染',
     # -- 组件 · 输入 ------------------------------------------------------
     "button": 'Button("确定", variant="primary", size="md")',
-    "icon_button": 'IconButton(text="★", variant="default", shape="circle")',
+    "icon_button": 'IconButton(text="+", variant="default", shape="circle")',
     "checkbox": 'CheckBox("记住我", checked=True)',
     "radio": 'RadioButton("选项 A")  # 配合 RadioGroup 互斥',
     "switch": 'Switch(checked=True, size="md")',
@@ -70,7 +70,8 @@ USAGE = {
     "collapse": 'Collapse(accordion=False)  # add_panel(title, content)',
     "empty": 'Empty(description="暂无数据")',
     "tooltip": 'set_tooltip(btn, "提示文本")',
-    "popover": 'Popover(title="标题", content=widget)  # show_at(anchor)',
+    "popover": 'Popover(title="标题", content=widget)  # show_for(anchor, placement="bottom")',
+    "markdown_view": 'MarkdownView("# 标题\\n正文")  # append_markdown(chunk) 流式追加',
     # -- 组件 · 反馈 ------------------------------------------------------
     "tabs": 'Tabs(variant="line")  # addTab("标签一", widget)',
     "anchor": 'Anchor()  # set_items([(key, title, target_widget), ...])',
@@ -90,7 +91,7 @@ USAGE = {
     "skeleton": 'Skeleton(avatar=True, title=True, rows=3)',
     "spinner": 'Spinner(size="md", tip="加载中...")',
     "progress_bar": 'ProgressBar(value=40)  # CircleProgress(value=75)',
-    "tour": 'Tour()  # set_steps([(target, title, content), ...])',
+    "tour": 'Tour(window)  # add_step(target, title, content) 后 start()',
     # -- 动画 --------------------------------------------------------------
     "anim_property": 'from InstructionX_UIKit.anim import fade_in  # fade_in(widget, duration=...)',
     "anim_painted": 'from InstructionX_UIKit.anim import SpinnerArc  # 自绘动画控件，直接实例化',
