@@ -501,6 +501,17 @@ class MermaidRenderHub(QObject):
     # ------------------------------------------------------------- WebEngine
     def _create_page(self) -> None:
         """惰性创建隐藏渲染页（失败则永久降级）。"""
+        # offscreen / 无 GPU 环境（CI、离屏测试）的稳妥参数（仅当宿主未显式
+        # 设置时）：--no-sandbox 避免沙箱进程创建失败，--disable-gpu 强制软件
+        # 渲染，--log-level=3 屏蔽 Chromium 噪音日志。
+        # 必须在导入 QtWebEngineWidgets（触发 WebEngine 初始化）之前设置，
+        # 否则 flags 可能不被读取。实机不设这些 flag：--disable-gpu 反而
+        # 触发 Qt WebEngine 的 "GPUInfo not initialized on GpuInfoUpdate"
+        # 提示，且损失硬件加速。
+        platform = os.environ.get("QT_QPA_PLATFORM", "").lower()
+        if "offscreen" in platform or "minimal" in platform:
+            os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS",
+                                  "--no-sandbox --disable-gpu --log-level=3")
         try:
             # QtWebEngineWidgets 必须在首个 QWebEnginePage 前导入以完成初始化
             import PySide6.QtWebEngineWidgets  # noqa: F401
@@ -508,15 +519,6 @@ class MermaidRenderHub(QObject):
         except ImportError as exc:
             self._enter_fallback(f"PySide6 WebEngine 组件不可用: {exc!r}")
             return
-        # offscreen / 无 GPU 环境（CI、离屏测试）的稳妥参数（仅当宿主未显式
-        # 设置时）：--no-sandbox 避免沙箱进程创建失败，--disable-gpu 强制软件
-        # 渲染，--log-level=3 屏蔽 Chromium 噪音日志。
-        # 实机不设这些 flag：--disable-gpu 反而触发 Qt WebEngine 的
-        # "GPUInfo not initialized on GpuInfoUpdate" 提示，且损失硬件加速。
-        platform = os.environ.get("QT_QPA_PLATFORM", "").lower()
-        if "offscreen" in platform or "minimal" in platform:
-            os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS",
-                                  "--no-sandbox --disable-gpu --log-level=3")
         try:
             from PySide6.QtCore import QUrl
             self._page = QWebEnginePage(self)
@@ -593,13 +595,19 @@ class MermaidRenderHub(QObject):
         self._pending.discard(key)
         if isinstance(img, QImage) and not img.isNull():
             self._cache[key] = img
+            # 重试成功后清掉旧的失败记录，保持状态自洽
+            self._failed_ts.pop(key, None)
+            self._errors.pop(key, None)
         else:
             self._cache[key] = _FAILED
             self._failed_ts[key] = time.time()
             self._errors[key] = error
             self._log_failure(key, error)
         while len(self._cache) > _CACHE_CAP:
-            self._cache.popitem(last=False)
+            # 淘汰时同步清理失败记录，避免两个字典只增不减
+            evicted, _ = self._cache.popitem(last=False)
+            self._failed_ts.pop(evicted, None)
+            self._errors.pop(evicted, None)
         try:
             self.image_ready.emit(key)
         except RuntimeError:

@@ -549,7 +549,7 @@ view.linkActivated.connect(print)                  # 点击链接信号（默认
 ```python
 from InstructionX_UIKit.mermaid import MermaidView
 v = MermaidView("flowchart LR\n    A[开始] --> B[结束]")
-v.render_failed.connect(print)     # 语法错误信号；rendered(QSize) 为成功信号
+v.render_failed.connect(print)     # 语法错误信号；rendered() 为成功信号（无参数，尺寸经 v.natural_size() 获取）
 ```
 
 注意：`QWebEngineView` 基于 Qt Quick RHI（Windows 默认 Direct3D11）。若同一顶层窗口里还有 `QOpenGLWidget`（如蓝图 GL 视口）或无边框半透明窗口导致合成走 OpenGL，需在 `QApplication` 创建前统一图形 API：

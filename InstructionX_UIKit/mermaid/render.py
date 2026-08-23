@@ -20,7 +20,9 @@ QTextDocument / 视图按逻辑尺寸排版），图四周留白 12 逻辑 px。
 ``ValueError``（中文原因）。``%%`` 注释行与空行跳过。
 
 线程：QPainter 直接在 QImage 上绘制是线程安全的（QPixmap 不行），
-本模块的渲染函数可在后台 worker 线程调用（见 hub.py）。
+本模块的渲染函数可在后台 worker 线程调用（见 hub.py）。注意须先创建
+QGuiApplication / QApplication：文本度量依赖 QFont，纯 QCoreApplication
+下进程会被 Qt 直接终止（而非抛出 Python 异常）。
 """
 
 import math
@@ -58,10 +60,10 @@ _DPM_72 = 2835
 
 #: 节点 id（Python re 的 \w 默认含 CJK 等 Unicode 单词字符）
 _ID_RE = re.compile(r"\w+")
-#: 带标签实线连线：-- 文本 --> / -- 文本 ---
-_EDGE_LABELED_RE = re.compile(r"--\s+(.+?)\s*(-->|---)")
-#: 带标签虚线连线：-. 文本 .->
-_EDGE_LABELED_DOTTED_RE = re.compile(r"-\.\s+(.+?)\s*\.->")
+#: 带标签实线连线：-- 文本 --> / -- 文本 ---（引号标签整体优先，内部允许 -->）
+_EDGE_LABELED_RE = re.compile(r'--\s+(?:"([^"]*)"|(.+?))\s*(-->|---)')
+#: 带标签虚线连线：-. 文本 .->（引号标签整体优先）
+_EDGE_LABELED_DOTTED_RE = re.compile(r'-\.\s+(?:"([^"]*)"|(.+?))\s*\.->')
 #: 时序图消息（注意算子按长优先排列；参与者 id 用 \w，避免贪婪吞掉算子的 '-'）
 _SEQ_MSG_RE = re.compile(r"^(\w+)\s*(-->>|->>|-->|->)\s*(\w+)\s*:\s*(.*)$")
 #: 时序图参与者声明
@@ -262,6 +264,21 @@ def _unquote(text: str) -> str:
     return text
 
 
+def _split_statements(line: str):
+    """按分号切分语句（双引号内的分号是标签内容，不算分隔符）。"""
+    stmts, buf, in_quote = [], [], False
+    for ch in line:
+        if ch == '"':
+            in_quote = not in_quote
+        if ch == ";" and not in_quote:
+            stmts.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    stmts.append("".join(buf))
+    return stmts
+
+
 def _parse_flow_node(stmt: str, pos: int, lineno: int):
     """在 pos 处解析 ``id[标签]`` 等节点声明，返回 ``(节点三元组, 新pos)``。"""
     while pos < len(stmt) and stmt[pos].isspace():
@@ -318,11 +335,11 @@ def _parse_flow_edge(stmt: str, pos: int, lineno: int):
         return "plain", None, pos + 3
     m = _EDGE_LABELED_DOTTED_RE.match(rest)
     if m is not None:
-        return "dotted", _unquote(m.group(1)), pos + m.end()
+        return "dotted", _unquote(m.group(1) or m.group(2)), pos + m.end()
     m = _EDGE_LABELED_RE.match(rest)
     if m is not None:
-        kind = "arrow" if m.group(2) == "-->" else "plain"
-        return kind, _unquote(m.group(1)), pos + m.end()
+        kind = "arrow" if m.group(3) == "-->" else "plain"
+        return kind, _unquote(m.group(1) or m.group(2)), pos + m.end()
     for bad in _EDGE_UNSUPPORTED:
         if rest.startswith(bad):
             raise ValueError(
@@ -332,7 +349,12 @@ def _parse_flow_edge(stmt: str, pos: int, lineno: int):
 
 
 def _layout_flowchart(lines, style: dict, meas: _Measure) -> _Drawing:
-    m = _FLOW_HEAD_RE.match(lines[0][1])
+    # 首行允许以分号接语句（如 flowchart TD; A --> B）：引号感知切分后
+    # 仅首段作为头部匹配，其余语句并入正文循环
+    head_parts = _split_statements(lines[0][1])
+    m = _FLOW_HEAD_RE.match(head_parts[0].strip())
+    if m is None:
+        raise ValueError(f"第 {lines[0][0]} 行流程图首行语法错误: {lines[0][1]!r}")
     direction = (m.group(2) or "TD").upper()
     if direction not in ("TD", "TB", "LR", "RL", "BT"):
         raise ValueError(f"未知的流程图方向: {direction!r}（支持 TD/TB/LR/RL/BT）")
@@ -354,25 +376,27 @@ def _layout_flowchart(lines, style: dict, meas: _Measure) -> _Drawing:
         nodes[nid] = node
         return node
 
+    stmts = [(lines[0][0], s) for s in head_parts[1:]]
     for lineno, line in lines[1:]:
-        for stmt in line.split(";"):
-            stmt = stmt.strip()
-            if not stmt:
-                continue
-            if stmt.lower().split(None, 1)[0] in _FLOW_UNSUPPORTED:
-                raise ValueError(f"第 {lineno} 行不支持的流程图语法: {stmt!r}")
-            spec, pos = _parse_flow_node(stmt, 0, lineno)
-            prev = ensure_node(spec)
-            while True:
-                while pos < len(stmt) and stmt[pos].isspace():
-                    pos += 1
-                if pos >= len(stmt):
-                    break
-                kind, elabel, pos = _parse_flow_edge(stmt, pos, lineno)
-                spec, pos = _parse_flow_node(stmt, pos, lineno)
-                nxt = ensure_node(spec)
-                edges.append(_FlowEdge(prev.nid, nxt.nid, kind, elabel))
-                prev = nxt
+        stmts.extend((lineno, s) for s in _split_statements(line))
+    for lineno, stmt in stmts:
+        stmt = stmt.strip()
+        if not stmt:
+            continue
+        if stmt.lower().split(None, 1)[0] in _FLOW_UNSUPPORTED:
+            raise ValueError(f"第 {lineno} 行不支持的流程图语法: {stmt!r}")
+        spec, pos = _parse_flow_node(stmt, 0, lineno)
+        prev = ensure_node(spec)
+        while True:
+            while pos < len(stmt) and stmt[pos].isspace():
+                pos += 1
+            if pos >= len(stmt):
+                break
+            kind, elabel, pos = _parse_flow_edge(stmt, pos, lineno)
+            spec, pos = _parse_flow_node(stmt, pos, lineno)
+            nxt = ensure_node(spec)
+            edges.append(_FlowEdge(prev.nid, nxt.nid, kind, elabel))
+            prev = nxt
     if not nodes:
         raise ValueError("流程图无任何节点")
 

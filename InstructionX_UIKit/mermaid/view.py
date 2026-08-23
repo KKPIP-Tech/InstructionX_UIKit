@@ -186,6 +186,7 @@ html,body{margin:0;padding:0;background:transparent;overflow:hidden;
   // ---- 拖动平移 ----
   let dragging = false, lx = 0, ly = 0;
   viewport.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;  // 仅左键拖动（与降级画布一致）
     dragging = true; interacted = true; lx = e.clientX; ly = e.clientY;
     viewport.setPointerCapture(e.pointerId);
   });
@@ -232,6 +233,7 @@ html,body{margin:0;padding:0;background:transparent;overflow:hidden;
     };
     mermaid.render(rid, code).then((res) => {
       cleanup();
+      if (seq !== renderSeq) return;  // 只采纳最后一次渲染：过期结果不得覆盖 DOM
       wrapper.innerHTML = res.svg;
       // 测量前必须复位变换：getBoundingClientRect 返回 transform 之后的
       // 尺寸，上一张图 fitWidth 留下的 scale 会污染本次测量（实测翻倍）
@@ -267,11 +269,9 @@ html,body{margin:0;padding:0;background:transparent;overflow:hidden;
       svg.setAttribute('width', contentW);
       svg.setAttribute('height', contentH);
       svg.style.maxWidth = 'none';
-      if (seq === renderSeq) {  // 只采纳最后一次渲染的结果
-        fitWidth();
-        window.__uikViewResult = JSON.stringify({ok: true, w: contentW,
-                                                 h: contentH});
-      }
+      fitWidth();
+      window.__uikViewResult = JSON.stringify({ok: true, w: contentW,
+                                               h: contentH});
     }).catch((err) => {
       cleanup();
       if (seq === renderSeq) {
@@ -478,9 +478,11 @@ class _FallbackCanvas(QWidget):
         self.update()
 
     def zoom_in(self) -> None:
+        self._interacted = True  # 与 wheelEvent / JS 侧一致：缩放记为用户交互
         self._zoom_at(QPointF(self.width() / 2, self.height() / 2), _ZOOM_STEP)
 
     def zoom_out(self) -> None:
+        self._interacted = True
         self._zoom_at(QPointF(self.width() / 2, self.height() / 2),
                       1 / _ZOOM_STEP)
 
@@ -565,6 +567,8 @@ class MermaidView(QWidget):
         self._pending_render = False  # 页面就绪前收到过渲染请求
         self._poll_timer = None
         self._poll_deadline = 0.0
+        self._render_gen = 0   # 渲染代际：set_code 递增，用于丢弃迟到回调
+        self._poll_gen = -1    # 本轮轮询启动时的代际快照（-1 = 无有效轮询）
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
         # ---- 右上角悬浮工具条（仅降级路径创建；主路径工具条在 HTML 内，
@@ -585,6 +589,7 @@ class MermaidView(QWidget):
         """设置 Mermaid 源码并重新渲染。"""
         self._code = code
         self._natural = QSize()
+        self._render_gen += 1  # 源码变更后，旧渲染的迟到回调一律丢弃
         if self._web is not None:
             if not self._web_ready:
                 self._pending_render = True
@@ -659,13 +664,14 @@ class MermaidView(QWidget):
     # ------------------------------------------------------------- 主题
     def _on_theme_changed(self, _mode: str) -> None:
         """主题切换：重算 themeVariables 并重新渲染。"""
-        if self._web is not None and self._web_ready and self._code:
-            vars_json = json.dumps(
-                _theme_variables(_mermaid_style(), _pt()), ensure_ascii=False)
-            self._web.page().runJavaScript(
-                f"window.__uikViewer.setTheme({json.dumps(vars_json)})")
-            self._apply_chrome()  # HTML 工具条配色随令牌刷新
-            self._poll_start()
+        if self._web is not None and self._web_ready:
+            self._apply_chrome()  # HTML 工具条配色随令牌刷新（与有无 code 无关）
+            if self._code:
+                vars_json = json.dumps(
+                    _theme_variables(_mermaid_style(), _pt()), ensure_ascii=False)
+                self._web.page().runJavaScript(
+                    f"window.__uikViewer.setTheme({json.dumps(vars_json)})")
+                self._poll_start()
         elif self._canvas is not None and self._code:
             self._request_canvas_render()
         if self._toolbar is not None:
@@ -757,6 +763,7 @@ class MermaidView(QWidget):
     # ---- 结果轮询（runJavaScript 不等待 Promise，沿用 hub 的槽位思路）----
     def _poll_start(self) -> None:
         self._poll_deadline = time.time() + _RENDER_TIMEOUT_MS / 1000.0
+        self._poll_gen = self._render_gen  # 记录本轮轮询对应的渲染代际
         if self._poll_timer is None:
             self._poll_timer = QTimer(self)
             self._poll_timer.setInterval(_POLL_MS)
@@ -769,14 +776,20 @@ class MermaidView(QWidget):
             return
         if time.time() > self._poll_deadline:
             self._poll_timer.stop()
+            self._poll_gen = -1  # 令超时前发出的在途回调失配丢弃
             self.render_failed.emit("mermaid 渲染超时")
             return
+        gen = self._poll_gen  # 捕获本次请求所属代际，回调里比对
         self._web.page().runJavaScript(
             "(() => { const v = window.__uikViewResult || '';"
             " if (v) window.__uikViewResult = ''; return v; })()",
-            self._on_poll_result)
+            lambda raw, g=gen: self._on_poll_result(raw, g))
 
-    def _on_poll_result(self, raw) -> None:
+    def _on_poll_result(self, raw, gen: int = -1) -> None:
+        # 迟到回调（超时后 / 源码已变更 / 新一轮轮询已启动）直接丢弃，
+        # 不得在 render_failed 之后补发 rendered 或采纳旧尺寸
+        if gen != self._poll_gen or gen != self._render_gen:
+            return
         if not isinstance(raw, str) or not raw:
             return
         self._poll_timer.stop()
@@ -799,19 +812,19 @@ class MermaidView(QWidget):
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
         if obj is self._web and event.type() == QEvent.Type.Wheel:
             if not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
-                event.ignore()
-                self._forward_wheel(event)
-                return True  # 吃掉，不交给 WebEngine（否则页面吃掉滚动）
+                if self._forward_wheel(event):
+                    return True  # 已转发宿主：吃掉，不交给 WebEngine（否则页面吃掉滚动）
+                return False  # 无滚动区祖先：放行（与降级路径 ignore() 传播一致）
         return False
 
-    def _forward_wheel(self, event: QWheelEvent) -> None:
-        """把普通滚轮事件转发给最近的滚动区祖先（其 viewport）。"""
+    def _forward_wheel(self, event: QWheelEvent) -> bool:
+        """把普通滚轮事件转发给最近的滚动区祖先（其 viewport）；返回是否已转发。"""
         target = self.parentWidget()
         while (target is not None
                and not isinstance(target, QAbstractScrollArea)):
             target = target.parentWidget()
         if target is None:
-            return
+            return False
         dest = target.viewport()
         pos = dest.mapFromGlobal(event.globalPosition().toPoint())
         forward = QWheelEvent(
@@ -819,10 +832,11 @@ class MermaidView(QWidget):
             event.angleDelta(), event.buttons(), event.modifiers(),
             event.phase(), event.inverted())
         QCoreApplication.sendEvent(dest, forward)
+        return True
 
     # ==================================================== 降级自绘路径
     def _enter_canvas(self, reason: str) -> None:
-        """切换为自绘画布路径（仅提示一次，经 hub 的降级后端取图）。"""
+        """切换为自绘画布路径（每个实例切换时打印一次提示，经 hub 的降级后端取图）。"""
         if self._canvas is not None:
             return
         print(f"[MermaidView] {reason}，降级为静态图画布（缩放/平移交互一致，"
