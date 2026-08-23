@@ -409,8 +409,10 @@ def create_popover_page() -> QWidget:
     set_property(anchor, "variant", "primary")
     pop = Popover("快捷筛选", "按状态、时间或负责人筛选列表数据。\n点击外部区域关闭。")
     _POPOVERS.append(pop)
-    # 弹层销毁时从防 GC 列表移除（销毁时连接随对象一并释放，不会累积）
-    pop.destroyed.connect(lambda: _POPOVERS.remove(pop))
+    # 弹层销毁时从防 GC 列表移除（销毁时连接随对象一并释放，不会累积；
+    # 幂等：进程退出期销毁顺序不定，remove 缺失元素会在槽里抛 SystemError）
+    pop.destroyed.connect(
+        lambda: _POPOVERS.remove(pop) if pop in _POPOVERS else None)
     anchor.clicked.connect(lambda: pop.show_for(anchor, placement="bottom"))
     s.layout().addWidget(row(anchor))
     s.layout().addWidget(hint_label("点击按钮相对锚点弹出带箭头气泡卡片。", role="tertiary"))
@@ -595,7 +597,72 @@ $$
 \int_{-\infty}^{\infty} e^{-x^2} dx = \sqrt{\pi}
 $$
 
-> 提示：脚注、内嵌 HTML 与网络图片不在支持之列。
+## 8. Mermaid 图表
+
+```mermaid
+flowchart LR
+    A[输入] --> B{校验}
+    B -- 通过 --> C[渲染]
+    B -- 失败 --> D[占位提示]
+```
+
+> 提示：脚注、内嵌 HTML 与网络图片不在支持之列；
+> Mermaid 由官方 mermaid.js 引擎渲染，全量图型可用。
+"""
+
+
+_MARKDOWN_MERMAID = r"""Mermaid 图表由官方 mermaid.js 引擎渲染（WebEngine，随包分发不联网），
+官方全量图型可用，随主题令牌着色。
+
+```mermaid
+flowchart LR
+    A[用户提问] --> B{理解意图}
+    B -- 明确 --> C[检索知识库]
+    B -- 模糊 --> D[请求澄清]
+    C --> E[生成回答]
+    D --> E
+```
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant A as 助手
+    U->>A: 发送问题
+    A->>A: 推理与检索
+    A-->>U: 流式返回回答
+```
+
+```mermaid
+stateDiagram-v2
+    待机 --> 运行中: 启动
+    运行中 --> 已暂停: 暂停
+    已暂停 --> 运行中: 继续
+    运行中 --> 已停止: 停止
+```
+
+```mermaid
+gantt
+    title 迭代计划
+    dateFormat YYYY-MM-DD
+    section 设计
+    需求梳理: 2026-01-01, 5d
+    交互稿: 2026-01-06, 4d
+    section 开发
+    前端实现: 2026-01-10, 8d
+    联调测试: 2026-01-18, 5d
+```
+
+```mermaid
+pie title 本周时间分布
+    "编码": 40
+    "阅读文档": 25
+    "讨论设计": 20
+    "其他": 15
+```
+
+流式追加中未闭合的 mermaid 围栏按代码块降级显示，闭合后重排为图表；
+语法错误时显示失败占位图。WebEngine 不可用时自动降级为内置自绘渲染器
+（flowchart / sequenceDiagram / pie 子集）。
 """
 
 
@@ -646,13 +713,18 @@ def create_markdown_page() -> QWidget:
     math_view.setMinimumHeight(300)
     s_math.layout().addWidget(math_view)
 
+    s_mmd = Section("Mermaid 图表")
+    mmd_view = MarkdownView(_MARKDOWN_MERMAID)
+    mmd_view.setMinimumHeight(1750)
+    s_mmd.layout().addWidget(mmd_view)
+
     s3 = Section("空状态")
     empty_view = MarkdownView()
     empty_view.setFixedHeight(120)
     s3.layout().addWidget(empty_view)
     return make_page("MarkdownView Markdown 渲染",
-                     "Qt 内置引擎原生渲染 Markdown，令牌化样式，支持流式追加与 LaTeX 公式。",
-                     [s, s2, s_all, s_math, s3])
+                     "Qt 内置引擎原生渲染 Markdown，令牌化样式，支持流式追加、LaTeX 公式与 Mermaid 图表。",
+                     [s, s2, s_all, s_math, s_mmd, s3])
 
 
 #: 展示组件页注册表：(导航键, 标题, 页面工厂)
