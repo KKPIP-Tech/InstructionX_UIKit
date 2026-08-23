@@ -691,18 +691,26 @@ class ChartWidget(QWidget):
 
         合并语义：dict 深合并；**list 值（如 ``series``）整体替换**而非
         按项合并（ECharts 的按 id/name 合并为简化语义，未实现）。旧系列
-        数据按 **name** 匹配注入新渲染器的 ``prev_data`` 供 anim_t 插值，
-        名字匹配不到（系列被删除 / 改名）时不插值（从入场路径变形）。
+        数据注入新渲染器的 ``prev_data`` 供 anim_t 插值：**优先按 name
+        匹配**（增删 / 重排后不错位）；名字缺省或匹配不到时**按渲染器
+        序号回退**取同位旧系列数据（series 整体替换语义下典型调用不带
+        name，序号对位是常态路径），序号越界（系列数变少）才不插值。
         """
         if not isinstance(option, dict):
             return
-        prev_by_name = {r.name: list(r.data()) for r in self._series}
+        prev_list = [list(r.data()) for r in self._series]
+        # 仅非空 name 参与名字匹配：空名是缺省态，入字典会互相覆盖错配
+        prev_by_name = {r.name: prev_list[i]
+                        for i, r in enumerate(self._series) if r.name}
         _deep_merge(self._option, option)
         self._opt_version += 1
         self._rebuild()
-        # 旧数据按 name 注入新渲染器（增删 / 重排后不再序号错位）
-        for r in self._series:
-            r.prev_data = prev_by_name.get(r.name)
+        # 旧数据注入新渲染器：name 匹配优先，匹配不到按序号回退
+        for i, r in enumerate(self._series):
+            prev = prev_by_name.get(r.name) if r.name else None
+            if prev is None and i < len(prev_list):
+                prev = prev_list[i]
+            r.prev_data = prev
         self.anim.start()
         self.update()
 

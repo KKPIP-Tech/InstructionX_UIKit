@@ -173,9 +173,9 @@ class MarkPointComponent(_SeriesMarkBase):
             elif isinstance(item.get("coord"), (list, tuple)) \
                     and len(item["coord"]) >= 2:
                 x = item["coord"][0]
-                y = _to_float(item["coord"][1])
+                y = _to_float(item["coord"][1], None)
                 if y is None:
-                    y = _to_float(item.get("value"))
+                    y = _to_float(item.get("value"), None)
             if y is None:
                 continue
             try:
@@ -274,7 +274,7 @@ class MarkLineComponent(_SeriesMarkBase):
                 orient = "h"
                 default_label = _TYPE_LABELS[typ]
             elif "yAxis" in item:
-                value = _to_float(item.get("yAxis"))
+                value = _to_float(item.get("yAxis"), None)
                 orient = "h"
             elif "xAxis" in item:
                 value = item.get("xAxis")
@@ -604,8 +604,8 @@ class MapSeriesRenderer(SeriesRenderer):
                 pts = []
                 for pt in poly or []:
                     if isinstance(pt, (list, tuple)) and len(pt) >= 2:
-                        px = _to_float(pt[0])
-                        py = _to_float(pt[1])
+                        px = _to_float(pt[0], None)
+                        py = _to_float(pt[1], None)
                         if px is not None and py is not None:
                             pts.append((px, py))
                 if len(pts) >= 3:
@@ -622,7 +622,7 @@ class MapSeriesRenderer(SeriesRenderer):
             if not isinstance(item, dict):
                 continue
             nm = item.get(key, item.get("name"))
-            v = _to_float(item.get("value"))
+            v = _to_float(item.get("value"), None)
             if nm is not None:
                 out[str(nm)] = v
         return out
