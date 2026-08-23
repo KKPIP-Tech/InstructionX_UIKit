@@ -20,9 +20,18 @@ from shiboken6 import isValid as _shiboken_is_valid
 
 
 def _connect_theme(widget, slot) -> None:
-    """连接主题切换信号；控件销毁后自动忽略回调。"""
-    ThemeManager.instance().theme_changed.connect(
-        lambda *_: slot() if _shiboken_is_valid(widget) else None)
+    """连接主题切换信号；组件销毁时断开连接（shiboken 守卫双保险）。"""
+    manager = ThemeManager.instance()
+    receiver = lambda *_: slot() if _shiboken_is_valid(widget) else None
+    manager.theme_changed.connect(receiver)
+
+    def _cleanup(_obj=None):
+        try:
+            manager.theme_changed.disconnect(receiver)
+        except (RuntimeError, TypeError):
+            pass
+
+    widget.destroyed.connect(_cleanup)
 
 __all__ = ["Pagination"]
 
@@ -78,6 +87,16 @@ class Pagination(QWidget):
         self._layout = QHBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(6)
+        # 可复用控件缓存（增量更新：不销毁可复用部分，主题切换保留
+        # 跳转框输入；仅结构变化时重建对应控件）
+        self._prev_btn = None
+        self._next_btn = None
+        self._page_widgets = []   # 页码按钮 / 省略号（按显示顺序）
+        self._total_label = None
+        self._combo = None
+        self._combo_options = None
+        self._jump_edit = None
+        self._jump_labels = None
         _connect_theme(self, self._on_theme_changed)
         self._reload_style()
         self.set_current(current)
@@ -99,7 +118,6 @@ class Pagination(QWidget):
         self._page_size = page_size
         self.pageSizeChanged.emit(page_size)
         self.set_current(min(self._current, self.page_count()))
-        self._rebuild()
 
     def page_size(self) -> int:
         return self._page_size
@@ -153,67 +171,121 @@ class Pagination(QWidget):
         return result
 
     def _rebuild(self) -> None:
-        while self._layout.count():
-            item = self._layout.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
-
+        """按当前状态增量同步控件（仅结构变化时重建，不销毁可复用控件）。"""
         count = self.page_count()
-        prev_btn = self._nav_button("left", self._current > 1,
-                                    lambda: self.set_current(self._current - 1))
-        self._layout.addWidget(prev_btn)
 
-        for p in self._page_items(self._current, count):
+        # 1) 导航按钮：长期持有，仅更新图标与可用态（主题切换刷新图标）
+        if self._prev_btn is None:
+            self._prev_btn = self._nav_button(
+                "left", True, lambda: self.set_current(self._current - 1))
+            self._next_btn = self._nav_button(
+                "right", True, lambda: self.set_current(self._current + 1))
+        self._prev_btn.setEnabled(self._current > 1)
+        self._prev_btn.setIcon(_chevron("left"))
+        self._next_btn.setEnabled(self._current < count)
+        self._next_btn.setIcon(_chevron("right"))
+
+        # 2) 页码按钮序列：结构相同则原位更新，不同才重建中段
+        self._sync_page_buttons()
+
+        # 3) 总数标签
+        if self._total > 0:
+            if self._total_label is None:
+                self._total_label = QLabel(self)
+                set_property(self._total_label, "role", "tertiary")
+            self._total_label.setText(f"共 {self._total} 条")
+        elif self._total_label is not None:
+            self._total_label.deleteLater()
+            self._total_label = None
+
+        # 4) 每页条数选择
+        if self._show_size_changer:
+            if self._combo is None:
+                self._combo = QComboBox(self)
+                set_property(self._combo, "size", "sm")
+                self._combo.activated.connect(
+                    lambda i, c=self._combo: self.set_page_size(c.itemData(i)))
+            if self._combo_options != tuple(self._size_options):
+                self._combo.clear()
+                for n in self._size_options:
+                    self._combo.addItem(f"{n} 条/页", n)
+                self._combo_options = tuple(self._size_options)
+            idx = self._combo.findData(self._page_size)
+            if idx >= 0:
+                self._combo.setCurrentIndex(idx)
+        elif self._combo is not None:
+            self._combo.deleteLater()
+            self._combo = None
+            self._combo_options = None
+
+        # 5) 跳转框：主题切换不重建，输入文本得以保留
+        if self._show_jumper:
+            if self._jump_edit is None:
+                lab = QLabel("跳至", self)
+                set_property(lab, "role", "secondary")
+                edit = QLineEdit(self)
+                set_property(edit, "size", "sm")
+                edit.setFixedWidth(52)
+                edit.setAlignment(Qt.AlignCenter)
+                edit.returnPressed.connect(lambda e=edit: self._jump(e))
+                lab2 = QLabel("页", self)
+                set_property(lab2, "role", "secondary")
+                self._jump_edit = edit
+                self._jump_labels = (lab, lab2)
+        elif self._jump_edit is not None:
+            for w in self._jump_labels + (self._jump_edit,):
+                w.deleteLater()
+            self._jump_edit = None
+            self._jump_labels = None
+
+        # 重新装配布局（takeAt 不销毁控件，原位顺序不变）
+        while self._layout.count():
+            self._layout.takeAt(0)
+        self._layout.addWidget(self._prev_btn)
+        for w in self._page_widgets:
+            self._layout.addWidget(w)
+        self._layout.addWidget(self._next_btn)
+        if self._total_label is not None:
+            self._layout.addWidget(self._total_label)
+        if self._combo is not None:
+            self._layout.addWidget(self._combo)
+        if self._jump_edit is not None:
+            self._layout.addWidget(self._jump_labels[0])
+            self._layout.addWidget(self._jump_edit)
+            self._layout.addWidget(self._jump_labels[1])
+        self._layout.addStretch(1)
+
+    def _sync_page_buttons(self) -> None:
+        """页码按钮序列与目标序列对齐：结构相同原位更新，不同重建。"""
+        items = self._page_items(self._current, self.page_count())
+        current_values = [getattr(w, "_pg_value", None)
+                          for w in self._page_widgets]
+        if current_values == items:
+            for w in self._page_widgets:
+                if isinstance(w, QToolButton):
+                    set_property(w, "current",
+                                 "true" if w._pg_value == self._current
+                                 else "false")
+            return
+        for w in self._page_widgets:
+            w.deleteLater()
+        self._page_widgets = []
+        for p in items:
             if p is None:
                 dots = QLabel("…", self)
                 set_property(dots, "role", "tertiary")
-                self._layout.addWidget(dots)
+                dots._pg_value = None
+                self._page_widgets.append(dots)
                 continue
             btn = QToolButton(self)
             btn.setText(str(p))
+            btn._pg_value = p
             set_property(btn, "uikPg", "page")
-            set_property(btn, "current", "true" if p == self._current else "false")
+            set_property(btn, "current",
+                         "true" if p == self._current else "false")
             btn.setCursor(Qt.PointingHandCursor)
             btn.clicked.connect(lambda _=False, page=p: self.set_current(page))
-            self._layout.addWidget(btn)
-
-        next_btn = self._nav_button("right", self._current < count,
-                                    lambda: self.set_current(self._current + 1))
-        self._layout.addWidget(next_btn)
-
-        if self._total > 0:
-            total_label = QLabel(f"共 {self._total} 条", self)
-            set_property(total_label, "role", "tertiary")
-            self._layout.addWidget(total_label)
-
-        if self._show_size_changer:
-            combo = QComboBox(self)
-            set_property(combo, "size", "sm")
-            for n in self._size_options:
-                combo.addItem(f"{n} 条/页", n)
-            idx = combo.findData(self._page_size)
-            if idx >= 0:
-                combo.setCurrentIndex(idx)
-            combo.activated.connect(
-                lambda i, c=combo: self.set_page_size(c.itemData(i)))
-            self._layout.addWidget(combo)
-
-        if self._show_jumper:
-            lab = QLabel("跳至", self)
-            set_property(lab, "role", "secondary")
-            edit = QLineEdit(self)
-            set_property(edit, "size", "sm")
-            edit.setFixedWidth(52)
-            edit.setAlignment(Qt.AlignCenter)
-            edit.returnPressed.connect(lambda e=edit: self._jump(e))
-            lab2 = QLabel("页", self)
-            set_property(lab2, "role", "secondary")
-            self._layout.addWidget(lab)
-            self._layout.addWidget(edit)
-            self._layout.addWidget(lab2)
-
-        self._layout.addStretch(1)
+            self._page_widgets.append(btn)
 
     def _nav_button(self, direction: str, enabled: bool, slot) -> QToolButton:
         btn = QToolButton(self)

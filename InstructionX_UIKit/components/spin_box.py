@@ -8,14 +8,12 @@
 
 from PySide6.QtWidgets import QDoubleSpinBox, QSpinBox
 
-from ..theme import set_property
+from ._mixin import SizeMixin
 
 __all__ = ["SpinBox", "DoubleSpinBox"]
 
-_SIZES = ("sm", "md", "lg")
 
-
-class SpinBox(QSpinBox):
+class SpinBox(SizeMixin, QSpinBox):
     """整数调节框。
 
     用途:
@@ -34,6 +32,10 @@ class SpinBox(QSpinBox):
         qty.valueChanged.connect(print)
     """
 
+    #: 合法尺寸档（SizeMixin 校验用）
+    _SIZES = ("sm", "md", "lg")
+    _size_label = "调节框"
+
     def __init__(self, minimum: int = 0, maximum: int = 99, value: int = 0,
                  step: int = 1, size: str = "md", parent=None):
         super().__init__(parent)
@@ -42,18 +44,8 @@ class SpinBox(QSpinBox):
         self.setValue(value)
         self.set_size(size)
 
-    def set_size(self, size: str) -> None:
-        """设置尺寸档：``sm`` / ``md`` / ``lg``。"""
-        if size not in _SIZES:
-            raise ValueError(f"未知调节框尺寸: {size!r}")
-        set_property(self, "size", size)
 
-    def size_name(self) -> str:
-        """当前尺寸档名。"""
-        return self.property("uiksize") or "md"
-
-
-class DoubleSpinBox(QDoubleSpinBox):
+class DoubleSpinBox(SizeMixin, QDoubleSpinBox):
     """小数调节框。
 
     用途:
@@ -75,6 +67,10 @@ class DoubleSpinBox(QDoubleSpinBox):
         price.valueChanged.connect(print)
     """
 
+    #: 合法尺寸档（SizeMixin 校验用）
+    _SIZES = ("sm", "md", "lg")
+    _size_label = "调节框"
+
     def __init__(self, minimum: float = 0.0, maximum: float = 99.99,
                  value: float = 0.0, step: float = 1.0, decimals: int = 2,
                  suffix: str = "", size: str = "md", parent=None):
@@ -86,13 +82,3 @@ class DoubleSpinBox(QDoubleSpinBox):
             self.setSuffix(suffix)
         self.setValue(value)
         self.set_size(size)
-
-    def set_size(self, size: str) -> None:
-        """设置尺寸档：``sm`` / ``md`` / ``lg``。"""
-        if size not in _SIZES:
-            raise ValueError(f"未知调节框尺寸: {size!r}")
-        set_property(self, "size", size)
-
-    def size_name(self) -> str:
-        """当前尺寸档名。"""
-        return self.property("uiksize") or "md"

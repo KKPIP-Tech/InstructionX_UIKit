@@ -32,7 +32,13 @@ class AutoComplete(LineEdit):
 
         ac = AutoComplete(["苹果", "香蕉", "橙子"], placeholder="搜索水果")
         ac.set_items(["北京", "上海", "广州"])
+        ac.setText("苹果")       # 程序化修改不触发 textEdited，需手动刷新
+        ac.refresh()
         ac.textChanged.connect(print)
+
+    备注:
+        防抖过滤仅由用户编辑（``textEdited``）触发；程序化 ``setText`` /
+        ``clear`` 不会过滤候选，需调用 :meth:`refresh` 立即刷新。
     """
 
     def __init__(self, items=(), placeholder: str = "", delay: int = None,
@@ -70,6 +76,15 @@ class AutoComplete(LineEdit):
         """设置防抖延迟（毫秒）。"""
         self._delay = int(delay)
         self._debounce.setInterval(self._delay)
+
+    def refresh(self) -> None:
+        """按当前文本立即刷新候选（跳过防抖）。
+
+        程序化 ``setText`` 后候选不会自动过滤（``textEdited`` 仅用户
+        编辑触发），调用本方法按当前文本重建候选模型并弹出补全。
+        """
+        self._debounce.stop()
+        self._apply_filter()
 
     # ------------------------------------------------------------------
     # 延迟过滤

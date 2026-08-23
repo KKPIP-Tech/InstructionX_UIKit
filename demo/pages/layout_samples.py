@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """布局演示的示例数据与卡片构建器（Demo 程序专用）。
 
-InstructionX_UIKit 的 12 个布局预设全部为 API 驱动、不含任何假数据；
+InstructionX_UIKit 的 13 个布局预设全部为 API 驱动、不含任何假数据；
 本模块集中存放演示用的示例内容（原是布局内置的占位数据，已迁入
 Demo），``layouts.py`` 各演示页从这里取数据并传给布局。
 
@@ -46,6 +46,7 @@ USAGE = {
     "centered_container": 'create_centered_container(title=..., actions=[...], cards=[(标题, 描述, 色块键)])',
     "waterfall": 'create_waterfall(items=[(标题, 色块键, 档位2-6), ...])',
     "media_left_right": 'create_media_left_right(sections=[(标题, 正文, 色块键)], link_text="了解更多")',
+    "chat_conversation": 'create_chat_conversation(messages=[{"role": "user", "content": ...}, {"role": "assistant", "content": "# markdown"}])',
 }
 
 # ---------------------------------------------------------------------------
@@ -377,7 +378,7 @@ def build_dashboard_cards() -> list:
     cards.append(todo_card)
 
     banner_card, banner_lay = titled_card("公告")
-    banner = QLabel("布局预设已覆盖全部 12 个场景；跨度随断点自动重排，窗口收窄时卡片纵向堆叠。")
+    banner = QLabel("布局预设已覆盖全部 13 个场景；跨度随断点自动重排，窗口收窄时卡片纵向堆叠。")
     banner.setProperty("role", "secondary")
     banner.setWordWrap(True)
     banner_lay.addWidget(banner)
@@ -462,4 +463,92 @@ MEDIA_LEFT_RIGHT = dict(
          "color.warning.subtle"),
     ),
     link_text="了解更多",
+)
+
+# ---------------------------------------------------------------------------
+# 流式对话
+# ---------------------------------------------------------------------------
+
+#: 示例对话：{"role": "user" | "assistant", "content": "<markdown>"}
+#: 覆盖 MarkdownView 全部特性：六级标题、行内样式、三类列表、引用、
+#: 分割线、表格、代码围栏、行内 / 块级公式、Mermaid 图、链接。
+CHAT_MESSAGES = [
+    {"role": "user", "content": "这个 UI Kit 的 Markdown 组件支持哪些语法？"},
+    {"role": "assistant",
+     "content": "**MarkdownView** 基于 Qt 内置引擎，支持：\n\n"
+                "- 标题、**加粗**、*斜体*、~~删除线~~\n"
+                "- 有序 / 无序 / 任务列表\n"
+                "- `行内代码` 与代码围栏\n"
+                "- 表格、引用、分割线、链接\n\n"
+                "```python\nfrom InstructionX_UIKit.components import MarkdownView\n\n"
+                "view = MarkdownView(\"# 你好\")\n```"},
+    {"role": "user", "content": "代码块会做语法高亮吗？"},
+    {"role": "assistant",
+     "content": "不会。代码块文字颜色与正文一致，仅以等宽字族和底色区分。\n\n"
+                "| 特性 | 状态 |\n|------|------|\n"
+                "| 语法高亮 | 不支持 |\n| 等宽字族 | 支持 |\n| 底色 | `bg.subtle` 令牌 |"},
+    {"role": "user", "content": "能渲染数学公式吗？"},
+    {"role": "assistant",
+     "content": "可以，支持 LaTeX 语法。行内公式如 $E=mc^2$，块级公式：\n\n"
+                "$$\\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}$$\n\n"
+                "公式由 matplotlib mathtext 后台异步渲染并缓存，"
+                "流式追加时命中缓存零耗时。"},
+    {"role": "user", "content": "能画 Mermaid 图吗？"},
+    {"role": "assistant",
+     "content": "可以，由官方 mermaid.js 引擎渲染（WebEngine，随包分发不联网），"
+                "全量图型可用。图表可交互：**拖动平移、Ctrl+滚轮缩放**，"
+                "右上角工具条支持放大 / 缩小 / 复位 / 适宽。\n\n"
+                "```mermaid\nflowchart LR\n"
+                "    A[用户提问] --> B{理解意图}\n"
+                "    B -- 明确 --> C[检索知识库]\n"
+                "    B -- 模糊 --> D[请求澄清]\n"
+                "    C --> E[生成回答]\n"
+                "    D --> E\n```\n\n"
+                "时序图同样支持：\n\n"
+                "```mermaid\nsequenceDiagram\n"
+                "    participant U as 用户\n"
+                "    participant A as 助手\n"
+                "    U->>A: 发送问题\n"
+                "    A->>A: 推理与检索\n"
+                "    A-->>U: 流式返回回答\n```"},
+    {"role": "user", "content": "剩下的格式一口气展示一下吧。"},
+    {"role": "assistant",
+     "content": "好的，以下是其余全部格式。\n\n"
+                "## 标题层级\n\n"
+                "支持 `#` 至 `######` 六级标题，正文段落自动换行。\n\n"
+                "### 引用与分割线\n\n"
+                "> 引用块使用次级文字颜色，\n> 可以跨越多行。\n\n"
+                "---\n\n"
+                "### 嵌套与任务列表\n\n"
+                "- 水果\n  - 苹果\n  - 香蕉\n"
+                "- [x] 已完成事项\n- [ ] 待办事项\n\n"
+                "### 链接\n\n"
+                "项目仓库：[InstructionX_UIKit]"
+                "(https://github.com/KKPIP-Tech/InstructionX_UIKit)，"
+                "点击链接时发射 `linkActivated` 信号。\n\n"
+                "> 提示：脚注、内嵌 HTML 与网络图片不在支持之列。"},
+]
+
+#: 流式回复演示文本（演示页用 QTimer 逐段追加）；
+#: 覆盖行内样式、列表、引用、表格、代码围栏、行内 / 块级公式与
+#: Mermaid 图——流式路径同样展示 MarkdownView 的全部渲染能力。
+CHAT_STREAM_REPLY = (
+    "好的，这是一次**全格式流式输出**演示：\n\n"
+    "1. 调用方收到 token 后调用 `append_to_message(index, chunk)`；\n"
+    "2. 布局自动增长气泡高度并跟随滚动；\n"
+    "3. 用户上翻阅读历史时不会被打断。\n\n"
+    "> 布局本身不承载任何 AI 逻辑，消息数据完全由调用方驱动。\n\n"
+    "流式途中也能实时渲染行内公式 $e^{i\\pi}+1=0$ 与块级公式：\n\n"
+    "$$\\int_{-\\infty}^{\\infty} e^{-x^2} dx = \\sqrt{\\pi}$$\n\n"
+    "以及表格：\n\n"
+    "| 阶段 | 状态 |\n|------|------|\n"
+    "| 接收 token | 进行中 |\n| 渲染 | 实时 |\n\n"
+    "代码围栏在闭合前按纯文本降级显示，闭合后重排：\n\n"
+    "```python\nreply = \"\"\nfor token in stream:\n"
+    "    reply += token\n    view.append_markdown(token)\n```\n\n"
+    "Mermaid 图同理，围栏闭合后异步渲染并就位：\n\n"
+    "```mermaid\nflowchart LR\n"
+    "    T[token 流] --> P[增量解析]\n"
+    "    P --> R[实时渲染]\n```\n\n"
+    "流式输出结束，感谢观看。"
 )

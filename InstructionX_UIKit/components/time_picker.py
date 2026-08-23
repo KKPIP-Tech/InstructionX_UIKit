@@ -8,15 +8,14 @@
 from PySide6.QtCore import QTime
 from PySide6.QtWidgets import QTimeEdit
 
-from ..theme import set_property
+from ._mixin import SizeMixin
 
 __all__ = ["TimePicker"]
 
-_SIZES = ("sm", "md", "lg")
 _FORMAT = "HH:mm:ss"
 
 
-class TimePicker(QTimeEdit):
+class TimePicker(SizeMixin, QTimeEdit):
     """时间选择器。
 
     用途:
@@ -34,22 +33,16 @@ class TimePicker(QTimeEdit):
         tp.timeChanged.connect(lambda t: print(t.toString("HH:mm:ss")))
     """
 
+    #: 合法尺寸档（SizeMixin 校验用）
+    _SIZES = ("sm", "md", "lg")
+    _size_label = "时间选择器"
+
     def __init__(self, time: QTime = None, size: str = "md", parent=None):
         super().__init__(parent)
         self.setDisplayFormat(_FORMAT)
         self.setTime(time if time is not None and time.isValid()
                      else QTime.currentTime())
         self.set_size(size)
-
-    def set_size(self, size: str) -> None:
-        """设置尺寸档：``sm`` / ``md`` / ``lg``。"""
-        if size not in _SIZES:
-            raise ValueError(f"未知时间选择器尺寸: {size!r}")
-        set_property(self, "size", size)
-
-    def size_name(self) -> str:
-        """当前尺寸档名。"""
-        return self.property("uiksize") or "md"
 
     # ------------------------------------------------------------------
     # 字符串便捷接口

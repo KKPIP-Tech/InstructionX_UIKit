@@ -4,8 +4,8 @@
 页面 = 标题 + 说明 + 分区演示，紧凑排布；亮 / 暗主题切换自动换肤。
 """
 
-from PySide6.QtCore import QRect, Qt
-from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPen, QPixmap
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -26,6 +26,7 @@ from InstructionX_UIKit.components.descriptions import Descriptions
 from InstructionX_UIKit.components.empty import Empty
 from InstructionX_UIKit.components.image_view import ImageView
 from InstructionX_UIKit.components.list_view import ListWidget
+from InstructionX_UIKit.components.markdown_view import MarkdownView
 from InstructionX_UIKit.components.popover import Popover
 from InstructionX_UIKit.components.qrcode_view import QRCodeView
 from InstructionX_UIKit.components.statistic import Statistic
@@ -38,15 +39,15 @@ from InstructionX_UIKit.theme import T, set_property
 from .common import Section, col, hint_label, make_page, row
 from .playground import PlaygroundPanel, with_playground
 
-_POPOVERS = []  # 防止弹出层被 GC
+_POPOVERS = []  # 防止弹出层被 GC（销毁时自动移除，不累积）
 
 
-def _gradient_pixmap(w=240, h=160, c1="#3F5E8C", c2="#6BA98A"):
-    """生成一张渐变测试图。"""
+def _gradient_pixmap(w=240, h=160, c1=None, c2=None):
+    """生成一张渐变测试图（颜色取自主题令牌，暗色主题自动换肤）。"""
     pm = QPixmap(w, h)
     grad = QLinearGradient(0, 0, w, h)
-    grad.setColorAt(0, QColor(c1))
-    grad.setColorAt(1, QColor(c2))
+    grad.setColorAt(0, QColor(c1 or T("color.primary")))
+    grad.setColorAt(1, QColor(c2 or T("color.success")))
     painter = QPainter(pm)
     painter.fillRect(pm.rect(), grad)
     painter.end()
@@ -148,91 +149,71 @@ def create_tree_page() -> QWidget:
 class TimelineEx(Timeline):
     """时间轴游乐场扩展（demo 侧子类，不改动 InstructionX_UIKit）。
 
-    InstructionX_UIKit ``Timeline`` 仅暴露 ``add_item`` / ``set_pending`` 等数据 API，
-    线条样式 / 粗细、节点半径、行距、字号、轴侧等绘制参数没有 setter；
-    这里以子类属性 + 重写 ``paintEvent`` / ``_row_height`` 的方式暴露，
-    数据层面仍完全复用基类 API。
+    绘制参数经基类公开 setter（set_axis_side / set_line / set_dot /
+    set_row_spacing / set_fonts）转发，本类以属性形式暴露给 Playground
+    绑定；数据与绘制完全复用基类实现。
     """
 
     def __init__(self, pending: str = None, parent=None):
         super().__init__(pending, parent)
-        self.line_width = 1.0               # 连接线宽 px
-        self.line_style = Qt.SolidLine      # 连接线样式
-        self.dot_radius = 5                 # 节点半径 px
-        self.extra_spacing = 0              # 每行附加间距 px
-        self.axis_side = "left"             # 轴线位置：left / right
-        self.title_font_size = T("font.md")
-        self.time_font_size = T("font.xs")
+        self._title_font_size = T("font.md")
+        self._time_font_size = T("font.xs")
 
-    def _row_height(self, item) -> int:
-        base = 46 if item["time"] else 30
-        return base + int(self.extra_spacing)
+    @property
+    def line_width(self):
+        return self._line_width
 
-    def paintEvent(self, event) -> None:  # noqa: N802
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        line_color = QColor(T("color.border"))
-        text_primary = QColor(T("color.text.primary"))
-        text_tertiary = QColor(T("color.text.tertiary"))
+    @line_width.setter
+    def line_width(self, v):
+        self.set_line(float(v), self._line_style)
 
-        font_text = painter.font()
-        font_text.setPixelSize(int(self.title_font_size))
-        font_time = painter.font()
-        font_time.setPixelSize(int(self.time_font_size))
+    @property
+    def line_style(self):
+        return self._line_style
 
-        right = self.axis_side == "right"
-        w = self.width()
-        dot_x = w - 16 if right else 16
-        r = int(self.dot_radius)
-        align = (Qt.AlignVCenter | Qt.AlignRight) if right \
-            else (Qt.AlignVCenter | Qt.AlignLeft)
+    @line_style.setter
+    def line_style(self, v):
+        self.set_line(self._line_width, v)
 
-        def text_rect(y, h):
-            if right:
-                return QRect(8, y, dot_x - 20, h)
-            return QRect(36, y, w - 44, h)
+    @property
+    def dot_radius(self):
+        return self._dot_radius
 
-        y = 10
-        prev_dot_y = None
-        for item in self._items:
-            row_h = self._row_height(item)
-            dot_y = y + 11
-            if prev_dot_y is not None:
-                painter.setPen(QPen(line_color, self.line_width, self.line_style))
-                painter.drawLine(dot_x, prev_dot_y, dot_x, dot_y)
-            icon = item["icon"]
-            if isinstance(icon, QIcon) and not icon.isNull():
-                painter.fillRect(QRect(dot_x - 7, dot_y - 7, 14, 14),
-                                 QColor(T("color.bg.base")))
-                icon.paint(painter, QRect(dot_x - 7, dot_y - 7, 14, 14))
-            else:
-                painter.setPen(Qt.NoPen)
-                painter.setBrush(self._color_of(item))
-                painter.drawEllipse(dot_x - r, dot_y - r, r * 2, r * 2)
-            painter.setFont(font_text)
-            painter.setPen(text_primary)
-            painter.drawText(text_rect(y, 22), align, item["text"])
-            if item["time"]:
-                painter.setFont(font_time)
-                painter.setPen(text_tertiary)
-                painter.drawText(text_rect(y + 22, 16), align, item["time"])
-            prev_dot_y = dot_y
-            y += row_h
+    @dot_radius.setter
+    def dot_radius(self, v):
+        self.set_dot(int(v))
 
-        # 尾部 pending：虚线 + 空心节点
-        if self._pending:
-            dot_y = y + 30
-            painter.setPen(QPen(line_color, self.line_width, Qt.DashLine))
-            start_y = prev_dot_y if prev_dot_y is not None else y
-            painter.drawLine(dot_x, start_y, dot_x, dot_y)
-            painter.setPen(QPen(QColor(T("color.primary")), 1.5))
-            painter.setBrush(QColor(T("color.bg.base")))
-            painter.drawEllipse(dot_x - r, dot_y - r, r * 2, r * 2)
-            painter.setFont(font_text)
-            painter.setPen(text_tertiary)
-            painter.drawText(text_rect(dot_y - 11, 22), align,
-                             str(self._pending))
-        painter.end()
+    @property
+    def extra_spacing(self):
+        return self._extra_spacing
+
+    @extra_spacing.setter
+    def extra_spacing(self, v):
+        self.set_row_spacing(int(v))
+
+    @property
+    def axis_side(self):
+        return self._axis_side
+
+    @axis_side.setter
+    def axis_side(self, v):
+        self.set_axis_side(v)
+
+    @property
+    def title_font_size(self):
+        return self._title_font_size
+
+    @title_font_size.setter
+    def title_font_size(self, v):
+        self.set_fonts(title_size=int(v))
+
+    @property
+    def time_font_size(self):
+        return self._time_font_size
+
+    @time_font_size.setter
+    def time_font_size(self, v):
+        self.set_fonts(time_size=int(v))
 
 
 _TL_ITEMS = [
@@ -343,12 +324,13 @@ def create_calendar_page() -> QWidget:
 def create_carousel_page() -> QWidget:
     s = Section("走马灯")
     carousel = Carousel()
-    for i, color in enumerate(["#7C5CFC", "#3E7E5F", "#C08A3E"]):
+    # 演示底色取自语义令牌（primary / success / warning），亮暗主题自动换肤
+    for i, color_key in enumerate(("color.primary", "color.success", "color.warning")):
         page = QLabel(f"第 {i + 1} 屏")
         page.setAlignment(Qt.AlignCenter)
         page.setStyleSheet(
-            f"background-color: {color}; color: white; font-size: 20px; "
-            f"border-radius: 8px; margin: 4px;")
+            f"background-color: {T(color_key)}; color: {T('color.on.primary')}; "
+            f"font-size: 20px; border-radius: 8px; margin: 4px;")
         carousel.add_page(page)
     carousel.setFixedSize(520, 260)
     s.layout().addWidget(row(carousel))
@@ -427,10 +409,323 @@ def create_popover_page() -> QWidget:
     set_property(anchor, "variant", "primary")
     pop = Popover("快捷筛选", "按状态、时间或负责人筛选列表数据。\n点击外部区域关闭。")
     _POPOVERS.append(pop)
+    # 弹层销毁时从防 GC 列表移除（销毁时连接随对象一并释放，不会累积；
+    # 幂等：进程退出期销毁顺序不定，remove 缺失元素会在槽里抛 SystemError）
+    pop.destroyed.connect(
+        lambda: _POPOVERS.remove(pop) if pop in _POPOVERS else None)
     anchor.clicked.connect(lambda: pop.show_for(anchor, placement="bottom"))
     s.layout().addWidget(row(anchor))
     s.layout().addWidget(hint_label("点击按钮相对锚点弹出带箭头气泡卡片。", role="tertiary"))
     return make_page("Popover 气泡卡片", "相对锚点弹出（QFrame, Popup），带箭头。", [s])
+
+
+_MARKDOWN_SAMPLE = """## 渲染能力一览
+
+正文支持 **加粗**、*斜体*、~~删除线~~ 与 `行内代码`。
+
+- 无序列表项
+- 支持任务列表：
+- [x] 已完成的事项
+- [ ] 待办事项
+
+> 引用块使用次要文本色，适合展示引用与提示。
+
+```python
+def fibonacci(n):
+    a, b = 0, 1
+    for _ in range(n):
+        a, b = b, a + b
+    return a
+```
+
+| 语法 | 支持情况 |
+|------|----------|
+| 表格 | 支持 |
+| 代码围栏 | 支持（等宽字体 + 底色，不做语法高亮） |
+
+[链接使用主题主色](https://github.com/KKPIP-Tech/InstructionX_UIKit)
+"""
+
+_MARKDOWN_MATH = r"""行内公式：质能方程 $E=mc^2$，以及欧拉恒等式 $e^{i\pi}+1=0$。
+
+块级公式（求根公式）：
+
+$$\frac{-b \pm \sqrt{b^2-4ac}}{2a}$$
+
+也支持 `\[...\]` 与 `\begin{equation}` 环境：
+
+\[\int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}\]
+
+\begin{equation}
+a^2 + b^2 = c^2
+\end{equation}
+
+公式由 matplotlib mathtext 在后台线程异步渲染并缓存，渲染期间以源码占位；
+代码围栏与行内代码中的 `$...$` 不会被当作公式。
+"""
+
+_MARKDOWN_STREAM = r"""## 流式渲染能力演示
+
+这段内容由**逐 token 追加**生成，涵盖 Markdown 与 LaTeX 的主要渲染能力。
+
+### 文本样式
+
+支持 **加粗**、*斜体*、~~删除线~~、`行内代码` 与 [链接](https://github.com/KKPIP-Tech/InstructionX_UIKit)。
+
+- [x] 无序 / 有序 / 任务列表
+- [x] 引用块、表格与代码围栏
+- [ ] 脚注（不支持）
+
+### 行内公式
+
+质能方程 $E=mc^2$、欧拉恒等式 $e^{i\pi}+1=0$、勾股定理 $a^2+b^2=c^2$；
+希腊字母 $\alpha, \beta, \gamma, \Delta, \Omega$；向量点积
+$\vec{a} \cdot \vec{b} = |\vec{a}||\vec{b}|\cos\theta$。
+
+### 块级公式
+
+求根公式：
+
+$$
+\frac{-b \pm \sqrt{b^2-4ac}}{2a}
+$$
+
+泰勒级数：
+
+$$
+e^x = \sum_{n=0}^{\infty} \frac{x^n}{n!}
+$$
+
+高斯积分：
+
+$$
+\int_{-\infty}^{\infty} e^{-x^2} dx = \sqrt{\pi}
+$$
+
+重要极限（单行写法）：
+
+$$\lim_{x \to 0} \frac{\sin x}{x} = 1$$
+
+傅里叶变换：
+
+$$
+\hat{f}(\xi) = \int_{-\infty}^{\infty} f(x) e^{-2\pi i x \xi} dx
+$$
+
+简谐振动微分方程：
+
+$$
+\frac{d^2 y}{dx^2} + \omega^2 y = 0
+$$
+
+### 表格与代码
+
+| 语法 | 写法 |
+|------|------|
+| 行内公式 | `$...$` |
+| 块级公式 | `$$...$$` / `\[...\]` |
+| 矩阵环境 | 不支持（mathtext 限制） |
+
+> 公式由 matplotlib mathtext 后台异步渲染，命中 LRU 缓存零耗时。
+
+```python
+view = MarkdownView()
+for token in stream:       # 逐 token 到达
+    view.append_markdown(token)
+```
+"""
+
+_MARKDOWN_STREAM_ALL = r"""# Markdown 全格式总览
+
+本段由流式追加实时渲染，覆盖组件支持的全部 Markdown 格式。
+
+## 1. 标题与段落
+
+支持 `#` 至 `######` 六级标题；正文段落自动换行，空行分段。
+
+## 2. 行内样式
+
+**加粗**、*斜体*、~~删除线~~、`行内代码`、
+[主题色链接](https://github.com/KKPIP-Tech/InstructionX_UIKit)。
+
+## 3. 列表
+
+无序列表：
+
+- 苹果
+- 香蕉
+  - 嵌套子项
+
+有序列表：
+
+1. 第一步
+2. 第二步
+
+任务列表：
+
+- [x] 已完成事项
+- [ ] 待办事项
+
+## 4. 引用与分割线
+
+> 引用块使用次级文字颜色，
+> 可以跨越多行。
+
+---
+
+## 5. 表格
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `set_markdown` | 方法 | 全量替换内容 |
+| `append_markdown` | 方法 | 流式追加 |
+| `linkActivated` | 信号 | 点击链接时发射 |
+
+## 6. 代码围栏
+
+```python
+def render(text):
+    view = MarkdownView(text)   # 全量渲染
+    return view
+```
+
+## 7. 数学公式
+
+行内公式 $e^{i\pi}+1=0$，以及块级公式：
+
+$$
+\int_{-\infty}^{\infty} e^{-x^2} dx = \sqrt{\pi}
+$$
+
+## 8. Mermaid 图表
+
+```mermaid
+flowchart LR
+    A[输入] --> B{校验}
+    B -- 通过 --> C[渲染]
+    B -- 失败 --> D[占位提示]
+```
+
+> 提示：脚注、内嵌 HTML 与网络图片不在支持之列；
+> Mermaid 由官方 mermaid.js 引擎渲染，全量图型可用。
+"""
+
+
+_MARKDOWN_MERMAID = r"""Mermaid 图表由官方 mermaid.js 引擎渲染（WebEngine，随包分发不联网），
+官方全量图型可用，随主题令牌着色。图表是可交互的：拖动平移、
+Ctrl+滚轮缩放，右上角工具条可放大 / 缩小 / 复位 / 适宽。
+
+```mermaid
+flowchart LR
+    A[用户提问] --> B{理解意图}
+    B -- 明确 --> C[检索知识库]
+    B -- 模糊 --> D[请求澄清]
+    C --> E[生成回答]
+    D --> E
+```
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant A as 助手
+    U->>A: 发送问题
+    A->>A: 推理与检索
+    A-->>U: 流式返回回答
+```
+
+```mermaid
+stateDiagram-v2
+    待机 --> 运行中: 启动
+    运行中 --> 已暂停: 暂停
+    已暂停 --> 运行中: 继续
+    运行中 --> 已停止: 停止
+```
+
+```mermaid
+gantt
+    title 迭代计划
+    dateFormat YYYY-MM-DD
+    section 设计
+    需求梳理: 2026-01-01, 5d
+    交互稿: 2026-01-06, 4d
+    section 开发
+    前端实现: 2026-01-10, 8d
+    联调测试: 2026-01-18, 5d
+```
+
+```mermaid
+pie title 本周时间分布
+    "编码": 40
+    "阅读文档": 25
+    "讨论设计": 20
+    "其他": 15
+```
+
+流式追加中未闭合的 mermaid 围栏按代码块降级显示，闭合后重排为图表；
+语法错误时显示失败占位图。WebEngine 不可用时自动降级为内置自绘渲染器
+（flowchart / sequenceDiagram / pie 子集）。
+"""
+
+
+def _stream_section(title: str, text: str, height: int) -> Section:
+    """构造一个流式追加演示分区：自动播放 + 重新播放按钮。"""
+    sec = Section(title)
+    view = MarkdownView()
+    view.setMinimumHeight(height)
+    chunks = [""]
+    timer = QTimer(view)
+
+    def _replay():
+        view.clear()
+        # 按小片段切分，模拟逐 token 到达
+        chunks[:] = [text[i:i + 8] for i in range(0, len(text), 8)]
+        timer.start(40)
+
+    def _tick():
+        if not chunks:
+            timer.stop()
+            return
+        view.append_markdown(chunks.pop(0))
+
+    timer.timeout.connect(_tick)
+    sec.layout().addWidget(view)
+    btn = QPushButton("重新播放")
+    set_property(btn, "variant", "primary")
+    set_property(btn, "size", "sm")
+    btn.clicked.connect(_replay)
+    sec.layout().addWidget(row(btn))
+    _replay()
+    return sec
+
+
+def create_markdown_page() -> QWidget:
+    s = Section("基础渲染")
+    view = MarkdownView(_MARKDOWN_SAMPLE)
+    view.setMinimumHeight(380)
+    s.layout().addWidget(view)
+
+    s2 = _stream_section("流式追加（模拟 AI 逐字输出，含 LaTeX 公式实时渲染）",
+                         _MARKDOWN_STREAM, 420)
+    s_all = _stream_section("流式追加 · Markdown 全格式总览",
+                            _MARKDOWN_STREAM_ALL, 480)
+
+    s_math = Section("数学公式（LaTeX）")
+    math_view = MarkdownView(_MARKDOWN_MATH)
+    math_view.setMinimumHeight(300)
+    s_math.layout().addWidget(math_view)
+
+    s_mmd = Section("Mermaid 图表")
+    mmd_view = MarkdownView(_MARKDOWN_MERMAID)
+    mmd_view.setMinimumHeight(1750)
+    s_mmd.layout().addWidget(mmd_view)
+
+    s3 = Section("空状态")
+    empty_view = MarkdownView()
+    empty_view.setFixedHeight(120)
+    s3.layout().addWidget(empty_view)
+    return make_page("MarkdownView Markdown 渲染",
+                     "Qt 内置引擎原生渲染 Markdown，令牌化样式，支持流式追加、LaTeX 公式与 Mermaid 图表。",
+                     [s, s2, s_all, s_math, s_mmd, s3])
 
 
 #: 展示组件页注册表：(导航键, 标题, 页面工厂)
@@ -453,4 +748,5 @@ DISPLAY_PAGES = [
     ("empty", "Empty 空状态", create_empty_page),
     ("tooltip", "Tooltip 工具提示", create_tooltip_page),
     ("popover", "Popover 气泡卡片", create_popover_page),
+    ("markdown_view", "MarkdownView Markdown 渲染", create_markdown_page),
 ]

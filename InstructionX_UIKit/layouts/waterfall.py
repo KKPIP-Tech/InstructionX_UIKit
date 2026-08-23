@@ -74,7 +74,8 @@ class Waterfall(QWidget):
 
     每张卡片固定自身高度（内容量驱动，120-260px 不等），放入当前
     累计高度最小的列；列底 stretch 使卡片顶对齐且不被拉伸。
-    ``resizeEvent`` 中检测断点变化并按新列数重新分配。
+    ``resizeEvent`` 中检测断点变化并按新列数重新分配。运行期可调用
+    :meth:`set_items` 更换内容。
     """
 
     def __init__(self, items=None, parent=None):
@@ -94,12 +95,26 @@ class Waterfall(QWidget):
         self._columns.setSpacing(T("space.4"))
         scroll.setWidget(self._content)
 
+        self._placeholder = empty_placeholder()
+        self._cards = []
+        # 初始按宽屏列数分配（set_items 内部完成），首次 resize 时再按实际宽度修正
+        self.set_items(items)
+
+    # -- 内容 ------------------------------------------------------------
+    def set_items(self, items):
+        """设置卡片内容（三元组或 QWidget 列表；空则显示空占位）。
+
+        再次调用时旧卡片以 ``deleteLater`` 销毁（不复用），与家族
+        其他布局的替换语义一致。
+        """
+        for old in self._cards:
+            old.setParent(None)
+            old.deleteLater()
         self._cards = [
             item if isinstance(item, QWidget) else self._make_card(*item)
             for item in (items or [])
         ]
-        # 初始按宽屏列数分配，首次 resize 时再按实际宽度修正
-        self._relayout(_COLUMNS["lg"])
+        self._relayout(max(self._cols, _COLUMNS["lg"]))
 
     # -- 卡片 ------------------------------------------------------------
     def _make_card(self, title, chip_key, ratio, meta=""):
@@ -137,6 +152,7 @@ class Waterfall(QWidget):
     def _relayout(self, cols):
         """按列数重新分配：逐张放入累计高度最小的列（瀑布流关键逻辑）。"""
         self._cols = cols
+        self._placeholder.hide()
         # 清空旧列：卡片仅从布局移出（仍为 _content 子控件），随后重新分配
         while self._columns.count():
             item = self._columns.takeAt(0)
@@ -153,8 +169,9 @@ class Waterfall(QWidget):
             self._columns.addLayout(col, 1)  # 各列等宽
             col_layouts.append(col)
         if not self._cards:
-            # 空内容：首列放置优雅空占位
-            col_layouts[0].addWidget(empty_placeholder())
+            # 空内容：首列放置优雅空占位（复用单实例，避免重复构建残留）
+            col_layouts[0].addWidget(self._placeholder)
+            self._placeholder.show()
         heights = [0] * cols  # 各列累计高度（估算值）
         for card in self._cards:
             idx = heights.index(min(heights))
@@ -165,7 +182,10 @@ class Waterfall(QWidget):
 
     # -- 测试 / 调试辅助 ---------------------------------------------------
     def column_cards(self):
-        """返回按列分组的卡片列表 ``[[card, ...], ...]``（布局顺序）。"""
+        """返回按列分组的卡片列表 ``[[card, ...], ...]``（布局顺序）。
+
+        仅供测试脚本断言分配结果使用，非生产 API（依赖内部列布局结构）。
+        """
         groups = []
         for i in range(self._columns.count()):
             item = self._columns.itemAt(i)

@@ -1,21 +1,21 @@
 # InstructionX_UIKit
 
-基于 PySide6（Qt for Python）的纯桌面 UI 组件库：设计令牌 + 亮/暗双主题、57 个组件、12 个响应式布局预设、52 个动画预设、原生图表引擎与蓝图节点图编辑器。
+基于 PySide6（Qt for Python）的纯桌面 UI 组件库：设计令牌 + 亮/暗双主题、58 个组件、13 个响应式布局预设、52 个动画预设、原生图表引擎与蓝图节点图编辑器。
 
 ![Python](https://img.shields.io/badge/Python-3.14%2B-3776AB?logo=python&logoColor=white)
-![PySide6](https://img.shields.io/badge/PySide6-6.6%2B-41CD52?logo=qt&logoColor=white)
+![PySide6](https://img.shields.io/badge/PySide6-6.11.1%2B-41CD52?logo=qt&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
-![Version](https://img.shields.io/badge/Version-alpha--v1.0.0-orange)
+![Version](https://img.shields.io/badge/Version-alpha--v1.0.1-orange)
 
 ## 特性
 
 - **设计令牌 + 双主题**：色彩 / 字体 / 间距 / 圆角 / 阴影 / 断点 / 动效全部令牌化，`ThemeManager` 一键切换亮 / 暗主题，无需重启，全部组件实时热切换（**暗色主题目前为实验性功能**，个别组件的细节表现仍在打磨）。
-- **57 个组件**：输入 / 展示 / 反馈三大类，动态属性 + 全局 QSS 驱动，统一 sm / md / lg 尺寸体系与状态矩阵（hover / pressed / disabled / focus）。
-- **12 个响应式布局预设**：API 驱动的工厂函数（`create_card_grid(items=...)` 等），基于断点的响应式重排，空数据自动显示优雅占位。
+- **58 个组件**：输入 / 展示 / 反馈三大类，动态属性 + 全局 QSS 驱动，统一 sm / md / lg 尺寸体系与状态矩阵（hover / pressed / disabled / focus）。
+- **13 个响应式布局预设**：API 驱动的工厂函数（`create_card_grid(items=...)` 等），基于断点的响应式重排，空数据自动显示优雅占位。
 - **52 个动画预设**：28 个属性动画（快照覆盖层方案，规避 Qt6 + QSS + 高 DPI 下 QGraphicsEffect 失效问题）+ 24 个 QTimer 自绘动画组件。
 - **原生图表引擎**：纯 QPainter 实现的 ECharts 风格图表，不依赖 WebView / JavaScript；`set_option` 数据驱动，20+ 系列类型，主题感知实时换肤。
 - **蓝图节点图**：类 UE5 Blueprint / ComfyUI 的节点图编辑器，支持右键建节点、引脚拖线、类型校验、序列化与执行状态模拟。
-- **职责分离**：`InstructionX_UIKit/` 为纯 Kit 包（零假数据、零 Demo 逻辑，一切内容由调用方 API 传入）；`demo/` 为独立演示程序（74+ 演示页，每页顶部附「用法」代码示例）。
+- **职责分离**：`InstructionX_UIKit/` 为纯 Kit 包（零假数据、零 Demo 逻辑，一切内容由调用方 API 传入）；`demo/` 为独立演示程序（77 演示页，每页顶部附「用法」代码示例）。
 
 ## 界面预览
 
@@ -43,7 +43,7 @@ pip install -r requirements.txt
 # pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 ```
 
-依赖：`PySide6>=6.6`（含 Addons）与 `qrcode[pil]>=7.4`，除此之外无任何第三方依赖。
+依赖：`PySide6>=6.11.1`（含 Addons）、`qrcode[pil]>=7.4` 与 `matplotlib>=3.11.1`（MarkdownView 的 LaTeX 公式渲染），除此之外无任何第三方依赖。
 
 ## 快速上手
 
@@ -91,7 +91,7 @@ tm.set_mode("dark")   # 或 tm.toggle() 亮暗互切
 python main.py
 ```
 
-左侧导航含：设计令牌 / 布局预设（12）/ 组件·输入 / 组件·展示 / 组件·反馈 / 动画·属性（28）/ 动画·自绘（24）/ 基础控件 / 图表 / 蓝图。顶栏可随时切换亮 / 暗主题（实验性）；每个演示页顶部有「用法」代码标签，看 Demo 即可学会对应 API 的调用方式。
+左侧导航含：设计令牌 / 布局预设（13）/ 组件·输入 / 组件·展示 / 组件·反馈 / 动画·属性（28）/ 动画·自绘（24）/ 基础控件 / 图表 / 蓝图。顶栏可随时切换亮 / 暗主题（实验性）；每个演示页顶部有「用法」代码标签，看 Demo 即可学会对应 API 的调用方式。
 
 ## 项目结构
 
@@ -101,12 +101,12 @@ python main.py
 │   ├── tokens.py                # 设计令牌（唯一数值来源 + TokenState）
 │   ├── theme.py                 # ThemeManager + 全局 QSS 生成
 │   ├── icons.py                 # QPainter 运行时矢量图标集
-│   ├── components/              # 57 个组件（输入 / 展示 / 反馈）
-│   ├── layouts/                 # 12 个响应式布局预设（API 驱动）
+│   ├── components/              # 58 个组件（输入 / 展示 / 反馈）
+│   ├── layouts/                 # 13 个响应式布局预设（API 驱动）
 │   ├── anim/                    # 28 属性动画 + 24 自绘动画
 │   ├── charts/                  # 原生图表引擎（ECharts 风格）
 │   └── blueprint/               # 蓝图节点图（模型 / 画布 / 连线 / 菜单 / 执行模拟）
-├── demo/                        # 独立 Demo 程序（74+ 演示页）
+├── demo/                        # 独立 Demo 程序（77 演示页）
 ├── docs/                        # Design.md（设计规范）/ USAGE.md（使用手册）/ screenshots/
 ├── main.py                      # Demo 启动入口
 └── requirements.txt

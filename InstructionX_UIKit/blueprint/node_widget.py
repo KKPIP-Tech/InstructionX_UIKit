@@ -29,6 +29,7 @@ from PySide6.QtWidgets import QFrame, QVBoxLayout, QWidget
 
 from ..anim.painted import SpinnerArc
 from ..theme import T, ThemeManager
+from ..tokens import DURATION
 from .model import BlueprintNode, PinDirection
 from .registry import NodeRegistry, pin_color
 
@@ -56,23 +57,6 @@ def _transparent(widget: QWidget) -> None:
     widget.setStyleSheet("background: transparent;")
 
 
-def safe_slot(fn):
-    """包装信号槽：目标控件已销毁时静默忽略。
-
-    主题切换等全局广播信号可能在控件销毁后仍触发已连接的 lambda
-    （PySide 对 Python 可调用对象不自动断开），包装后避免
-    ``RuntimeError: Internal C++ object already deleted`` 噪音。
-    """
-
-    def wrapper(*args):
-        try:
-            fn(*args)
-        except RuntimeError:
-            pass
-
-    return wrapper
-
-
 def _resolve_color(value, fallback_key: str) -> QColor:
     """把令牌键 / hex / None 解析为 QColor（实时取色，主题感知）。"""
     if not value:
@@ -84,9 +68,16 @@ def _resolve_color(value, fallback_key: str) -> QColor:
 
 
 def _text_on(color: QColor) -> QColor:
-    """按底色亮度选择黑 / 白前景色。"""
+    """按底色亮度选择前景色（语义映射到文本令牌，主题实时取色）。
+
+    亮底用 ``color.text.primary``（正文色），暗底用
+    ``color.on.primary``（彩色底上的前景色）；亮色主题下与历史
+    硬编码 #1C2330 / #FFFFFF 完全一致。
+    """
     lum = 0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()
-    return QColor("#1C2330") if lum > 150 else QColor("#FFFFFF")
+    if lum > 150:
+        return QColor(str(T("color.text.primary")))
+    return QColor(str(T("color.on.primary")))
 
 
 def format_elapsed(ms) -> str:
@@ -164,6 +155,11 @@ class NodeWidget(QFrame):
         self._pin_offsets = {}
         # GL 位图代理状态缓存（_relayout 重算；见 uses_proxy）
         self._proxy_state = False
+        # 视图手势（平移 / 滚轮缩放）临时位图代理标记：带可见自定义体的
+        # 节点手势期间也切换为位图代理（见 begin_gesture_proxy）
+        self._gesture_proxy = False
+        # 手势开始前的体可见性（end_gesture_proxy 恢复用）
+        self._gesture_body_visible = False
         _transparent(self)
         self.setAttribute(Qt.WA_StyledBackground, False)
         self.setMouseTracking(True)
@@ -187,15 +183,16 @@ class NodeWidget(QFrame):
         _transparent(self._spinner)
         self._spinner.hide()
 
-        # running 脉冲描边定时器（DURATION.slow 一拍）
+        # running 脉冲描边定时器（DURATION.slow 一拍，取 1/10 采样间隔）
         self._pulse_timer = QTimer(self)
-        self._pulse_timer.setInterval(33)
+        self._pulse_timer.setInterval(max(16, int(DURATION["slow"] // 10)))
         self._pulse_timer.timeout.connect(self._tick_pulse)
 
         node.changed.connect(self._on_node_changed)
         node.status_changed.connect(self._on_status_changed)
-        ThemeManager.instance().theme_changed.connect(
-            safe_slot(lambda *_: self.update()))
+        # 绑定方法连接：控件销毁时 PySide 自动断连，单例信号上不残留
+        # 死对象包装（lambda + safe_slot 方式无法自动清理）
+        ThemeManager.instance().theme_changed.connect(self._on_theme_changed)
 
         self._relayout()
         self._on_status_changed(node.status)
@@ -240,7 +237,9 @@ class NodeWidget(QFrame):
         self._body_h = 0.0
         if self._body is not None:
             visible = self._body_visible()
-            if self._body.isVisible() != visible:
+            # 手势代理期间体控件由 begin_gesture_proxy 隐藏，此处不得恢复显示；
+            # 但尺寸仍按「体可见」计算，避免手势中节点逻辑尺寸抖动
+            if not self._gesture_proxy and self._body.isVisible() != visible:
                 self._body.setVisible(visible)
             if visible:
                 hint = self._body.sizeHint()
@@ -337,14 +336,67 @@ class NodeWidget(QFrame):
     def uses_proxy(self) -> bool:
         """当前是否由 GL 视口以位图缓存代理绘制。
 
-        条件：父控件是支持代理的视口（``supports_node_proxy``，即
-        ``_GLViewport``），且自定义体（body_builder 注入的真实控件）
-        当前不可见。带可见体的节点保持真实控件自绘（兼容性边界）。
+        条件（满足其一）：
 
-        结果为 ``_relayout`` 时重算的缓存（体可见性翻转必然伴随
-        ``_relayout``，见 ``apply_view``），高频调用零开销。
+        - 常规代理（``_proxy_state``）：父控件是支持代理的视口
+          （``supports_node_proxy``，即 ``_GLViewport``），且自定义体
+          当前不可见；
+        - 手势代理（``_gesture_proxy``）：视图手势（平移 / 滚轮缩放）
+          期间由 ``begin_gesture_proxy`` 临时开启，带可见自定义体的
+          节点也切换为位图代理，避免逐帧真实子控件落位 + 重绘叠加在
+          GL 视口上的高额合成开销。
+
+        常规代理结果为 ``_relayout`` 时重算的缓存（体可见性翻转必然
+        伴随 ``_relayout``，见 ``apply_view``），高频调用零开销。
         """
-        return bool(self._proxy_state)
+        return bool(self._proxy_state or self._gesture_proxy)
+
+    def begin_gesture_proxy(self) -> None:
+        """视图手势开始：切换为临时位图代理（幂等）。
+
+        抓取含全部真实子控件（自定义体 / 旋转圈）的当前外观作为手势
+        期间的冻结位图，并隐藏真实子控件（停止其逐帧合成）；手势结束
+        由 ``end_gesture_proxy`` 恢复。已是常规代理或父视口不支持代理
+        时为空操作。
+        """
+        if self._gesture_proxy or self._proxy_state:
+            return
+        if not getattr(self.parentWidget(), "supports_node_proxy", False):
+            return
+        # 先抓取再置代理标记：grab() 会触发本控件 paintEvent，
+        # 而代理态下 paintEvent 直接返回（由视口代理绘制），
+        # 顺序颠倒会抓到空白位图
+        pm = self.grab()
+        self._gesture_proxy = True
+        # 记录手势开始前的体可见性，手势结束时原样恢复——之后的
+        # apply_view 据「可见性 ≠ _body_visible()」触发 _relayout 重算
+        # _proxy_state（缩放手势可能跨过 BODY_MIN_ZOOM 阈值）
+        self._gesture_body_visible = self._body is not None and self._body.isVisible()
+        # grab() 抓取控件及全部子控件（自定义体 / 旋转圈）的当前外观
+        # （DPR 已随控件设置），手势期间以此冻结位图代替真实控件渲染
+        self._cache_pm = pm
+        self._cache_scale = self._scale
+        self._cache_dirty = False
+        if self._body is not None:
+            self._body.hide()
+        self._spinner.hide()
+
+    def end_gesture_proxy(self) -> None:
+        """视图手势结束：恢复真实子控件渲染（幂等）。
+
+        自定义体按当前缩放应否可见恢复显示，旋转圈按 running 状态恢复；
+        外观缓存标记失效（脱离手势后若进入常规代理会按最终缩放重建
+        清晰位图）。几何落位由调用方（画布 ``_settle_view_gesture``）
+        统一补偿。
+        """
+        if not self._gesture_proxy:
+            return
+        self._gesture_proxy = False
+        if self._body is not None:
+            self._body.setVisible(self._gesture_body_visible)
+        self._spinner.setVisible(self.node.status == "running")
+        self._invalidate_cache()
+        self.update()
 
     def _invalidate_cache(self) -> None:
         """内容 / 状态 / 主题变化后标记缓存失效（下次取缓存时重建）。"""
@@ -356,7 +408,11 @@ class NodeWidget(QFrame):
         重建时机：缓存缺失 / 标记失效 / 缩放系数变化且不在滚轮缩放手势
         进行中（手势期间由视口按目标矩形拉伸旧位图，手势结束 150ms 后
         由画布触发一次全量重建，保证最终清晰）。
+        手势代理期间直接返回 ``begin_gesture_proxy`` 抓取的冻结位图
+        （不重建，避免每帧对真实子控件树做离屏渲染）。
         """
+        if self._gesture_proxy and self._cache_pm is not None:
+            return self._cache_pm
         zooming = False
         vp = self.parentWidget()
         canvas = getattr(vp, "_canvas", None)
@@ -442,7 +498,9 @@ class NodeWidget(QFrame):
     # ------------------------------------------------------------------
     def _on_status_changed(self, status: str) -> None:
         running = status == "running"
-        self._spinner.setVisible(running)
+        # 手势代理期间旋转圈由 begin_gesture_proxy 隐藏并冻结进位图，
+        # 状态切换不得将其重新显示（手势结束由 end_gesture_proxy 恢复）
+        self._spinner.setVisible(running and not self._gesture_proxy)
         if running:
             self._spinner.start()
             self._pulse_timer.start()
@@ -470,8 +528,14 @@ class NodeWidget(QFrame):
         self.update()
 
     def _tick_pulse(self) -> None:
-        self._pulse += 0.033
+        # 相位推进量与计时器间隔一致（DURATION.slow 的 1/10）
+        self._pulse += DURATION["slow"] / 10000.0
         self._invalidate_cache()
+        self.update()
+
+    def _on_theme_changed(self) -> None:
+        """主题切换：外观全部实时取色，直接触发重绘（绑定方法，
+        receiver 销毁自动断连，见构造函数连接处）。"""
         self.update()
 
     # ------------------------------------------------------------------
@@ -545,7 +609,9 @@ class NodeWidget(QFrame):
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(str(T("color.danger"))))
             p.drawEllipse(QPointF(cx, cy), r, r)
-            p.setPen(QPen(QColor("#FFFFFF"), 1.8, Qt.SolidLine, Qt.RoundCap))
+            # 彩色底上的前景（亮色主题下即白色）
+            p.setPen(QPen(QColor(str(T("color.on.primary"))), 1.8,
+                          Qt.SolidLine, Qt.RoundCap))
             d = r * 0.42
             p.drawLine(QPointF(cx - d, cy - d), QPointF(cx + d, cy + d))
             p.drawLine(QPointF(cx - d, cy + d), QPointF(cx + d, cy - d))
@@ -574,7 +640,9 @@ class NodeWidget(QFrame):
             border_color = QColor(str(T("color.danger")))
             border_w = 2.0
         elif status == "running":
-            pulse = 0.55 + 0.45 * math.sin(self._pulse * 2 * math.pi / 0.32)
+            # 脉冲周期 = DURATION.slow（320ms 一拍）
+            pulse = 0.55 + 0.45 * math.sin(
+                self._pulse * 2 * math.pi / (DURATION["slow"] / 1000.0))
             border_color = QColor(accent)
             border_color.setAlpha(int(120 + 135 * pulse))
             border_w = 2.0

@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
 
 from ..theme import T, set_property
 from ..tokens import Breakpoint
-from .helpers import TokenColorChip, apply_token_font, empty_placeholder
+from .helpers import apply_token_font, content_card, empty_placeholder
 
 __all__ = ["CenteredContainer", "create_centered_container"]
 
@@ -47,26 +47,6 @@ _MAX_CONTENT_WIDTH = 960
 
 #: 内容卡片各断点列数
 _COLUMNS = {"xs": 1, "sm": 2, "md": 3, "lg": 3, "xl": 3}
-
-
-def _mini_card(title, desc, chip_key):
-    """构造内容小卡片：色块条 + 标题 + 描述。"""
-    card = QFrame()
-    card.setFrameShape(QFrame.StyledPanel)
-    lay = QVBoxLayout(card)
-    lay.setContentsMargins(T("space.4"), T("space.3"), T("space.4"), T("space.3"))
-    lay.setSpacing(T("space.2"))
-    chip = TokenColorChip(chip_key, "radius.sm")
-    chip.setFixedHeight(T("space.2"))
-    lay.addWidget(chip)
-    head = QLabel(title)
-    apply_token_font(head, "font.title.sm", "font.weight.semibold")
-    lay.addWidget(head)
-    body = QLabel(desc)
-    body.setProperty("role", "secondary")
-    body.setWordWrap(True)
-    lay.addWidget(body)
-    return card
 
 
 class CenteredContainer(QWidget):
@@ -94,7 +74,11 @@ class CenteredContainer(QWidget):
         self._subtitle = subtitle
         self._actions = tuple(actions)
         self._cards = [
-            item if isinstance(item, QWidget) else _mini_card(*item)
+            item if isinstance(item, QWidget) else content_card(
+                *item, chip_radius_key="radius.sm",
+                chip_fixed_height=T("space.2"),
+                margins=(T("space.4"), T("space.3"), T("space.4"), T("space.3")),
+                add_stretch=False)
             for item in (cards or [])
         ]
         self._note = note

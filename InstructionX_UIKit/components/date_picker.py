@@ -8,15 +8,14 @@
 from PySide6.QtCore import QDate
 from PySide6.QtWidgets import QCalendarWidget, QDateEdit
 
-from ..theme import set_property
+from ._mixin import SizeMixin
 
 __all__ = ["DatePicker"]
 
-_SIZES = ("sm", "md", "lg")
 _FORMAT = "yyyy-MM-dd"
 
 
-class DatePicker(QDateEdit):
+class DatePicker(SizeMixin, QDateEdit):
     """日期选择器。
 
     用途:
@@ -34,6 +33,10 @@ class DatePicker(QDateEdit):
         dp.dateChanged.connect(lambda d: print(d.toString("yyyy-MM-dd")))
     """
 
+    #: 合法尺寸档（SizeMixin 校验用）
+    _SIZES = ("sm", "md", "lg")
+    _size_label = "日期选择器"
+
     def __init__(self, date: QDate = None, size: str = "md", parent=None):
         super().__init__(parent)
         self.setCalendarPopup(True)
@@ -43,16 +46,6 @@ class DatePicker(QDateEdit):
         self.setDate(date if date is not None and date.isValid()
                      else QDate.currentDate())
         self.set_size(size)
-
-    def set_size(self, size: str) -> None:
-        """设置尺寸档：``sm`` / ``md`` / ``lg``。"""
-        if size not in _SIZES:
-            raise ValueError(f"未知日期选择器尺寸: {size!r}")
-        set_property(self, "size", size)
-
-    def size_name(self) -> str:
-        """当前尺寸档名。"""
-        return self.property("uiksize") or "md"
 
     # ------------------------------------------------------------------
     # 字符串便捷接口

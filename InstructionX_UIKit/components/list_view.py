@@ -9,8 +9,6 @@ from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QListWidget, QListWidgetItem, QStyledItemDelegate
 
-from InstructionX_UIKit.theme import set_property
-
 __all__ = ["ListWidget", "ListItemDelegate"]
 
 
@@ -60,8 +58,6 @@ class ListWidget(QListWidget):
         self._delegate = ListItemDelegate(item_height, parent=self)
         self.setItemDelegate(self._delegate)
         self.setUniformItemSizes(True)
-        self.setProperty("uik", "list")
-        set_property(self, "variant", "list")
 
     # ------------------------------------------------------------------ 便捷
     def add_item(self, text: str, icon: QIcon = None, data=None) -> QListWidgetItem:

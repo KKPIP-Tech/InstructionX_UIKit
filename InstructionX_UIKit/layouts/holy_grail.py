@@ -155,7 +155,8 @@ class HolyGrail(QWidget):
         return panel
 
     def _build_panel(self):
-        """构造内容宿主面板，返回 (面板, 面板布局) 中的面板。"""
+        """构造内容宿主面板：StyledPanel 卡片框 + 内容布局，供
+        :meth:`set_center` / :meth:`set_side` 装入内容。"""
         panel = QFrame()
         panel.setFrameShape(QFrame.StyledPanel)
         lay = QVBoxLayout(panel)

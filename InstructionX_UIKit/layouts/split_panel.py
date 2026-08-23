@@ -25,7 +25,7 @@
     win.show()
 """
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
     QFrame,
     QLabel,
@@ -53,8 +53,9 @@ class SplitPanel(QWidget):
         content: 右栏内容区控件；``None`` 时显示空占位。
         parent: 父控件。
 
-    ``splitterMoved`` 时记录各栏比例；``resizeEvent`` 中按记忆比例
-    重新分配，同时按断点决定栏数（sm 两栏、xs 单栏）。运行期可用
+    ``splitterMoved`` 时记录各栏比例；``resizeEvent`` 中断点变化立即
+    按记忆比例重排，同断点内的窗口缩放则防抖（QTimer 单次触发）到
+    拖拽结束后再统一分配，避免拖拽期间高频 ``setSizes``。运行期可用
     :meth:`set_content` 更换内容区。
     """
 
@@ -77,6 +78,11 @@ class SplitPanel(QWidget):
         self._splitter.setCollapsible(1, False)
         self._splitter.splitterMoved.connect(self._remember)
         root.addWidget(self._splitter, 1)
+        # 同断点内缩放防抖：resize 结束后统一按记忆比例分配一次
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(80)
+        self._resize_timer.timeout.connect(self._apply_sizes)
         self.set_content(content)
         # 目标可见性（自行跟踪：窗口未 show 时 isVisible() 恒为 False，不可依赖）
         self._visible = [True, True, True]
@@ -175,8 +181,13 @@ class SplitPanel(QWidget):
     # -- 响应式 ----------------------------------------------------------
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._sync(Breakpoint.from_width(self.width()))
-        self._apply_sizes()
+        bp = Breakpoint.from_width(self.width())
+        if bp != self._bp:
+            self._sync(bp)  # 断点变化：立即重排并按记忆比例分配
+        else:
+            # 同断点内窗口缩放：防抖到拖拽结束后统一按记忆比例分配
+            # （避免拖拽期间每个 resize 事件都全量 setSizes）
+            self._resize_timer.start()
 
     def _sync(self, bp):
         """按断点设置栏数：md 及以上三栏，sm 两栏，xs 单栏。"""

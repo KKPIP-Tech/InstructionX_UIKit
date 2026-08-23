@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
 
 from ..theme import T, ThemeManager
 from .model import PinDirection, types_compatible
-from .node_widget import safe_slot
 from .registry import NodeRegistry
 
 __all__ = ["NodeCreationMenu", "NodeContextMenu"]
@@ -47,6 +46,10 @@ class NodeCreationMenu(QDialog):
         parent: 父控件。
         owner: 命名空间标识（缺省 ``None`` 列全部类型）；给定时只列出
             「该 owner + 全局命名空间」的节点类型。
+
+    生命周期：每次弹出新建实例，选定条目或关闭（含点击外部关闭 Popup）
+    后自毁（``WA_DeleteOnClose``），反复弹出不会在父控件上累积隐藏的
+    子对话框。
     """
 
     #: 选定节点类型信号，参数为 type_name
@@ -55,7 +58,7 @@ class NodeCreationMenu(QDialog):
     def __init__(self, parent=None, owner: str = None):
         super().__init__(parent)
         self.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_DeleteOnClose, False)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setMinimumWidth(260)
         self._compatible = None
         self._owner = owner
@@ -75,8 +78,9 @@ class NodeCreationMenu(QDialog):
         self.search_edit.returnPressed.connect(self._choose_first)
         self.list.itemActivated.connect(self._on_item)
         self.list.itemClicked.connect(self._on_item)
-        ThemeManager.instance().theme_changed.connect(
-            safe_slot(lambda *_: self._retheme()))
+        # 绑定方法连接：receiver（本对话框）随 WA_DeleteOnClose 销毁时
+        # 自动断连，单例信号上不残留死对象包装
+        ThemeManager.instance().theme_changed.connect(self._retheme)
         self._retheme()
 
     def _retheme(self) -> None:
@@ -172,7 +176,8 @@ class NodeCreationMenu(QDialog):
         type_name = item.data(Qt.UserRole)
         if not type_name:
             return
-        self.hide()
+        # close() + WA_DeleteOnClose：选定后自毁，不残留在父控件上
+        self.close()
         self.type_chosen.emit(type_name)
 
 

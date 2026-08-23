@@ -28,6 +28,11 @@ _LEVELS = {
     "H": ERROR_CORRECT_H,  # 约 30%
 }
 
+#: 二维码黑白双色：为保证任何主题 / 光照下可扫描，刻意不随主题换肤
+#: （豁免「禁止硬编码颜色」约定，见审计 §4.1-11）。
+_QR_BG = "#FFFFFF"  # 白底卡片
+_QR_FG = "#111111"  # 黑色模块
+
 _PADDING = 12  # 卡片内边距（px）
 
 
@@ -122,7 +127,7 @@ class QRCodeView(QWidget):
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         # 白底卡片（任何主题下保持可扫描对比度）
         painter.setPen(QPen(QColor(T("color.border"))))
-        painter.setBrush(QColor("#FFFFFF"))
+        painter.setBrush(QColor(_QR_BG))
         painter.drawRoundedRect(rect, T("radius.md"), T("radius.md"))
 
         if not self._matrix:
@@ -139,7 +144,7 @@ class QRCodeView(QWidget):
         ox = (self.width() - area) / 2
         oy = (self.height() - area) / 2
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor("#111111"))
+        painter.setBrush(QColor(_QR_FG))
         for r, row in enumerate(self._matrix):
             for c, filled in enumerate(row):
                 if filled:

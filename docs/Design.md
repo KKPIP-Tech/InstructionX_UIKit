@@ -42,19 +42,19 @@
 | `color.text.secondary` | `#59636F` | `#A6AEBB` | 次要文字、表头、说明 |
 | `color.text.tertiary` | `#98A0AC` | `#6E7684` | 占位符、辅助提示 |
 | `color.text.disabled` | `#C2C8D0` | `#4A515C` | 禁用态文字 / 图标 |
-| `color.primary` | `#3563E9` | `#5B87F2` | 品牌主色 |
-| `color.primary.hover` | `#2B54C9` | `#7499F5` | 主色 hover |
-| `color.primary.pressed` | `#21419E` | `#8AACF7` | 主色 pressed |
-| `color.primary.subtle` | `#EDF1FE` | `#22304F` | 主色浅底：选中底、徽标底 |
-| `color.on.primary` | `#FFFFFF` | `#FFFFFF` | 主色上的文字 / 图标 |
-| `color.success` | `#1E9E6A` | `#3CBF8C` | 成功 |
-| `color.success.hover` | `#177E55` | `#55D0A0` | 成功 hover |
-| `color.success.subtle` | `#E5F6EE` | `#1C3A2F` | 成功浅底 |
-| `color.warning` | `#E0962A` | `#F0B45A` | 警告 |
-| `color.warning.subtle` | `#FCF3E2` | `#3D3220` | 警告浅底 |
-| `color.danger` | `#D94848` | `#E86060` | 危险 / 错误 |
-| `color.danger.hover` | `#B93A3A` | `#F07878` | 危险 hover |
-| `color.danger.subtle` | `#FBECEC` | `#402424` | 危险浅底 |
+| `color.primary` | `#3F5E8C` | `#7C98C4` | 品牌主色（钢蓝系） |
+| `color.primary.hover` | `#35507A` | `#93AAD1` | 主色 hover |
+| `color.primary.pressed` | `#2B4266` | `#A9BDDD` | 主色 pressed |
+| `color.primary.subtle` | `#EBEFF5` | `#26324A` | 主色浅底：选中底、徽标底 |
+| `color.on.primary` | `#FFFFFF` | `#15181E` | 主色上的文字 / 图标 |
+| `color.success` | `#3E7E5F` | `#6BA98A` | 成功 |
+| `color.success.hover` | `#34684F` | `#55D0A0` | 成功 hover |
+| `color.success.subtle` | `#E9F2EC` | `#22362D` | 成功浅底 |
+| `color.warning` | `#C08A3E` | `#D2A668` | 警告 |
+| `color.warning.subtle` | `#F7F0E3` | `#3A3226` | 警告浅底 |
+| `color.danger` | `#B25050` | `#CD7A7A` | 危险 / 错误 |
+| `color.danger.hover` | `#9A4444` | `#F07878` | 危险 hover |
+| `color.danger.subtle` | `#F7EBEB` | `#3E2A2A` | 危险浅底 |
 | `color.overlay` | `rgba(28,35,48,0.45)` | `rgba(0,0,0,0.55)` | 模态遮罩 |
 
 ### 2.2 语义用法
@@ -92,18 +92,18 @@
 | text.primary / bg.base | 15.76:1 | 14.75:1 | AAA（正文） |
 | text.secondary / bg.base | 6.11:1 | 7.95:1 | AA（正文） |
 | text.tertiary / bg.base | 2.64:1 | 3.88:1 | 仅用于占位 / 辅助信息，不承载关键内容 |
-| on.primary / primary | 5.11:1 | 3.39:1 | AA（大字号 / 按钮文字） |
-| primary / bg.base | 5.11:1 | 5.24:1 | AA（链接、图标） |
-| success / bg.base | 3.41:1 | 7.64:1 | AA（大字号 / 状态图标） |
-| danger / bg.base | 4.22:1 | 5.31:1 | AA（正文级） |
-| warning / bg.base | 2.45:1 | 9.63:1 | 亮模式仅用于图标 / 边框 / 大字号，不作小字正文 |
+| on.primary / primary | 6.58:1 | 6.05:1 | AA（正文 / 按钮文字） |
+| primary / bg.base | 6.58:1 | 6.05:1 | AA（链接、图标） |
+| success / bg.base | 4.82:1 | 6.49:1 | AA（正文 / 状态图标） |
+| danger / bg.base | 5.05:1 | 5.64:1 | AA（正文级） |
+| warning / bg.base | 3.02:1 | 7.95:1 | 亮模式 AA（大字号 / 图标），不作小字正文；暗模式 AA（正文） |
 
-结论：正文一律使用 `text.primary` / `text.secondary`；`text.tertiary` 与亮模式 `warning` 不用于 13px 以下关键文字；暗模式下各语义色均经过提亮处理，反而拥有更高对比度。
+结论：正文一律使用 `text.primary` / `text.secondary`；`text.tertiary` 与亮模式 `warning` 不用于 13px 以下关键文字；暗模式下各语义色均经过提亮处理，对比度普遍高于亮模式。
 
 ### 2.5 暗色模式策略
 
 1. **面层级提升**：暗色不是亮色的简单反相。`bg.base` 最深（#15181E），`subtle → muted → elevated` 逐层变亮，弹层 / 卡片用更亮的 `bg.elevated`（#1F242E）浮于基底之上，用「更亮」代替「白色」表达高度。
-2. **主色提亮**：`primary` 由 #3563E9 提为 #5B87F2，`hover / pressed` 相应向更亮方向偏移（暗模式下越按越亮，与亮模式「越按越深」方向相反，但视觉重量一致）。
+2. **主色提亮**：`primary` 由 #3F5E8C 提为 #7C98C4，`hover / pressed` 相应向更亮方向偏移（暗模式下越按越亮，与亮模式「越按越深」方向相反，但视觉重量一致）；`on.primary` 由 #FFFFFF 反转为深底 #15181E（暗模式下主色是浅色底，需深色文字保对比度）。
 3. **阴影 alpha 调整**：暗色下阴影颜色改为纯黑 RGB=(0,0,0)，alpha 由 15%/25%/36% 提高到 40%/55%/70%，弥补深色背景下阴影可见性的下降。
 4. **遮罩加深**：overlay 由 45% 深灰蓝改为 55% 纯黑。
 5. **自绘组件**：必须在 `paintEvent` 内实时调用 `T()`，并在 `__init__` 连接 `ThemeManager.instance().theme_changed` 到 `self.update()`，禁止把颜色缓存为成员变量。
@@ -348,7 +348,7 @@
 QPushButton[variant="primary"] { ... }
 QPushButton[uiksize="sm"] { ... }
 QPushButton[shape="circle"] { ... }
-QLineEdit[error="true"] { border-color: #D94848; }
+QLineEdit[error="true"] { border-color: #B25050; }
 QProgressBar[status="success"]::chunk { ... }
 ```
 

@@ -49,9 +49,15 @@ class ExecutionController(QObject):
 
     # -- 节点状态 ----------------------------------------------------------
     def start(self, node_id: str) -> None:
-        """标记节点 running（脉冲描边 + 标题栏旋转圈），记录起始时刻。"""
+        """标记节点 running（脉冲描边 + 标题栏旋转圈），记录起始时刻。
+
+        幂等：已在 running 的节点重复调用直接返回——不覆盖起始时刻
+        （耗时计时的 t0 保持首次 start）、不重复发射 ``node_started``。
+        """
         node = self._canvas.graph.node(node_id)
         if node is None:
+            return
+        if node_id in self._active:
             return
         self._t0[node_id] = time.perf_counter()
         self._active.add(node_id)

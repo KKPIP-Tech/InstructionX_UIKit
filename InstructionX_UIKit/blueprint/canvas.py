@@ -25,11 +25,17 @@ from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QWidget
 
 from ..theme import T, ThemeManager
-from .edge_widget import EdgeWidget, TempWire, bezier_path
+from .edge_widget import (
+    EdgeWidget,
+    TempWire,
+    _cached_color,
+    _cached_pen,
+    bezier_path,
+)
 from .execution import ExecutionController
 from .menu import NodeContextMenu, NodeCreationMenu
 from .model import BlueprintGraph, BlueprintNode, PinDirection, types_compatible
-from .node_widget import NodeWidget, PinHandle, safe_slot
+from .node_widget import NodeWidget, PinHandle
 from .registry import NodeRegistry
 from .viewport import create_viewport
 
@@ -60,6 +66,13 @@ class BlueprintCanvas(QWidget):
         edge_created(object): 新边建立（``Edge``，含菜单自动连接产生的）。
         edge_removed(str): 边被移除（边 id）。
         selection_changed(list): 选中节点 id 列表变化。
+
+    交互注记：``body_builder`` 注入的节点体容器被画布整体置为鼠标透明
+    （``WA_TransparentForMouseEvents``），保证节点体区域按下仍能拖动
+    节点 / 框选，代价是体内部件不接收鼠标事件。需要可交互节点体的
+    开发者可自行清除该属性（``canvas.node_widget(id)._body.setAttribute(
+    Qt.WA_TransparentForMouseEvents, False)``，此后该区域不再触发节点
+    拖动），或在外部面板编辑 ``node.properties``（demo 蓝图页做法）。
 
     示例::
 
@@ -138,8 +151,9 @@ class BlueprintCanvas(QWidget):
         graph.node_removed.connect(self._on_node_removed)
         graph.edge_added.connect(self._on_edge_added)
         graph.edge_removed.connect(self._on_edge_removed)
-        ThemeManager.instance().theme_changed.connect(
-            safe_slot(lambda *_: self._retheme()))
+        # 绑定方法连接：receiver（本画布）销毁时 PySide 自动断连，
+        # 单例信号上不会残留死对象包装（lambda 连接无法自动清理）
+        ThemeManager.instance().theme_changed.connect(self._retheme)
 
         for node in graph.nodes():
             self._on_node_added(node)
@@ -189,7 +203,12 @@ class BlueprintCanvas(QWidget):
         return self._zoom
 
     def center_on(self, node_id: str) -> None:
-        """把视图中心对准某节点（缩放不变）。"""
+        """把视图中心对准某节点（缩放不变）。
+
+        先结算遗留的视图手势（若位移 / 缩放手势被提前打断未结算，
+        节点仍冻结于手势位图代理，直接落位会按新视图拉伸冻结位图）。
+        """
+        self._settle_view_gesture()
         node = self.graph.node(node_id)
         if node is None:
             return
@@ -198,25 +217,32 @@ class BlueprintCanvas(QWidget):
         self._update_view()
 
     def fit_view(self) -> None:
-        """适应视图：全部节点居中可见（含边距，缩放夹在合法范围）。"""
+        """适应视图：全部节点居中可见（含边距，缩放夹在合法范围）。
+
+        复用 ``set_zoom`` 的手势防抖路径：缩放可能大幅变化，先置缩放
+        手势标记（节点缓存位图按纹理拉伸显示，停顿 150ms 后统一按
+        最终缩放重建），避免大量节点时单帧同步重建全部位图卡顿。
+        """
+        self._settle_view_gesture()
         nodes = self.graph.nodes()
         if not nodes:
             self._zoom = 1.0
             self._offset = QPointF(0.0, 0.0)
-            self._update_view()
-            return
-        rect = None
-        for node in nodes:
-            r = QRectF(node.pos, node.size)
-            rect = r if rect is None else rect.united(r)
-        margin = 60.0
-        rect = rect.adjusted(-margin, -margin, margin, margin)
-        vw, vh = max(1, self.width()), max(1, self.height())
-        z = min(vw / max(rect.width(), 1.0), vh / max(rect.height(), 1.0))
-        self._zoom = max(ZOOM_MIN, min(ZOOM_MAX, z))
-        self._offset = (QPointF(vw / 2, vh / 2)
-                        - rect.center() * self._zoom)
+        else:
+            rect = None
+            for node in nodes:
+                r = QRectF(node.pos, node.size)
+                rect = r if rect is None else rect.united(r)
+            margin = 60.0
+            rect = rect.adjusted(-margin, -margin, margin, margin)
+            vw, vh = max(1, self.width()), max(1, self.height())
+            z = min(vw / max(rect.width(), 1.0), vh / max(rect.height(), 1.0))
+            self._zoom = max(ZOOM_MIN, min(ZOOM_MAX, z))
+            self._offset = (QPointF(vw / 2, vh / 2)
+                            - rect.center() * self._zoom)
         self._update_view()
+        self._zooming = True
+        self._zoom_settle.start()
 
     def execution(self) -> ExecutionController:
         """返回运行指示控制器（画布持有唯一实例）。"""
@@ -276,6 +302,7 @@ class BlueprintCanvas(QWidget):
 
     def from_dict(self, data: dict) -> None:
         """从 ``to_dict`` 结果恢复：重建节点 / 边并还原 zoom 与 offset。"""
+        self._settle_view_gesture()
         self.clear_selection()
         self.graph.clear()
         gdata = data.get("graph", data)
@@ -340,8 +367,12 @@ class BlueprintCanvas(QWidget):
         node_widget.apply_view(self.scene_to_view(node_widget.node.pos), self._zoom)
 
     def _retheme(self) -> None:
+        self._settle_view_gesture()
         for widget in self._node_widgets.values():
             widget.refresh_theme()
+        # 边基础色按引脚类型惰性缓存，主题切换后须失效重建（实时取色）
+        for ew in self._edge_widgets.values():
+            ew.invalidate_color()
         self._update_view()
 
     def _update_view(self) -> None:
@@ -355,25 +386,29 @@ class BlueprintCanvas(QWidget):
         """视图变换（zoom / offset 变化）后的界面同步。
 
         ``gesture=True``（平移拖拽 / 滚轮缩放进行中）且视口支持节点位图
-        代理时：跳过逐节点几何落位，仅重绘视口——代理节点由视口按场景
-        坐标实时绘制，视觉不受控件几何滞后影响；带可见自定义体的节点
-        照常逐帧落位。被跳过的几何在手势结束时由 ``_settle_view_gesture``
-        统一补偿（引脚热区 / 子控件位置随即恢复精确）。
+        代理时：跳过**全部**节点的逐帧几何落位，仅重绘视口——节点由视口
+        按场景坐标实时绘制缓存位图，视觉不受控件几何滞后影响。带可见
+        自定义体的节点在手势开始时被临时切换为位图代理
+        （``NodeWidget.begin_gesture_proxy``）：实测 GL 视口上逐帧对
+        真实子控件树做落位 + 重绘的合成开销极高（最大化窗口 11 节点
+        约 76ms/帧，切换后约 15ms/帧）。被跳过的几何与真实控件在手势
+        结束时由 ``_settle_view_gesture`` 统一补偿恢复。
         """
         if gesture and getattr(self._viewport, "supports_node_proxy", False):
+            if not self._gesture_deferred:
+                for widget in self._node_widgets.values():
+                    widget.begin_gesture_proxy()
             self._gesture_deferred = True
-            for widget in self._node_widgets.values():
-                if not widget.uses_proxy():
-                    widget.apply_view(self.scene_to_view(widget.node.pos),
-                                      self._zoom)
             self.update()
             return
         self._update_view()
 
     def _settle_view_gesture(self) -> None:
-        """视图手势结束（平移释放 / 缩放防抖到点）：补偿节点几何落位。"""
+        """视图手势结束（平移释放 / 缩放防抖到点）：恢复真实控件并补偿几何落位。"""
         if self._gesture_deferred:
             self._gesture_deferred = False
+            for widget in self._node_widgets.values():
+                widget.end_gesture_proxy()
             self._update_view()
 
     # ------------------------------------------------------------------
@@ -475,8 +510,15 @@ class BlueprintCanvas(QWidget):
                     self._drag_to(view_pos)
                     return True
                 if self._rpress is not None and event.buttons() & Qt.RightButton:
-                    if (QPointF(view_pos) - self._rpress[0]).manhattanLength() > CLICK_TOL:
+                    # 节点上右键拖拽平移：与空画布右键拖拽行为一致
+                    # （位移阈值判拖 / 换光标 / 同步 offset / 手势防抖）
+                    start, _target = self._rpress
+                    if (QPointF(view_pos) - start).manhattanLength() > CLICK_TOL:
                         self._rpan = True
+                        self.setCursor(Qt.ClosedHandCursor)
+                    if self._rpan:
+                        self._offset = self._offset_start + (QPointF(view_pos) - self._pan_start)
+                        self._view_changed(gesture=True)
                     return True
             if etype == QEvent.MouseButtonRelease:
                 view_pos = self.view_pos_of_event(obj, event)
@@ -485,8 +527,14 @@ class BlueprintCanvas(QWidget):
                     return True
                 if event.button() == Qt.RightButton and self._rpress is not None:
                     target_node = self._rpress[1]
+                    was_pan = self._rpan
                     self._rpress = None
-                    if not self._rpan and target_node is obj:
+                    self._rpan = False
+                    if was_pan:
+                        # 平移结束：恢复光标并结算手势（补偿节点几何落位）
+                        self.unsetCursor()
+                        self._settle_view_gesture()
+                    elif target_node is obj:
                         self._open_node_menu(obj, event.globalPosition().toPoint())
                     return True
         return False
@@ -532,6 +580,12 @@ class BlueprintCanvas(QWidget):
                 continue
             node.pos = start_pos + delta
             w = self._node_widgets.get(nid)
+            if w is not None and defer:
+                # 带可见自定义体的被拖节点同样切换手势位图代理（幂等）：
+                # 逐帧 apply_view 对真实子控件树做几何落位 + 重绘叠加
+                # GL 合成开销极高（实测单节点拖动约 140ms/帧）；
+                # 代理位图由视口按场景坐标实时绘制，视觉无滞后
+                w.begin_gesture_proxy()
             # 位图代理节点由视口按场景坐标实时绘制，拖动期间无需逐帧落位
             if w is not None and not (defer and w.uses_proxy()):
                 w.apply_view(self.scene_to_view(node.pos), self._zoom)
@@ -562,9 +616,7 @@ class BlueprintCanvas(QWidget):
         pin = handle.pin
         node = handle.node_widget.node
         start = node.pos + handle.logical_center()
-        self._wire = TempWire(start, pin.data_type,
-                              from_output=pin.direction is PinDirection.Output,
-                              parent=self)
+        self._wire = TempWire(start, pin.data_type, parent=self)
         self._wire_src = (node.id, pin)
         self._wire_target = None
         self._update_scene_rects([self._wire_scene_rect(self._wire)])
@@ -812,6 +864,10 @@ class BlueprintCanvas(QWidget):
             if self._panning:
                 self._panning = False
                 self.unsetCursor()
+                # 空格提前松开也必须完整结算（与左键松开路径一致）：
+                # 否则手势期跳过的节点几何落位永不补偿，节点冻结于
+                # 手势位图代理、引脚视觉与热区错位
+                self._settle_view_gesture()
             return
         super().keyReleaseEvent(event)
 
@@ -966,16 +1022,16 @@ class BlueprintCanvas(QWidget):
             if self._wire_target is not None:
                 nid, pin = self._wire_target
                 c = self.pin_scene_pos(nid, pin.id, pin.direction)
-                pen = QPen(QColor(str(T("color.primary"))), 2.0)
-                p.setPen(pen)
+                p.setPen(_cached_pen(_cached_color(str(T("color.primary"))), 2.0))
                 p.setBrush(Qt.NoBrush)
                 p.drawEllipse(c, 9.0, 9.0)
         p.restore()
         if self._band is not None:
             rect = QRectF(self._band[0], self._band[1]).normalized()
-            fill = QColor(str(T("color.primary")))
+            # _cached_color 返回副本，setAlpha 原地修改不影响缓存条目
+            fill = _cached_color(str(T("color.primary")))
             fill.setAlpha(28)
-            border = QColor(str(T("color.primary")))
+            border = _cached_color(str(T("color.primary")))
             border.setAlpha(140)
             p.setPen(QPen(border, 1.2))
             p.setBrush(fill)

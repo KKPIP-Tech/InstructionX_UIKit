@@ -10,11 +10,11 @@ from PySide6.QtGui import QFontMetricsF, QIcon, QPainter
 from PySide6.QtWidgets import QStyle, QStyleOptionToolButton, QToolButton
 
 from ..theme import set_property
+from ._mixin import QWIDGETSIZE_MAX, SizeMixin
 
 __all__ = ["IconButton"]
 
 _VARIANTS = (None, "default", "primary", "danger")
-_SIZES = ("sm", "md", "lg")
 _SHAPES = (None, "circle", "round")
 #: 各尺寸档的控件边长（px）
 _EDGE = {"sm": 24, "md": 32, "lg": 40}
@@ -33,7 +33,7 @@ QToolButton[variant="danger"] { padding: 0px; }
 """
 
 
-class IconButton(QToolButton):
+class IconButton(SizeMixin, QToolButton):
     """图标按钮。
 
     用途:
@@ -54,6 +54,10 @@ class IconButton(QToolButton):
         gear = IconButton(icon=QIcon(":/icons/gear.svg"), size="sm")
         close = IconButton(text="×", variant="danger")
     """
+
+    #: 合法尺寸档（SizeMixin 校验用）
+    _SIZES = ("sm", "md", "lg")
+    _size_label = "图标按钮"
 
     def __init__(self, icon: QIcon = None, text: str = "", variant: str = None,
                  size: str = "md", shape: str = None, parent=None):
@@ -83,16 +87,13 @@ class IconButton(QToolButton):
         set_property(self, "variant", variant if variant else "none")
 
     def variant(self) -> str:
-        """当前变体名（未设置时返回空串）。"""
+        """当前变体名（未设置时返回 ``"default"``，与 ``Button.variant`` 语义一致）。"""
         v = self.property("variant")
-        return "" if v in (None, "none") else v
+        return "default" if v in (None, "none") else v
 
-    def set_size(self, size: str) -> None:
-        """设置尺寸档：``sm`` / ``md`` / ``lg``。"""
-        if size not in _SIZES:
-            raise ValueError(f"未知图标按钮尺寸: {size!r}")
+    def _apply_size(self, size: str) -> None:
+        """SizeMixin 钩子：同步内部尺寸档、图标边长与形状几何。"""
         self._size = size
-        set_property(self, "size", size)
         self.setIconSize(QSize(_ICON[size], _ICON[size]))
         self._apply_shape_geometry()
 
@@ -117,7 +118,7 @@ class IconButton(QToolButton):
             # 高度由全局 QSS 的 min/max-height（padding 已清零）精确控制；
             # 最小宽度对齐边长，保证图标按钮近似方形的可点击区域。
             self.setMinimumSize(edge, 0)
-            self.setMaximumSize(16777215, 16777215)
+            self.setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX)
 
     # ------------------------------------------------------------------
     # 内容设置

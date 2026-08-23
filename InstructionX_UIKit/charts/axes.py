@@ -27,6 +27,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPainterPath, 
 
 from ..theme import T
 from ..tokens import FONT_FAMILY
+from ._utils import to_float as _utils_to_float
 
 __all__ = [
     "nice_ticks",
@@ -211,6 +212,9 @@ class AxisModel:
         self.type = str(opt.get("type") or default_type)
         self.name = str(opt.get("name") or "")
         self.categories = [str(c) for c in (opt.get("data") or [])]
+        #: dataZoom 全量类别缓存：``categories`` 可能被窗口替换（interact.py
+        #: 幂等重放），本属性始终保留完整列表，供窗外类别映射与窗口偏移换算
+        self._all_categories = list(self.categories)
         self.min = opt.get("min")
         self.max = opt.get("max")
         # value 轴：布局前由 set_extent 填充
@@ -221,25 +225,34 @@ class AxisModel:
     # -- 范围 ------------------------------------------------------------
     def set_extent(self, data_min: float = None, data_max: float = None,
                    segments: int = 5) -> None:
-        """按数据范围计算 value 轴 nice ticks（min/max 可覆盖端点）。"""
+        """按数据范围计算 value 轴 nice ticks（min/max 可覆盖端点）。
+
+        非法 min/max（空字符串 / 非数值 / NaN 等 ECharts 习惯输入）降级为
+        未设置（不崩溃），docstring 之外的解析不在此承诺。
+        """
         if self.type != "value":
             return
         lo = 0.0 if data_min is None else float(data_min)
         hi = 1.0 if data_max is None else float(data_max)
-        # 数据全为正时基线取 0、全为负时顶取 0，更符合常规图表观感
-        if self.min is None and lo > 0:
+        lo = _to_float(lo, 0.0)
+        hi = _to_float(hi, 1.0)
+        user_lo = _opt_bound(self.min)
+        user_hi = _opt_bound(self.max)
+        # 数据全为正时基线取 0、全为负时顶取 0，更符合常规图表观感。
+        # 以「解析后是否有效」判断（min="" 等价于未设置，也享受基线规则）
+        if user_lo is None and lo > 0:
             lo = 0.0
-        if self.max is None and hi < 0:
+        if user_hi is None and hi < 0:
             hi = 0.0
-        if self.min is not None:
-            lo = float(self.min)
-        if self.max is not None:
-            hi = float(self.max)
+        if user_lo is not None:
+            lo = user_lo
+        if user_hi is not None:
+            hi = user_hi
         self.vmin, self.vmax, self._ticks = nice_ticks(lo, hi, segments)
-        if self.min is not None:
-            self.vmin = float(self.min)
-        if self.max is not None:
-            self.vmax = float(self.max)
+        if user_lo is not None:
+            self.vmin = user_lo
+        if user_hi is not None:
+            self.vmax = user_hi
 
     def ticks(self) -> list:
         """刻度列表：category 返回类别字符串，value 返回数值列表。"""
@@ -248,13 +261,35 @@ class AxisModel:
         return list(self._ticks)
 
     # -- 映射（一维：start→end 像素区间） ----------------------------------
-    def map(self, value, start: float, end: float) -> float:
-        """数据值 → [start, end] 区间内的像素坐标。"""
+    def local_index(self, value) -> int:
+        """category 轴数据值 → 窗口内下标（dataZoom 窗口外返回越界下标）。
+
+        数据语义：数字为**全量**下标（经 ``window_offset`` 换算）；名字在
+        窗口内 → 局部下标，在全量列表但窗外 → 全量下标（越界），未知名字
+        → 0（历史行为）。value 轴不适用（原样返回）。
+        """
+        if self.type != "category":
+            return value
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return int(value) - self.window_offset()
+        return self.category_index(value)
+
+    def map(self, value, start: float, end: float, *, local: bool = False) -> float:
+        """数据值 → [start, end] 区间内的像素坐标。
+
+        category 轴不 clamp：窗口外类别返回越界坐标，由各系列的
+        ``setClipRect(plot)`` 裁剪（dataZoom 窗口外数据不再坍缩到边缘 band）。
+        ``local=True`` 表示 value 已是窗口内下标（轴刻度绘制用）。
+        """
         if self.type == "category":
-            idx = self.category_index(value)
+            if local and isinstance(value, (int, float)) \
+                    and not isinstance(value, bool):
+                idx = int(value)
+            else:
+                idx = self.local_index(value)
             n = max(1, len(self.categories))
             band = (end - start) / n
-            return start + band * (min(max(idx, 0), n - 1) + 0.5)
+            return start + band * (idx + 0.5)
         v = _to_float(value, self.vmin)
         span = self.vmax - self.vmin
         frac = 0.0 if span == 0 else (v - self.vmin) / span
@@ -267,16 +302,38 @@ class AxisModel:
         return abs(end - start) / len(self.categories)
 
     def category_index(self, value) -> int:
-        """类别值（名字或序号）→ 下标。"""
+        """类别值（名字或序号）→ 下标（不 clamp）。
+
+        dataZoom 窗口外的类别（全量列表中但不在当前窗口）返回越界下标，
+        配合 ``map`` 由 clipRect 裁剪；数字下标原样返回，不再钳到边缘。
+        完全未知的名字仍返回 0（历史行为）。
+        """
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             return int(value)
         s = str(value)
         if s in self.categories:
             return self.categories.index(s)
+        all_cats = getattr(self, "_all_categories", None) or []
+        if s in all_cats:
+            return all_cats.index(s)  # 窗外类别：全量下标（越界）
+        return 0
+
+    def window_offset(self) -> int:
+        """dataZoom 类别窗口在全量类别中的起始下标（无窗口 / 全窗口时为 0）。
+
+        供 tooltip axis 触发：``invert`` 返回窗口内下标，系列 ``value_at_index``
+        经本偏移换算回全量数据下标。
+        """
+        all_cats = getattr(self, "_all_categories", None) or []
+        if self.categories and all_cats:
+            try:
+                return all_cats.index(self.categories[0])
+            except ValueError:
+                return 0
         return 0
 
     def invert(self, px: float, start: float, end: float):
-        """像素 → 数据值（category 返回下标，越界收敛）。"""
+        """像素 → 数据值（category 返回窗口内下标，越界收敛到窗口边缘）。"""
         if end == start:
             return 0
         frac = (px - start) / (end - start)
@@ -292,22 +349,65 @@ class AxisModel:
 
 
 def _to_float(v, default=0.0) -> float:
+    """数值轴映射用宽松转换（统一语义见 ``charts._utils.to_float``：
+    None / bool / NaN / Inf / 失败一律返回 default，防止 NaN 流入坐标）。"""
+    return _utils_to_float(v, default)
+
+
+def _opt_bound(v):
+    """解析轴 min/max 选项：合法数值返回 float，非法（"" / NaN / 非数值）
+    返回 None（视为未设置，不崩溃）。"""
     try:
-        return float(v)
+        return _utils_to_float(v, None)
     except (TypeError, ValueError):
-        return float(default)
+        return None
 
 
 # ---------------------------------------------------------------------------
 # 直角坐标系
 # ---------------------------------------------------------------------------
 
+def _parse_margin(v, default):
+    """解析 grid / singleAxis 边距：数值 px 或百分比字符串（"10%"）。
+
+    返回 ``(is_pct, value)``：百分比在 layout 时按 rect 宽 / 高换算；
+    非法输入（空字符串 / 非数值 / None）降级为 default（不崩溃；
+    default 可为 None 表示「未设置」）。
+    """
+    fallback = float(default) if default is not None else None
+    if isinstance(v, str):
+        s = v.strip()
+        if s.endswith("%"):
+            try:
+                return True, float(s[:-1])
+            except ValueError:
+                return False, fallback
+        if not s:
+            return False, fallback
+    if v is None:
+        return False, fallback
+    try:
+        return False, float(v)
+    except (TypeError, ValueError):
+        return False, fallback
+
+
+def _margin_px(spec, total):
+    """把 ``_parse_margin`` 的 ``(is_pct, v)`` 换算为像素（v 为 None 时原样返回）。"""
+    is_pct, v = spec
+    if v is None:
+        return None
+    return total * v / 100.0 if is_pct else v
+
+
 class GridCoord(Coord):
     """直角坐标系：grid 边距 + x/y 轴 + 刻度网格线。
 
     option 键：``grid`` {left,right,top,bottom}（默认 48/24/40/36）、
-    ``xAxis`` / ``yAxis``。``map_point(x, y)``：x 为类别名/下标或数值，
-    y 为数值。``invert_x(pos)`` 供 tooltip axis 触发。
+    ``xAxis`` / ``yAxis``。边距支持数值 px 或百分比字符串（如 ``"10%"``，
+    左右相对绘图区宽度、上下相对高度；ECharts 习惯），非法输入降级默认值。
+    ``map_point(x, y)``：x 为类别名/下标或数值，y 为数值。
+    ``invert_x(pos)`` 供 tooltip axis 触发。
     """
 
     kind = "grid"
@@ -320,10 +420,11 @@ class GridCoord(Coord):
         self.x_axis = AxisModel(xopt, x_default)
         self.y_axis = AxisModel(yopt, "value")
         grid = dict(self.option.get("grid") or {})
-        self.m_left = float(grid.get("left", 48))
-        self.m_right = float(grid.get("right", 24))
-        self.m_top = float(grid.get("top", 40))
-        self.m_bottom = float(grid.get("bottom", 36))
+        self._m_left = _parse_margin(grid.get("left"), 48)
+        self._m_right = _parse_margin(grid.get("right"), 24)
+        self._m_top = _parse_margin(grid.get("top"), 40)
+        self._m_bottom = _parse_margin(grid.get("bottom"), 36)
+        self.m_left = self.m_right = self.m_top = self.m_bottom = 0.0
         self.plot = QRectF()  # 绘图区（扣除边距）
 
     # -- 数据范围 ---------------------------------------------------------
@@ -359,6 +460,11 @@ class GridCoord(Coord):
     # -- 协议 -------------------------------------------------------------
     def layout(self, rect: QRectF) -> None:
         super().layout(rect)
+        # 百分比边距在此换算（左右相对宽、上下相对高）
+        self.m_left = _margin_px(self._m_left, rect.width())
+        self.m_right = _margin_px(self._m_right, rect.width())
+        self.m_top = _margin_px(self._m_top, rect.height())
+        self.m_bottom = _margin_px(self._m_bottom, rect.height())
         self.plot = QRectF(
             rect.left() + self.m_left,
             rect.top() + self.m_top,
@@ -398,7 +504,8 @@ class GridCoord(Coord):
         # x 轴：类别标签 / 数值刻度 + 纵向网格线
         if self.x_axis.type == "category":
             for i, cat in enumerate(self.x_axis.categories):
-                px = self.x_axis.map(i, self.plot.left(), self.plot.right())
+                px = self.x_axis.map(i, self.plot.left(), self.plot.right(),
+                                     local=True)
                 p.setPen(QPen(c_grid, 1))
                 p.drawLine(QPointF(px, self.plot.top()), QPointF(px, self.plot.bottom()))
                 p.setPen(c_text)
@@ -625,10 +732,12 @@ class SingleAxisCoord(Coord):
         super().__init__(chart, option)
         sopt = dict(self.option.get("singleAxis") or {})
         self.axis = AxisModel(sopt, "value")
-        self.m_left = float(sopt.get("left", 40))
-        self.m_right = float(sopt.get("right", 40))
-        self.m_top = sopt.get("top")
-        self.m_bottom = sopt.get("bottom")
+        # 边距支持 px / 百分比（"10%"）；top/bottom 非法输入降级为 None（垂直居中）
+        self._m_left = _parse_margin(sopt.get("left"), 40)
+        self._m_right = _parse_margin(sopt.get("right"), 40)
+        self._m_top = _parse_margin(sopt.get("top"), None)
+        self._m_bottom = _parse_margin(sopt.get("bottom"), None)
+        self.m_left = self.m_right = self.m_top = self.m_bottom = 0.0
         self.line_y = 0.0
         self.plot = QRectF()
 
@@ -645,12 +754,16 @@ class SingleAxisCoord(Coord):
 
     def layout(self, rect: QRectF) -> None:
         super().layout(rect)
+        self.m_left = _margin_px(self._m_left, rect.width())
+        self.m_right = _margin_px(self._m_right, rect.width())
+        self.m_top = _margin_px(self._m_top, rect.height())
+        self.m_bottom = _margin_px(self._m_bottom, rect.height())
         left = rect.left() + self.m_left
         right = rect.right() - self.m_right
         if self.m_top is not None:
-            y = rect.top() + float(self.m_top)
+            y = rect.top() + self.m_top
         elif self.m_bottom is not None:
-            y = rect.bottom() - float(self.m_bottom)
+            y = rect.bottom() - self.m_bottom
         else:
             y = rect.center().y()
         self.line_y = y
@@ -704,16 +817,17 @@ class SingleAxisCoord(Coord):
 # 日历坐标系
 # ---------------------------------------------------------------------------
 
-_WEEKDAY_LABELS = {0: "Mon", 2: "Wed", 4: "Fri"}  # 行下标 -> 标签
-_MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+_WEEKDAY_LABELS = {0: "周一", 2: "周三", 4: "周五"}  # 行下标 -> 标签
+_MONTH_LABELS = ["1月", "2月", "3月", "4月", "5月", "6月",
+                 "7月", "8月", "9月", "10月", "11月", "12月"]
 
 
 class CalendarCoord(Coord):
     """日历坐标系：GitHub 式 周(列)×星期(行) 年历网格。
 
     option 键：``calendar`` {"year": int, "cellSize": px 或 "auto",
-    "range": ["YYYY-MM-DD", "YYYY-MM-DD"]（可选，默认全年）}。
+    "range": ["YYYY-MM-DD", "YYYY-MM-DD"]（可选，默认全年；支持跨年 range，
+    月份标签逐月遍历）}。``year`` 非法（如 "abc"）降级为当前年份，不崩溃。
     行 = 星期（0=周一 … 6=周日），列 = 周序（首列为 start 所在周的周一）。
     ``map_point(date)`` 单参：日期（"YYYY-MM-DD" / datetime.date / (y,m,d)）
     → 单元格中心；``cell_rect(date)`` → 单元格矩形；``date_at(pos)`` 反查。
@@ -725,7 +839,11 @@ class CalendarCoord(Coord):
         super().__init__(chart, option)
         cal = dict(self.option.get("calendar") or {})
         self.cal_opt = cal
-        self.year = int(cal.get("year") or date.today().year)
+        # 非法 year（如 "abc"）降级为当前年份，不崩溃
+        try:
+            self.year = int(cal.get("year") or date.today().year)
+        except (TypeError, ValueError):
+            self.year = date.today().year
         self.cell_size_opt = cal.get("cellSize", 14)
         rng = cal.get("range")
         if isinstance(rng, (list, tuple)) and len(rng) >= 2:
@@ -761,6 +879,18 @@ class CalendarCoord(Coord):
 
     def _first_monday(self) -> date:
         return self.start - timedelta(days=self.start.weekday())
+
+    def _month_dates(self) -> list:
+        """start→end 逐月 1 日列表（跨年 range 正确，不依赖 self.year）。"""
+        out = []
+        d = date(self.start.year, self.start.month, 1)
+        while d <= self.end:
+            out.append(d)
+            if d.month == 12:
+                d = date(d.year + 1, 1, 1)
+            else:
+                d = date(d.year, d.month + 1, 1)
+        return out
 
     # -- 协议 -------------------------------------------------------------
     def layout(self, rect: QRectF) -> None:
@@ -822,13 +952,10 @@ class CalendarCoord(Coord):
                               max(8.0, self._origin.x() - self.rect.left() - 4),
                               self._cell),
                        Qt.AlignRight | Qt.AlignVCenter, label)
-        # 月份标签：每月 1 日所在列（去重，避免相邻列重复绘制）
+        # 月份标签：每月 1 日所在列（去重，避免相邻列重复绘制；跨年逐月遍历）
         first = self._first_monday()
         last_col = -1
-        for month in range(self.start.month, 13):
-            d = date(self.year, month, 1)
-            if d > self.end:
-                break
+        for d in self._month_dates():
             anchor = d if d >= self.start else self.start
             col = (anchor - first).days // 7
             if col == last_col:
@@ -836,7 +963,7 @@ class CalendarCoord(Coord):
             last_col = col
             x = self._origin.x() + col * self._cell
             p.drawText(QRectF(x, self.rect.top(), 40, fm.height()),
-                       Qt.AlignLeft | Qt.AlignVCenter, _MONTH_LABELS[month - 1])
+                       Qt.AlignLeft | Qt.AlignVCenter, _MONTH_LABELS[d.month - 1])
         p.restore()
 
     def paint_tooltip_marker(self, p: QPainter, pos: QPointF) -> None:
