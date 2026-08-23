@@ -152,6 +152,8 @@ class ChatConversation(QWidget):
         self._placeholder = None
         self._follow = True        # 底部跟随状态（用户上翻后暂停）
         self._programmatic_scroll = False
+        self._last_max = 0         # 上次滚动范围上限（识别 value 钳制用）
+        self._last_value = 0       # 上次滚动位置（钳制判据的兜底基线）
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -274,6 +276,10 @@ class ChatConversation(QWidget):
         self._rows.clear()
         self._bubbles.clear()
         self._messages.clear()
+        # 清空即新会话：从头跟随底部；滚动范围归零，同步重置钳制判定基线
+        self._follow = True
+        self._last_max = 0
+        self._last_value = 0
         self._show_placeholder()
 
     def messages(self) -> list:
@@ -325,6 +331,10 @@ class ChatConversation(QWidget):
         avail = self._scroll.viewport().width() - m.left() - m.right() - 2
         self._column.setFixedWidth(max(120, min(avail, _MAX_CONTENT_WIDTH)))
         self._sync_bubble_caps()
+        if self._follow:
+            # 视口变矮使滚动范围增大后 value 不变、视图悬停在旧位置：
+            # 延迟一轮等布局落定后重新吸附底部
+            QTimer.singleShot(0, self._follow_scroll)
 
     def _follow_scroll(self) -> None:
         """滚动条在底部时追加后自动跟随（用户上翻则暂停跟随）。"""
@@ -336,13 +346,29 @@ class ChatConversation(QWidget):
             bar.setValue(bar.maximum())
         finally:
             self._programmatic_scroll = False
+        # 程序滚动不触发钳制判定，在此手动刷新基线防止过期
+        self._last_max = bar.maximum()
+        self._last_value = bar.value()
 
     def _on_scroll_value(self, value: int) -> None:
         """用户滚动：更新底部跟随状态（程序 setValue 除外）。"""
         if self._programmatic_scroll:
             return
         bar = self._scroll.verticalScrollBar()
-        self._follow = value >= bar.maximum() - _SCROLL_MARGIN
+        maximum = bar.maximum()
+        # 范围收缩时 Qt 会把 value 钳到 maximum，这是布局变化而非用户
+        # 回到底部（主题切换 / 全量重渲染的占位图瞬态收缩可触发）：
+        # 保持原跟随状态，否则阅读位置会被随后的自动跟随强拉到底。
+        # value 下降判据用于兜底「范围先无声增长（无 valueChanged，
+        # _last_max 过期）再收缩」的场景。
+        if value == maximum and (maximum < self._last_max
+                                 or value < self._last_value):
+            self._last_max = maximum
+            self._last_value = value
+            return
+        self._last_max = maximum
+        self._last_value = value
+        self._follow = value >= maximum - _SCROLL_MARGIN
 
     def _follow_after_doc_change(self) -> None:
         """气泡文档尺寸变化（流式追加 / 公式图片就绪）后继续底部跟随。
