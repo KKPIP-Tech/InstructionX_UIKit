@@ -192,6 +192,30 @@ def _unescape_display(text: str) -> str:
     return _UNESCAPE_SUB.sub(r"\1", text)
 
 
+def _families(qss_family: str):
+    """把 QSS font-family 字符串解析为字族列表（剔除 generic 族）。
+
+    与 theme.py / mermaid/render.py 的同名实现保持一致：整串直接传给
+    ``setFontFamily`` / ``QFont(...)`` 会被当作单一字族名而匹配失败，
+    必须拆分为字族列表后走 ``setFamilies``。
+    """
+    generic = {"sans-serif", "serif", "monospace", "cursive", "fantasy"}
+    result = []
+    for item in qss_family.split(","):
+        name = item.strip().strip('"').strip("'")
+        if name and name.lower() not in generic:
+            result.append(name)
+    return result
+
+
+def _token_body_font() -> QFont:
+    """令牌正文字体（字族列表 + 正文字阶，px → pt）。"""
+    font = QFont()
+    font.setFamilies(_families(FONT_FAMILY))
+    font.setPointSizeF(T("font.md") * 0.75)
+    return font
+
+
 #: <body> 标签（大小写不敏感）
 _BODY_TAG_RE = re.compile(r"<body[^>]*>", re.IGNORECASE)
 
@@ -257,6 +281,27 @@ def _fragment_starts_with_table(html: str) -> bool:
         return False
     tail = html[m.end():].lstrip()
     return tail.startswith("<table")
+
+
+def _fragment_starts_with_list(html: str) -> bool:
+    """片段 HTML 的 body 后是否为需前置块处理的列表（<ul>/<ol> 且首项非空）。
+
+    与表格同理：``insertHtml`` 插入列表片段时残留的前置空块会成为
+    独立空块，使段落 → 列表之间多出一个空行（纯文本与一次性渲染
+    不一致），需复用表格同款前置块处理。例外：流式中不完整的列表
+    标记（如 ``"-"``）被 Qt 解析为首项为空的列表
+    （``-qt-paragraph-type:empty``），空首项会被 ``insertHtml``
+    并入当前空块、残留空块自然消耗——此时删除前置块反而会把列表
+    内容并入上一段落块。
+    """
+    m = _BODY_TAG_RE.search(html)
+    if not m:
+        return False
+    tail = html[m.end():].lstrip()
+    if not tail.startswith(("<ul", "<ol")):
+        return False
+    li = re.search(r"<li\b[^>]*>", tail)
+    return li is not None and "-qt-paragraph-type:empty" not in li.group(0)
 
 
 def _scan_inline_math(line: str, maths: list, mark: str) -> str:
@@ -334,6 +379,59 @@ def _scan_inline_math(line: str, maths: list, mark: str) -> str:
 
 #: 多行块级公式环境（\begin{...} 形式，星号变体同支持）
 _MATH_ENVS = ("equation", "align", "gather", "multline", "displaymath", "math")
+
+
+def _blank_boundary(text: str, last: bool, fresh0: bool) -> int:
+    """text 中位于围栏 / 块级公式之外的空行边界偏移（无则 -1）。
+
+    与 ``_scan_tail`` 共用行级构造状态：已闭合构造（围栏 / 块级公式）
+    内部的空行不是段落边界，冲刷切分落在构造内会把构造劈成两半。
+    此处构造均已闭合（扫描器已认证区域干净），故状态机不处理未闭合情形。
+
+    参数:
+        last: True 返回末个边界之后（整块冲刷的 f/p 切分点）；
+            False 返回首个边界之前（段落收尾的 c0 终点）。
+        fresh0: 首行是否为全新块行（延续段落的行不作构造起点）。
+    """
+    lines = text.split("\n")
+    offs = [0]
+    for ln in lines[:-1]:
+        offs.append(offs[-1] + len(ln) + 1)
+    n = len(lines)
+    found = -1
+    i = 0 if fresh0 else 1
+    while i < n:
+        stripped = lines[i].strip()
+        mark = closer = None
+        if stripped.startswith(("```", "~~~")):
+            mark = stripped[:3]
+        elif stripped in ("$$", "\\["):
+            closer = "$$" if stripped == "$$" else "\\]"
+        else:
+            m = re.match(r"\\begin\{(\w+\*?)\}\s*$", stripped)
+            if m and m.group(1).rstrip("*") in _MATH_ENVS:
+                closer = "\\end{" + m.group(1) + "}"
+        if mark is not None or closer is not None:
+            # 跳过整个已闭合构造：构造内的空行不作段落边界
+            j = i + 1
+            if mark is not None:
+                while j < n and not lines[j].strip().startswith(mark):
+                    j += 1
+            else:
+                while j < n and lines[j].strip() != closer:
+                    j += 1
+            i = j + 1 if j < n else n
+            continue
+        if lines[i] == "" and 0 < i < n - 1:
+            # 空行（须为被终止的中间行：split 在文本以 \n 结尾时会产生
+            # 尾部空串 artifact，它不是空行）：last 取空行终止符之后
+            # （offs[i]+1），否则取空行前换行符之前（offs[i]-1），
+            # 与裸 find/rfind("\n\n") 语义对齐
+            found = offs[i] + 1 if last else offs[i] - 1
+            if not last:
+                return found
+        i += 1
+    return found
 
 
 def _line_opens_construct(stripped: str) -> bool:
@@ -514,6 +612,7 @@ class MarkdownView(QTextBrowser):
         self._fit_timer.setInterval(120)
         self._fit_timer.timeout.connect(self._refit_diagrams)
         self._reset_incremental()
+        self._apply_document_font()
         set_property(self, "variant", variant)
         self.setOpenLinks(False)
         self.anchorClicked.connect(self._on_anchor_clicked)
@@ -524,7 +623,7 @@ class MarkdownView(QTextBrowser):
             lambda *_: self._reposition_overlays())
         self.document().documentLayout().documentSizeChanged.connect(
             lambda *_: self._schedule_overlay_sync())
-        ThemeManager.instance().theme_changed.connect(lambda *_: self._render())
+        ThemeManager.instance().theme_changed.connect(self._on_theme_changed)
         MathRenderHub.instance().image_ready.connect(self._on_math_ready)
         mermaid_hub = _mermaid_hub()
         if mermaid_hub is not None:
@@ -615,6 +714,15 @@ td, th {{ border: 1px solid {T("color.border")};
 a {{ color: {T("color.primary")}; }}
 """
 
+    def _apply_document_font(self) -> None:
+        """把正文字族 / 字阶写入文档默认字体。
+
+        ``insertHtml`` 导入片段时不解析文档默认样式表，未显式携带字族
+        的片段按文档默认字体排版——默认字体与令牌对齐后，增量插入的
+        富文本片段与全量渲染（CSS ``body`` 规则）字体一致。
+        """
+        self.document().setDefaultFont(_token_body_font())
+
     def _render(self) -> None:
         """全量渲染管线：公式提取 → setMarkdown → toHtml → 公式嵌入 → setHtml。
 
@@ -627,6 +735,7 @@ a {{ color: {T("color.primary")}; }}
         at_bottom = old_value >= old_max - _SCROLL_MARGIN
         doc = self.document()
         doc.setDefaultStyleSheet(self._stylesheet())
+        self._apply_document_font()  # 主题切换后增量片段的字体随令牌更新
         self._pending_math = set()
         self._pending_diagrams = set()
         self._diagram_keys = set()
@@ -674,7 +783,8 @@ a {{ color: {T("color.primary")}; }}
         2x 超采样 + devicePixelRatio，与正式渲染产物排版尺寸一致。
         """
         text = " ".join(latex.split())
-        font = QFont(MONO_FAMILY)
+        font = QFont()
+        font.setFamilies(_families(MONO_FAMILY))
         font.setPointSizeF(T("font.md") * 0.75 * (1.15 if display else 1.0))
         fm = QFontMetricsF(font)
         text = fm.elidedText(text, Qt.ElideMiddle, 480)
@@ -778,7 +888,8 @@ a {{ color: {T("color.primary")}; }}
         """待渲染 / 渲染失败的图表占位图（等宽字体，2x 超采样）。"""
         text = "Mermaid 图表渲染中…" if not failed else \
             "Mermaid 图表语法不受支持或渲染失败"
-        font = QFont(MONO_FAMILY)
+        font = QFont()
+        font.setFamilies(_families(MONO_FAMILY))
         font.setPointSizeF(T("font.md") * 0.75)
         fm = QFontMetricsF(font)
         w = max(1, math.ceil(fm.horizontalAdvance(text)))
@@ -935,7 +1046,8 @@ a {{ color: {T("color.primary")}; }}
             return
         if self._diagram_keys or self._diagram_overlays:
             self._overlay_sync_pending = True
-            QTimer.singleShot(0, self._run_overlay_sync)
+            # 以 self 为上下文：视图销毁时挂起的回调自动失效
+            QTimer.singleShot(0, self, self._run_overlay_sync)
 
     def _run_overlay_sync(self) -> None:
         self._overlay_sync_pending = False
@@ -1020,8 +1132,16 @@ a {{ color: {T("color.primary")}; }}
             if img is None:
                 continue
             rect = self._diagram_image_rect(key, img)
-            if rect is not None and rect != view.geometry():
+            if rect is None:
+                # 图片暂时不在文档中（段落重解析的删除瞬间）：先隐藏，
+                # 待下一轮 _sync_overlays 按新位置恢复
+                view.hide()
+                continue
+            if rect != view.geometry():
                 view.setGeometry(rect)
+            if not view.isVisible():
+                view.show()
+                view.raise_()
 
     def _refit_diagrams(self) -> None:
         """视口宽度变化后，按新宽度重新适配全部图表图片（就地替换资源）。
@@ -1059,6 +1179,15 @@ a {{ color: {T("color.primary")}; }}
         if self._diagram_keys:
             self._fit_timer.start()
 
+    def _on_theme_changed(self, *_args) -> None:
+        """主题切换：全量重渲染。
+
+        以绑定方法连接（而非捕获 self 的 lambda）：发送方 ThemeManager
+        是进程级单例，绑定方法以视图为接收上下文，视图销毁时 PySide6
+        自动断开，避免连接残留与对已销毁对象的回调。
+        """
+        self._render()
+
     def _on_anchor_clicked(self, url: QUrl) -> None:
         self.linkActivated.emit(url.toString())
         if self._links_enabled and url.scheme() in ("http", "https"):
@@ -1095,7 +1224,7 @@ a {{ color: {T("color.primary")}; }}
     def _body_format(self) -> QTextCharFormat:
         """正文字符格式（增量纯文本插入用，与样式表正文一致）。"""
         fmt = QTextCharFormat()
-        fmt.setFontFamily(FONT_FAMILY)
+        fmt.setFontFamilies(_families(FONT_FAMILY))
         fmt.setFontPointSize(T("font.md") * 0.75)  # px → pt
         fmt.setForeground(QColor(T("color.text.primary")))
         return fmt
@@ -1103,7 +1232,7 @@ a {{ color: {T("color.primary")}; }}
     def _fence_formats(self):
         """围栏降级显示的字符 / 块格式（等宽 + bg.subtle，对齐 pre 样式）。"""
         fmt = QTextCharFormat()
-        fmt.setFontFamily(MONO_FAMILY)
+        fmt.setFontFamilies(_families(MONO_FAMILY))
         fmt.setFontPointSize(T("font.md") * 0.75)
         fmt.setForeground(QColor(T("color.text.primary")))
         bfmt = QTextBlockFormat()
@@ -1254,7 +1383,10 @@ a {{ color: {T("color.primary")}; }}
         """
         tail = self._tail
         if self._para_mode != "none":
-            idx = tail.find("\n\n")
+            # 构造感知的段落收尾边界：构造（围栏 / 块级公式）内的空行
+            # 不是段落边界，不得在此切分
+            idx = _blank_boundary(tail, last=False,
+                                  fresh0=self._tail_line0_fresh)
             c0 = tail if idx == -1 else tail[:idx]
             commit = c0.rstrip("\n")
             if idx != -1:
@@ -1275,11 +1407,11 @@ a {{ color: {T("color.primary")}; }}
             if commit:
                 self._commit_paragraph_text(commit)
             tail = c0[len(commit):] + tail[len(c0):]
-        idx = tail.rfind("\n\n")
+        idx = _blank_boundary(tail, last=True, fresh0=True)
         if idx == -1:
             f, p = "", tail
         else:
-            f, p = tail[:idx + 2], tail[idx + 2:]
+            f, p = tail[:idx], tail[idx:]
         if f:
             # 段落收尾：脏段落先按最终结构重排（纯文本提交无法恢复富样式）
             if self._para_dirty and self._para_src:
@@ -1387,9 +1519,10 @@ a {{ color: {T("color.primary")}; }}
             # 不重置会让 insertHtml 片段首块并入旧列表，有序列表
             # 编号从 1 重头开始（实测）；重置为默认格式再插入
             cur.setBlockFormat(QTextBlockFormat())
-        if _fragment_starts_with_table(html) and self._para_pos > 0:
-            # 表格需前置块：纯文本段落删除后残留清空块，移除后使表格
-            # 紧接上一块（对齐全量渲染）；若删除的是既有表格，Qt 会连
+        if (_fragment_starts_with_table(html)
+                or _fragment_starts_with_list(html)) and self._para_pos > 0:
+            # 表格 / 列表需前置块：纯文本段落删除后残留清空块，移除后使
+            # 片段紧接上一块（对齐全量渲染）；若删除的是既有表格，Qt 会连
             # 同前置关系一并移除、光标落入上一块末尾，此时不可再删
             if cur.block().text() == "":
                 cur.deletePreviousChar()
@@ -1416,6 +1549,9 @@ a {{ color: {T("color.primary")}; }}
             text, self._math_mark, self._mermaid_mark)
         scratch = QTextDocument()
         scratch.setDefaultStyleSheet(self._stylesheet())
+        # toHtml 会把 scratch 的默认字体烘进 <body style>，insertHtml
+        # 导入时随片段应用——与令牌对齐，避免片段回退到应用默认字体
+        scratch.setDefaultFont(_token_body_font())
         scratch.setMarkdown(processed)
         html = scratch.toHtml()
         centered = set()
@@ -1446,14 +1582,15 @@ a {{ color: {T("color.primary")}; }}
     def _insert_parsed(self, text: str) -> None:
         """把一段自含文本按完整管线解析后插入文档末尾（块级冲刷）。
 
-        表格片段直接插入上一块末尾（表格自带前置块需求，额外
-        insertBlock 会留下并入表格结构的空块）；其余片段先建块。
+        表格 / 列表片段直接插入上一块末尾（片段自带前置块需求，额外
+        insertBlock 会留下并入片段结构的空块）；其余片段先建块。
         """
         html, centered = self._parse_html(text)
         cur = self.textCursor()
         cur.movePosition(QTextCursor.End)
         first_block = self.document().blockCount() - 1
         if (not _fragment_starts_with_table(html)
+                and not _fragment_starts_with_list(html)
                 and self.document().characterCount() > 1):
             _insert_fresh_block(cur)
         cur.insertHtml(html)
@@ -1575,15 +1712,20 @@ a {{ color: {T("color.primary")}; }}
 
         尾随换行的含义（软换行 / 空行块断）取决于后续内容，延迟到
         下一次提交结算，保证与一次性渲染的未闭合语义逐字符一致。
+        前导 / 尾随换行按实际个数累计（空行 = 两个换行）；chunk 内嵌
+        的空行是块断，按空行切块后逐段结算，段间另起新块。
         """
         lead = len(text) - len(text.lstrip("\n"))
-        body = text[lead:].rstrip("\n")
-        tail_nl = len(text[lead:]) - len(body)
+        core = text[lead:]
+        body = core.rstrip("\n")
+        tail_nl = len(core) - len(body)
         cur = self.textCursor()
         cur.movePosition(QTextCursor.End)
         cur.setCharFormat(self._body_format())
-        if body:
-            total = min(self._pending_suspend, 2) + (1 if lead else 0)
+        # 内嵌空行切块：首段结算既有悬空换行，其余段前必有空行（块断）
+        segs = re.split(r"\n{2,}", body) if body else []
+        for si, seg in enumerate(segs):
+            total = min(self._pending_suspend + lead, 2) if si == 0 else 2
             if total >= 2:
                 if self._pending_trail_space:
                     # 行尾空格在空行分隔前被折叠（Qt 导入剥离行尾空白）
@@ -1597,14 +1739,15 @@ a {{ color: {T("color.primary")}; }}
             elif self._pending_first and self._para_mode == "none":
                 if self.document().characterCount() > 1:
                     _insert_fresh_block(cur)
-            display = _display_text(_unescape_display(body))
-            cur.insertText(display)
-            self._pending_trail_space = display.endswith(" ")
+            display = _display_text(_unescape_display(seg))
+            if display:
+                cur.insertText(display)
+                self._pending_trail_space = display.endswith(" ")
         if body:
             self._pending_suspend = min(tail_nl, 2)
         else:
             self._pending_suspend = min(
-                self._pending_suspend + (1 if lead else 0), 2)
+                self._pending_suspend + lead, 2)
 
     # ------------------------------------------------------------------ 空态
     def paintEvent(self, event) -> None:  # noqa: N802
