@@ -28,6 +28,17 @@ LRU 缓存 + 后台异步执行，流式追加时已渲染公式零开销，未�
 替换**就地更新**（不重解析文档、不触碰流式增量状态，因此与流式追加
 任意交错都安全）。主题切换后公式自动按新文本色重绘。
 
+**Mermaid 图表**：闭合的 ```mermaid 代码围栏渲染为图表图片（块级
+居中，按视口可用宽度的 80% 适配缩放，视口尺寸变化时自动重适配），
+由 ``InstructionX_UIKit.mermaid`` 子包渲染：默认经 QWebEnginePage
+执行官方 mermaid.js（项目内唯一破例使用 Web 技术的位置，用户批准），
+排版与光栅化都在 Chromium 内完成（SVG → canvas 2x → PNG dataURL →
+QImage，透明底），官方全量图型可用且与官方渲染逐像素一致；WebEngine 不可用时自动降级为内置 QPainter 自绘渲染器
+（flowchart / sequenceDiagram / pie 子集）。主题令牌着色；与公式
+共享同一套 LRU 缓存 + 后台异步渲染 + 就地资源替换管线。流式追加中
+未闭合的 mermaid 围栏按普通代码围栏降级显示，闭合后重排为图表；
+语法错误时显示失败占位图。
+
 **流式追加（增量渲染）**：逐 token 追加不再全量重解析——纯文本 /
 常规 markdown 以 ``QTextCursor`` 增量插入（软换行按 Qt 的空白折叠
 表示）；未闭合的代码围栏与块级公式（``$$`` / ``\\[`` / ``\\begin``）
@@ -42,14 +53,16 @@ token 的富样式可能延迟自愈。
 已知限制（Qt Markdown 方言为子集）：脚注 / 目录 / 内嵌 HTML 不支持；
 网络图片不加载（图片语法降级为占位文本）；代码块无法绘制圆角
 （Qt 富文本 CSS 子集不支持 border-radius）；mathtext 为 LaTeX 子集，
-不支持 ``\\newcommand`` 宏与外部宏包。
+不支持 ``\\newcommand`` 宏与外部宏包；Mermaid 的 ``erDiagram``
+中文实体名 / 关系标签需加双引号；WebEngine 首次渲染有页面加载
+延迟（后续走 LRU 缓存）。
 """
 
 import hashlib
 import math
 import re
 
-from PySide6.QtCore import QUrl, Signal, Qt
+from PySide6.QtCore import QTimer, QUrl, Signal, Qt
 from PySide6.QtGui import (
     QColor,
     QDesktopServices,
@@ -70,6 +83,15 @@ from ..tokens import FONT_FAMILY, MONO_FAMILY
 from .math_render import MathRenderHub
 
 __all__ = ["MarkdownView"]
+
+
+def _mermaid_hub():
+    """惰性导入 Mermaid 渲染中枢（包不存在时降级为不支持）。"""
+    try:
+        from ..mermaid import MermaidRenderHub
+        return MermaidRenderHub.instance()
+    except ImportError:
+        return None
 
 #: 滚动跟随判定余量（像素）
 _SCROLL_MARGIN = 4
@@ -323,18 +345,20 @@ def _pending_info(pend: str):
     return "math", "\\end{" + m.group(1) + "}"
 
 
-def _extract_math(text: str, mark: str):
-    """从 Markdown 源文中提取数学公式并替换为占位标记。
+def _extract_math(text: str, mark: str, mermaid_mark: str = None):
+    """从 Markdown 源文中提取数学公式与 Mermaid 图表并替换为占位标记。
 
     返回:
-        ``(处理后的文本, [(latex, display), ...])``；代码围栏内的内容
-        不提取。多行 ``$$`` / ``\\[`` 块与 ``\\begin{equation}`` 等环境
-        按块级公式处理（align 系列降级：去对齐符与换行符）。
+        ``(处理后的文本, [(latex, display), ...], [mermaid 源码, ...])``；
+        代码围栏内的内容不提取。多行 ``$$`` / ``\\[`` 块与
+        ``\\begin{equation}`` 等环境按块级公式处理（align 系列降级：
+        去对齐符与换行符）。闭合的 ```mermaid 围栏整体替换为图表占位标记。
 
-    未找到闭合符的块级公式**不吞内容**：开启行与中间行原样输出
-    （行内公式仍可提取），与流式增量路径的降级显示语义一致。
+    未找到闭合符的块级公式 / Mermaid 围栏**不吞内容**：开启行与中间行
+    原样输出（行内公式仍可提取），与流式增量路径的降级显示语义一致。
     """
     maths = []
+    diagrams = []
     lines = text.split("\n")
     out = []
     in_fence = False
@@ -350,8 +374,25 @@ def _extract_math(text: str, mark: str):
             i += 1
             continue
         if stripped.startswith("```") or stripped.startswith("~~~"):
+            mark3 = stripped[:3]
+            if mermaid_mark is not None and stripped[3:].strip().lower() == "mermaid":
+                # 闭合的 mermaid 围栏 → 图表占位标记；未闭合则走普通围栏路径
+                body = []
+                j = i + 1
+                while j < len(lines) and not lines[j].strip().startswith(mark3):
+                    body.append(lines[j])
+                    j += 1
+                if j < len(lines):
+                    code = "\n".join(body).strip()
+                    if code:
+                        diagrams.append(code)
+                        out.append("")
+                        out.append(mermaid_mark.format(len(diagrams) - 1))
+                        out.append("")
+                    i = j + 1
+                    continue
             in_fence = True
-            fence_mark = stripped[:3]
+            fence_mark = mark3
             out.append(line)
             i += 1
             continue
@@ -386,7 +427,7 @@ def _extract_math(text: str, mark: str):
             continue
         out.append(_scan_inline_math(line, maths, mark))
         i += 1
-    return "\n".join(out), maths
+    return "\n".join(out), maths, diagrams
 
 
 def _para_sig(text: str, prev_src: str) -> bool:
@@ -446,12 +487,23 @@ class MarkdownView(QTextBrowser):
         # 实例级公式占位标记（含内存地址，跨实例零碰撞；结尾字母 q 是
         # 终止符：避免 "…z1" 成为 "…z10" 的前缀导致 replace 误替换）
         self._math_mark = f"uikmath{id(self):x}z{{}}q"
+        self._mermaid_mark = f"uikmermaid{id(self):x}z{{}}q"
+        self._pending_diagrams = set()  # 等待异步渲染的图表缓存键
+        self._diagram_keys = set()      # 文档中全部图表缓存键（resize 重适配用）
+        # resize 重适配防抖：拖动缩放期间不逐帧重排
+        self._fit_timer = QTimer(self)
+        self._fit_timer.setSingleShot(True)
+        self._fit_timer.setInterval(120)
+        self._fit_timer.timeout.connect(self._refit_diagrams)
         self._reset_incremental()
         set_property(self, "variant", variant)
         self.setOpenLinks(False)
         self.anchorClicked.connect(self._on_anchor_clicked)
         ThemeManager.instance().theme_changed.connect(lambda *_: self._render())
         MathRenderHub.instance().image_ready.connect(self._on_math_ready)
+        mermaid_hub = _mermaid_hub()
+        if mermaid_hub is not None:
+            mermaid_hub.image_ready.connect(self._on_diagram_ready)
         if markdown:
             self.set_markdown(markdown)
 
@@ -492,6 +544,8 @@ class MarkdownView(QTextBrowser):
         """清空内容，回到空占位状态。"""
         self._raw = ""
         self._pending_math = set()  # 残留键不再触发无谓重渲染
+        self._pending_diagrams = set()
+        self._diagram_keys = set()
         self._render()
 
     def markdown(self) -> str:
@@ -526,7 +580,6 @@ h3 {{ font-size: {T("font.title.sm")}px; font-weight: 600; color: {T("color.text
 h4, h5, h6 {{ font-size: {T("font.lg")}px; font-weight: 600; color: {T("color.text.primary")}; }}
 code {{ font-family: {MONO_FAMILY}; color: {T("color.text.primary")}; }}
 pre {{ font-family: {MONO_FAMILY}; color: {T("color.text.primary")}; }}
-table {{ border: 1px solid {T("color.border")}; }}
 blockquote {{ color: {T("color.text.secondary")}; margin-left: {T("space.3")}px; }}
 table {{ border: 1px solid {T("color.border")}; }}
 td, th {{ border: 1px solid {T("color.border")};
@@ -547,12 +600,18 @@ a {{ color: {T("color.primary")}; }}
         doc = self.document()
         doc.setDefaultStyleSheet(self._stylesheet())
         self._pending_math = set()
+        self._pending_diagrams = set()
+        self._diagram_keys = set()
         if self._raw.strip():
-            processed, maths = _extract_math(self._raw, self._math_mark)
+            processed, maths, diagrams = _extract_math(
+                self._raw, self._math_mark, self._mermaid_mark)
             doc.setMarkdown(processed)
             html = doc.toHtml()
             if maths:
                 html = self._embed_math(doc, html, maths, self._pending_math)
+            if diagrams:
+                html = self._embed_diagrams(doc, html, diagrams,
+                                            self._pending_diagrams)
             doc.setHtml(_polish_block_spacing(html))
         else:
             doc.clear()
@@ -664,6 +723,168 @@ a {{ color: {T("color.primary")}; }}
         if at_bottom:
             bar.setValue(bar.maximum())
         self.viewport().update()
+
+    @staticmethod
+    def _mermaid_url(key: str) -> str:
+        """图表缓存键 → 文档资源 URL（与公式资源 URL 同构、互不相同）。"""
+        digest = hashlib.md5(key.encode("utf-8")).hexdigest()
+        return f"uik-mermaid://{digest}"
+
+    @staticmethod
+    def _mermaid_style() -> dict:
+        """由当前主题令牌生成 Mermaid 渲染样式表。"""
+        return {
+            "text": T("color.text.primary"),
+            "line": T("color.border.strong"),
+            "node_fill": T("color.bg.subtle"),
+            "node_border": T("color.border.strong"),
+            "label_bg": T("color.bg.base"),
+            "font_family": FONT_FAMILY,
+        }
+
+    def _diagram_placeholder(self, failed: bool) -> QImage:
+        """待渲染 / 渲染失败的图表占位图（等宽字体，2x 超采样）。"""
+        text = "Mermaid 图表渲染中…" if not failed else \
+            "Mermaid 图表语法不受支持或渲染失败"
+        font = QFont(MONO_FAMILY)
+        font.setPointSizeF(T("font.md") * 0.75)
+        fm = QFontMetricsF(font)
+        w = max(1, math.ceil(fm.horizontalAdvance(text)))
+        h = max(1, math.ceil(fm.height()))
+        img = QImage(w * 2, h * 2, QImage.Format_ARGB32_Premultiplied)
+        img.fill(Qt.transparent)
+        painter = QPainter(img)
+        painter.scale(2, 2)
+        painter.setFont(font)
+        painter.setPen(QColor(T("color.text.secondary")))
+        painter.drawText(0, fm.ascent(), text)
+        painter.end()
+        img.setDevicePixelRatio(2)
+        return img
+
+    def _diagram_fit(self, img: QImage) -> QImage:
+        """图表图片按视口可用宽度的 80% 适配（保持纵横比）。
+
+        1080P 等宽视口下按自然尺寸显示会过小，故统一缩放至视口宽度
+        （扣除文档边距）的 80%；源图为 2x 超采样，适度放大仍清晰。
+        视口尚未布局（宽度为 0）时返回原图。
+        """
+        avail = self.viewport().width() - 2 * self.document().documentMargin()
+        if avail <= 0:
+            return img
+        dpr = img.devicePixelRatio() or 1.0
+        target = avail * 0.8
+        if abs(img.width() / dpr - target) < 1:
+            return img
+        scaled = img.scaledToWidth(max(1, round(target * dpr)),
+                                   Qt.SmoothTransformation)
+        scaled.setDevicePixelRatio(dpr)
+        return scaled
+
+    def _embed_diagrams(self, doc, html: str, diagrams: list, pending: set,
+                        centered_urls: set = None) -> str:
+        """把 HTML 中的 Mermaid 占位标记替换为图表图片（块级居中）。
+
+        缓存命中直接注册渲染产物（经 ``_diagram_fit`` 适配宽度）；未命中
+        注册占位图并请求后台异步渲染（失败键注册失败占位图，重试节奏由
+        MermaidRenderHub 控制）。图表一律按块级居中处理，
+        ``centered_urls`` 语义与 ``_embed_math`` 相同。
+        """
+        hub = _mermaid_hub()
+        style = self._mermaid_style()
+        pt = T("font.md") * 0.75
+        for i, code in enumerate(diagrams):
+            marker = self._mermaid_mark.format(i)
+            if hub is None:
+                img = self._diagram_placeholder(failed=True)
+                url = self._mermaid_url(code)
+            else:
+                key = hub.key_for(code, style, pt)
+                url = self._mermaid_url(key)
+                self._diagram_keys.add(key)  # resize 时按新宽度重适配
+                img = hub.get(key)
+                if img is not None:
+                    pending.discard(key)
+                    img = self._diagram_fit(img)
+                else:
+                    pending.add(key)
+                    hub.request(key, code, style, pt)
+                    img = self._diagram_placeholder(failed=hub.is_failed(key))
+            doc.addResource(QTextDocument.ImageResource, QUrl(url), img)
+            tag = f'<img src="{url}" />'
+            if centered_urls is not None:
+                centered_urls.add(url)
+            html, n = re.subn(
+                r"<p[^>]*>\s*" + re.escape(marker) + r"\s*</p>",
+                lambda _m: f'<p align="center">{tag}</p>', html)
+            if n == 0:
+                html = html.replace(marker, tag)
+        return html
+
+    def _on_diagram_ready(self, key: str) -> None:
+        """后台图表渲染完成：就地替换文档中的占位图资源（不重解析）。
+
+        语义与 ``_on_math_ready`` 完全一致；渲染失败时把占位图替换为
+        失败占位图。
+        """
+        if key not in self._pending_diagrams:
+            return
+        hub = _mermaid_hub()
+        if hub is None:
+            return
+        img = hub.get(key)
+        if img is None and not hub.is_failed(key):
+            return  # 理论上不发生：就绪信号时缓存必有图或已标记失败
+        self._pending_diagrams.discard(key)
+        if img is None:
+            img = self._diagram_placeholder(failed=True)
+        else:
+            img = self._diagram_fit(img)
+        bar = self.verticalScrollBar()
+        at_bottom = bar.value() >= bar.maximum() - _SCROLL_MARGIN
+        doc = self.document()
+        doc.addResource(QTextDocument.ImageResource,
+                        QUrl(self._mermaid_url(key)), img)
+        doc.markContentsDirty(0, doc.characterCount())
+        if at_bottom:
+            bar.setValue(bar.maximum())
+        self.viewport().update()
+
+    def _refit_diagrams(self) -> None:
+        """视口宽度变化后，按新宽度重新适配全部图表图片（就地替换资源）。
+
+        源图始终取缓存中的 2x 原图，避免在已缩放产物上反复缩放损失
+        清晰度；未完成的键跳过（就绪回调里会按当时宽度适配）。
+        """
+        if not self._diagram_keys:
+            return
+        hub = _mermaid_hub()
+        if hub is None:
+            return
+        bar = self.verticalScrollBar()
+        at_bottom = bar.value() >= bar.maximum() - _SCROLL_MARGIN
+        doc = self.document()
+        dirty = False
+        for key in self._diagram_keys:
+            img = hub.get(key)
+            if img is None:
+                continue
+            doc.addResource(QTextDocument.ImageResource,
+                            QUrl(self._mermaid_url(key)),
+                            self._diagram_fit(img))
+            dirty = True
+        if not dirty:
+            return
+        doc.markContentsDirty(0, doc.characterCount())
+        if at_bottom:
+            bar.setValue(bar.maximum())
+        self.viewport().update()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        """视口尺寸变化：防抖后重新适配图表宽度（80% 视口宽度）。"""
+        super().resizeEvent(event)
+        if self._diagram_keys:
+            self._fit_timer.start()
 
     def _on_anchor_clicked(self, url: QUrl) -> None:
         self.linkActivated.emit(url.toString())
@@ -1013,12 +1234,13 @@ a {{ color: {T("color.primary")}; }}
         self._para_trail_space = bool(keep_trailing and tail_spaces)
 
     def _parse_html(self, text: str):
-        """文本 → (样式化 HTML, 块级公式图片 URL 集合)（与全量渲染同管线）。
+        """文本 → (样式化 HTML, 居中图片 URL 集合)（与全量渲染同管线）。
 
-        块级公式 URL 集合用于插入后显式居中（``insertHtml`` 会丢失
-        片段的 ``align`` 属性）。
+        居中 URL 集合含块级公式与 Mermaid 图表图片，用于插入后显式
+        居中（``insertHtml`` 会丢失片段的 ``align`` 属性）。
         """
-        processed, maths = _extract_math(text, self._math_mark)
+        processed, maths, diagrams = _extract_math(
+            text, self._math_mark, self._mermaid_mark)
         scratch = QTextDocument()
         scratch.setDefaultStyleSheet(self._stylesheet())
         scratch.setMarkdown(processed)
@@ -1027,10 +1249,13 @@ a {{ color: {T("color.primary")}; }}
         if maths:
             html = self._embed_math(self.document(), html, maths,
                                     self._pending_math, centered)
+        if diagrams:
+            html = self._embed_diagrams(self.document(), html, diagrams,
+                                        self._pending_diagrams, centered)
         return _polish_block_spacing(html), centered
 
     def _apply_math_alignment(self, first_block: int, centered: set) -> None:
-        """把新插入区域中含块级公式图片的段落设为居中。"""
+        """把新插入区域中含块级公式 / 图表图片的段落设为居中。"""
         doc = self.document()
         for n in range(max(0, first_block), doc.blockCount()):
             block = doc.findBlockByNumber(n)

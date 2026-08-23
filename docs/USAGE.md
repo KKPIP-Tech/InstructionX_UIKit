@@ -542,6 +542,8 @@ view.linkActivated.connect(print)                  # 点击链接信号（默认
 
 **LaTeX 数学公式**：支持 `$...$` 行内公式、`$$...$$` / `\[...\]` / `\(...\)` 与 `\begin{equation}` 等环境的块级公式。公式由 matplotlib mathtext 引擎在后台线程异步渲染为透明底图片（2x 超采样，高 DPI 清晰），结果按（源码, 颜色, 字号）LRU 缓存（上限 512 条）——流式追加触发全文重渲染时命中缓存零耗时。渲染期间公式以等宽源码占位，完成后自动重排；渲染失败回退为源码显示。代码围栏 / 行内代码中的 `$...$` 不会被当作公式，货币写法（`$5`）遵循 Pandoc 规则不误判。块级公式独占段落时自动居中。主题切换后公式按新文本色自动重绘。
 
+**Mermaid 图表**：闭合的 ` ```mermaid ` 代码围栏渲染为图表图片（块级居中，按视口可用宽度的 80% 适配缩放，视口尺寸变化时自动重适配，1080P 宽视口下保持可读）。渲染由 `InstructionX_UIKit.mermaid` 子包完成：默认经隐藏的 QWebEnginePage 执行**官方 mermaid.js**（v10.9.3，随包分发不联网；这是项目内唯一破例使用 Web 技术的位置），排版与光栅化都在 Chromium 内完成（SVG → canvas 2x → PNG，透明底）——官方全量图型可用（flowchart、sequenceDiagram、pie、gantt、classDiagram、stateDiagram、erDiagram、mindmap 等），且与官方渲染逐像素一致；WebEngine 不可用时自动降级为内置 QPainter 自绘渲染器（flowchart / sequenceDiagram / pie 子集）。渲染经 LRU 缓存 + 后台异步执行，与公式共享同一套占位 → 就地资源替换管线；流式追加中未闭合的 mermaid 围栏按普通代码块降级显示，闭合后重排为图表。图表颜色全部来自主题令牌（mermaid `theme: 'base'` + `themeVariables`），主题切换自动重绘。语法错误时显示失败占位图。已知限制：`erDiagram` 中含中文的实体名 / 关系标签需加双引号；WebEngine 首次渲染有页面加载延迟（后续命中缓存零耗时）。
+
 ### 4.3 导航与反馈
 
 **Tabs**（`tabs.py`）—— 标签页：line / card / segmented 三种样式。
