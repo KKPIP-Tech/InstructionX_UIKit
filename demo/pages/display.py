@@ -462,15 +462,73 @@ a^2 + b^2 = c^2
 代码围栏与行内代码中的 `$...$` 不会被当作公式。
 """
 
-_MARKDOWN_STREAM = """好的，这是为你整理的要点：
+_MARKDOWN_STREAM = r"""## 流式渲染能力演示
 
-1. **MarkdownView** 基于 Qt 内置 Markdown 引擎，原生渲染，不依赖 WebView；
-2. `append_markdown(chunk)` 支持 AI 逐 token 的流式输出；
-3. 代码块使用等宽字族与 `bg.subtle` 底色，文字颜色与正文一致。
+这段内容由**逐 token 追加**生成，涵盖 Markdown 与 LaTeX 的主要渲染能力。
+
+### 文本样式
+
+支持 **加粗**、*斜体*、~~删除线~~、`行内代码` 与 [链接](https://github.com/KKPIP-Tech/InstructionX_UIKit)。
+
+- [x] 无序 / 有序 / 任务列表
+- [x] 引用块、表格与代码围栏
+- [ ] 脚注（不支持）
+
+### 行内公式
+
+质能方程 $E=mc^2$、欧拉恒等式 $e^{i\pi}+1=0$、勾股定理 $a^2+b^2=c^2$；
+希腊字母 $\alpha, \beta, \gamma, \Delta, \Omega$；向量点积
+$\vec{a} \cdot \vec{b} = |\vec{a}||\vec{b}|\cos\theta$。
+
+### 块级公式
+
+求根公式：
+
+$$
+\frac{-b \pm \sqrt{b^2-4ac}}{2a}
+$$
+
+泰勒级数：
+
+$$
+e^x = \sum_{n=0}^{\infty} \frac{x^n}{n!}
+$$
+
+高斯积分：
+
+$$
+\int_{-\infty}^{\infty} e^{-x^2} dx = \sqrt{\pi}
+$$
+
+重要极限（单行写法）：
+
+$$\lim_{x \to 0} \frac{\sin x}{x} = 1$$
+
+傅里叶变换：
+
+$$
+\hat{f}(\xi) = \int_{-\infty}^{\infty} f(x) e^{-2\pi i x \xi} dx
+$$
+
+简谐振动微分方程：
+
+$$
+\frac{d^2 y}{dx^2} + \omega^2 y = 0
+$$
+
+### 表格与代码
+
+| 语法 | 写法 |
+|------|------|
+| 行内公式 | `$...$` |
+| 块级公式 | `$$...$$` / `\[...\]` |
+| 矩阵环境 | 不支持（mathtext 限制） |
+
+> 公式由 matplotlib mathtext 后台异步渲染，命中 LRU 缓存零耗时。
 
 ```python
 view = MarkdownView()
-for token in stream:
+for token in stream:       # 逐 token 到达
     view.append_markdown(token)
 ```
 """
@@ -482,17 +540,17 @@ def create_markdown_page() -> QWidget:
     view.setMinimumHeight(380)
     s.layout().addWidget(view)
 
-    s2 = Section("流式追加（模拟 AI 逐字输出）")
+    s2 = Section("流式追加（模拟 AI 逐字输出，含 LaTeX 公式实时渲染）")
     stream_view = MarkdownView()
-    stream_view.setMinimumHeight(260)
+    stream_view.setMinimumHeight(420)
     chunks = [""]
     timer = QTimer(stream_view)
 
     def _replay():
         stream_view.clear()
         # 按小片段切分，模拟逐 token 到达
-        chunks[:] = [_MARKDOWN_STREAM[i:i + 4]
-                     for i in range(0, len(_MARKDOWN_STREAM), 4)]
+        chunks[:] = [_MARKDOWN_STREAM[i:i + 8]
+                     for i in range(0, len(_MARKDOWN_STREAM), 8)]
         timer.start(40)
 
     def _tick():
