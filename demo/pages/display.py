@@ -533,6 +533,102 @@ for token in stream:       # 逐 token 到达
 ```
 """
 
+_MARKDOWN_STREAM_ALL = r"""# Markdown 全格式总览
+
+本段由流式追加实时渲染，覆盖组件支持的全部 Markdown 格式。
+
+## 1. 标题与段落
+
+支持 `#` 至 `######` 六级标题；正文段落自动换行，空行分段。
+
+## 2. 行内样式
+
+**加粗**、*斜体*、~~删除线~~、`行内代码`、
+[主题色链接](https://github.com/KKPIP-Tech/InstructionX_UIKit)。
+
+## 3. 列表
+
+无序列表：
+
+- 苹果
+- 香蕉
+  - 嵌套子项
+
+有序列表：
+
+1. 第一步
+2. 第二步
+
+任务列表：
+
+- [x] 已完成事项
+- [ ] 待办事项
+
+## 4. 引用与分割线
+
+> 引用块使用次级文字颜色，
+> 可以跨越多行。
+
+---
+
+## 5. 表格
+
+| 名称 | 类型 | 说明 |
+|------|------|------|
+| `set_markdown` | 方法 | 全量替换内容 |
+| `append_markdown` | 方法 | 流式追加 |
+| `linkActivated` | 信号 | 点击链接时发射 |
+
+## 6. 代码围栏
+
+```python
+def render(text):
+    view = MarkdownView(text)   # 全量渲染
+    return view
+```
+
+## 7. 数学公式
+
+行内公式 $e^{i\pi}+1=0$，以及块级公式：
+
+$$
+\int_{-\infty}^{\infty} e^{-x^2} dx = \sqrt{\pi}
+$$
+
+> 提示：脚注、内嵌 HTML 与网络图片不在支持之列。
+"""
+
+
+def _stream_section(title: str, text: str, height: int) -> Section:
+    """构造一个流式追加演示分区：自动播放 + 重新播放按钮。"""
+    sec = Section(title)
+    view = MarkdownView()
+    view.setMinimumHeight(height)
+    chunks = [""]
+    timer = QTimer(view)
+
+    def _replay():
+        view.clear()
+        # 按小片段切分，模拟逐 token 到达
+        chunks[:] = [text[i:i + 8] for i in range(0, len(text), 8)]
+        timer.start(40)
+
+    def _tick():
+        if not chunks:
+            timer.stop()
+            return
+        view.append_markdown(chunks.pop(0))
+
+    timer.timeout.connect(_tick)
+    sec.layout().addWidget(view)
+    btn = QPushButton("重新播放")
+    set_property(btn, "variant", "primary")
+    set_property(btn, "size", "sm")
+    btn.clicked.connect(_replay)
+    sec.layout().addWidget(row(btn))
+    _replay()
+    return sec
+
 
 def create_markdown_page() -> QWidget:
     s = Section("基础渲染")
@@ -540,33 +636,10 @@ def create_markdown_page() -> QWidget:
     view.setMinimumHeight(380)
     s.layout().addWidget(view)
 
-    s2 = Section("流式追加（模拟 AI 逐字输出，含 LaTeX 公式实时渲染）")
-    stream_view = MarkdownView()
-    stream_view.setMinimumHeight(420)
-    chunks = [""]
-    timer = QTimer(stream_view)
-
-    def _replay():
-        stream_view.clear()
-        # 按小片段切分，模拟逐 token 到达
-        chunks[:] = [_MARKDOWN_STREAM[i:i + 8]
-                     for i in range(0, len(_MARKDOWN_STREAM), 8)]
-        timer.start(40)
-
-    def _tick():
-        if not chunks:
-            timer.stop()
-            return
-        stream_view.append_markdown(chunks.pop(0))
-
-    timer.timeout.connect(_tick)
-    s2.layout().addWidget(stream_view)
-    btn = QPushButton("重新播放")
-    set_property(btn, "variant", "primary")
-    set_property(btn, "size", "sm")
-    btn.clicked.connect(_replay)
-    s2.layout().addWidget(row(btn))
-    _replay()
+    s2 = _stream_section("流式追加（模拟 AI 逐字输出，含 LaTeX 公式实时渲染）",
+                         _MARKDOWN_STREAM, 420)
+    s_all = _stream_section("流式追加 · Markdown 全格式总览",
+                            _MARKDOWN_STREAM_ALL, 480)
 
     s_math = Section("数学公式（LaTeX）")
     math_view = MarkdownView(_MARKDOWN_MATH)
@@ -579,7 +652,7 @@ def create_markdown_page() -> QWidget:
     s3.layout().addWidget(empty_view)
     return make_page("MarkdownView Markdown 渲染",
                      "Qt 内置引擎原生渲染 Markdown，令牌化样式，支持流式追加与 LaTeX 公式。",
-                     [s, s2, s_math, s3])
+                     [s, s2, s_all, s_math, s3])
 
 
 #: 展示组件页注册表：(导航键, 标题, 页面工厂)
