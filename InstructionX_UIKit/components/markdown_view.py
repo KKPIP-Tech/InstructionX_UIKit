@@ -100,16 +100,44 @@ def _display_text(text: str) -> str:
     return _DISPLAY_SUB.sub(" ", text).replace("\n", " ")
 
 
-def _strip_construct_prefix(commit: str) -> str:
+def _is_paired_closer(line: str, segment: str) -> bool:
+    """尾行（构造前缀形态）是否闭合了同段内更早的开启行。
+
+    仅在扫描器已判定整段干净（无未闭合构造）时调用：此时尾行的
+    ``` / ~~~ / $$ 若与段内更早的开启行配对，则它是闭合行而非
+    新构造的前缀。按行模拟开合状态（围栏 / 块级公式均不嵌套）。
+    """
+    stripped = line.strip()
+    body = segment.rsplit("\n", 1)[0] if "\n" in segment else ""
+    if stripped in ("```", "~~~"):
+        in_construct = False
+        for prev in body.split("\n"):
+            if prev.strip().startswith(stripped):
+                in_construct = not in_construct
+        return in_construct
+    if stripped == "$$":
+        in_construct = False
+        for prev in body.split("\n"):
+            if prev.strip() == "$$":
+                in_construct = not in_construct
+        return in_construct
+    return False
+
+
+def _strip_construct_prefix(commit: str, segment: str = "") -> str:
     """若提交文本的最后一行仍是构造前缀，保留该行在尾缓冲。
 
     行内容可能在后续追加中成为围栏 / 块级公式开启行（或证伪），
     提前提交会把构造拆散并显示错误；留待行完整后由扫描器判定。
+    例外：该行若闭合了同段内更早的开启行，则必须提交——残留会
+    在后续追加时被误判为新的开启行，吞掉其后全部内容。
     """
     if commit.endswith("\n"):
         return commit
     line = commit.rsplit("\n", 1)[-1]
     if _CONSTRUCT_PREFIX_RE.match(line):
+        if _is_paired_closer(line, segment or commit):
+            return commit
         return commit[:-len(line)]
     return commit
 
@@ -845,8 +873,9 @@ a {{ color: {T("color.primary")}; }}
                 # 中段：构造前缀行延迟（逐字到达的围栏 / 块级公式开行）；
                 # 前缀剥离后暴露的换行与空格一并延迟（语义待定）。
                 # 仅当末行不完整时才可能是前缀——完整行（如围栏 / 块级
-                # 公式的闭合行）内容恰为 ``` 或 $$，剥离会产生幻影开启行
-                commit = _strip_construct_prefix(commit)
+                # 公式的闭合行）内容恰为 ``` 或 $$，剥离会产生幻影开启行；
+                # 与同段开启行配对的闭合行同理必须提交
+                commit = _strip_construct_prefix(commit, c0)
                 if commit.endswith("\n") or c0[len(commit):]:
                     commit = commit.rstrip("\n").rstrip(" ")
             if commit:
@@ -876,8 +905,9 @@ a {{ color: {T("color.primary")}; }}
                 # ``` 或 $$ 时是构造的闭合行，不可按前缀剥离
                 commit = commit.rstrip(" ")
             else:
-                # 末行不完整才可能是构造前缀
-                commit = _strip_construct_prefix(commit)
+                # 末行不完整才可能是构造前缀；与同段开启行配对的
+                # 闭合行（``` / $$ 等）必须提交，否则残留为幻影开启行
+                commit = _strip_construct_prefix(commit, p)
                 if commit.endswith("\n") or p[len(commit):]:
                     commit = commit.rstrip("\n").rstrip(" ")
             if commit:
@@ -958,6 +988,11 @@ a {{ color: {T("color.primary")}; }}
         cur.movePosition(QTextCursor.End, QTextCursor.KeepAnchor)
         cur.removeSelectedText()
         html, centered = self._parse_html(core)
+        if cur.block().text() == "":
+            # 删除后的残留空块仍带旧块格式（列表成员 / 标题级别）：
+            # 不重置会让 insertHtml 片段首块并入旧列表，有序列表
+            # 编号从 1 重头开始（实测）；重置为默认格式再插入
+            cur.setBlockFormat(QTextBlockFormat())
         if _fragment_starts_with_table(html) and self._para_pos > 0:
             # 表格需前置块：纯文本段落删除后残留清空块，移除后使表格
             # 紧接上一块（对齐全量渲染）；若删除的是既有表格，Qt 会连
