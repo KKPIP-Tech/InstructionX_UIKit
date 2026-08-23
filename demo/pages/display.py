@@ -612,7 +612,8 @@ flowchart LR
 
 
 _MARKDOWN_MERMAID = r"""Mermaid 图表由官方 mermaid.js 引擎渲染（WebEngine，随包分发不联网），
-官方全量图型可用，随主题令牌着色。
+官方全量图型可用，随主题令牌着色。图表是可交互的：拖动平移、
+Ctrl+滚轮缩放，右上角工具条可放大 / 缩小 / 复位 / 适宽。
 
 ```mermaid
 flowchart LR
