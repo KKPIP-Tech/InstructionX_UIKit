@@ -21,7 +21,9 @@ CSS 生效（正文字族 / 字阶 / 颜色、标题字阶、代码块 ``bg.subt
 ``\\[...\\]`` / ``\\begin{equation}`` 块级），由 matplotlib mathtext
 引擎渲染（依赖例外，见 math_render.py），2x 超采样清晰输出；渲染经
 LRU 缓存 + 后台异步执行，流式追加时已渲染公式零开销，未完成的公式
-先以源码占位、渲染完成后自动替换。主题切换后公式自动按新文本色重绘。
+先以源码占位图显示；渲染完成后经 ``QTextDocument.addResource`` 资源
+替换**就地更新**（不重解析文档、不触碰流式增量状态，因此与流式追加
+任意交错都安全）。主题切换后公式自动按新文本色重绘。
 
 **流式追加（增量渲染）**：逐 token 追加不再全量重解析——纯文本 /
 常规 markdown 以 ``QTextCursor`` 增量插入（软换行按 Qt 的空白折叠
@@ -40,13 +42,17 @@ token 的富样式可能延迟自愈。
 不支持 ``\\newcommand`` 宏与外部宏包。
 """
 
+import hashlib
+import math
 import re
-from html import escape as _html_escape
 
 from PySide6.QtCore import QUrl, Signal, Qt
 from PySide6.QtGui import (
     QColor,
     QDesktopServices,
+    QFont,
+    QFontMetricsF,
+    QImage,
     QPainter,
     QPalette,
     QTextBlockFormat,
@@ -68,8 +74,8 @@ _SCROLL_MARGIN = 4
 #: 行内 Markdown 敏感字符（出现即需重解析以恢复富样式）
 _INLINE_SIG = set("*_`~$[]()|\\<>&!")
 
-#: 行首块级标记（列表 / 引用 / 标题 / 分割线等）
-_BLOCK_MARK_RE = re.compile(r"^[ \t]*(?:[-+*>#]|\d+[.)])\s")
+#: 行首块级标记（标题 / 列表 / 引用 / 分割线等）
+_BLOCK_MARK_RE = re.compile(r"^[ \t]*(?:[-+*>]|#{1,6}|\d+[.)])\s")
 
 #: 段落级重解析的规模保护阈值（字符），超过后按间隔节流
 _RERENDER_SIZE_LIMIT = 4096
@@ -121,6 +127,16 @@ def _unescape_display(text: str) -> str:
 
 #: <body> 标签（大小写不敏感）
 _BODY_TAG_RE = re.compile(r"<body[^>]*>", re.IGNORECASE)
+
+
+def _insert_fresh_block(cur: QTextCursor) -> None:
+    """在光标处另起一个纯文本新块。
+
+    必须显式传默认块格式：无参 ``insertBlock`` 会继承前一块的块格式
+    （列表成员 / 标题级别），实测在列表末尾另起段落时新块会被并入
+    列表，导致后续文本 / 标题渲染为列表项。
+    """
+    cur.insertBlock(QTextBlockFormat(), QTextCharFormat())
 
 
 def _fragment_starts_with_table(html: str) -> bool:
@@ -357,10 +373,10 @@ class MarkdownView(QTextBrowser):
         self._raw = ""
         self._links_enabled = True
         self._empty_text = "暂无内容"
-        self._render_seq = 0            # 渲染代次（公式资源 URL 命名空间）
         self._pending_math = set()      # 等待异步渲染的公式缓存键
-        # 实例级公式占位标记（含内存地址，跨实例零碰撞）
-        self._math_mark = f"uikmath{id(self):x}z{{}}"
+        # 实例级公式占位标记（含内存地址，跨实例零碰撞；结尾字母 q 是
+        # 终止符：避免 "…z1" 成为 "…z10" 的前缀导致 replace 误替换）
+        self._math_mark = f"uikmath{id(self):x}z{{}}q"
         self._reset_incremental()
         set_property(self, "variant", variant)
         self.setOpenLinks(False)
@@ -482,31 +498,70 @@ a {{ color: {T("color.primary")}; }}
             bar.setValue(min(old_value, bar.maximum()))
         self.viewport().update()
 
-    def _embed_math(self, doc, html: str, maths: list, pending: set) -> str:
-        """把 HTML 中的公式占位标记替换为渲染图片（或源码占位）。
+    @staticmethod
+    def _math_url(key: str) -> str:
+        """公式缓存键 → 文档资源 URL（键含主题色与字号，天然区分渲染代次）。
 
-        命中缓存的公式注册为文档资源并生成 ``<img>``；未命中的公式
-        以 ``<code>`` 源码占位，键加入 ``pending`` 并请求后台异步渲染
-        （失败键的重试节奏由 MathRenderHub 控制）。
+        同一公式在同一代次内多次嵌入共享同一 URL（资源去重）；
+        异步渲染完成后按 URL 替换资源即可就地更新全部出现位置。
+        """
+        digest = hashlib.md5(key.encode("utf-8")).hexdigest()
+        return f"uik-math://{digest}"
+
+    def _math_placeholder(self, latex: str, display: bool) -> QImage:
+        """待渲染公式的源码占位图（等宽字体，观感对齐原 ``<code>`` 占位）。
+
+        2x 超采样 + devicePixelRatio，与正式渲染产物排版尺寸一致。
+        """
+        text = " ".join(latex.split())
+        font = QFont(MONO_FAMILY)
+        font.setPointSizeF(T("font.md") * 0.75 * (1.15 if display else 1.0))
+        fm = QFontMetricsF(font)
+        text = fm.elidedText(text, Qt.ElideMiddle, 480)
+        w = max(1, math.ceil(fm.horizontalAdvance(text)))
+        h = max(1, math.ceil(fm.height()))
+        img = QImage(w * 2, h * 2, QImage.Format_ARGB32_Premultiplied)
+        img.fill(Qt.transparent)
+        painter = QPainter(img)
+        painter.scale(2, 2)
+        painter.setFont(font)
+        painter.setPen(QColor(T("color.text.secondary")))
+        painter.drawText(0, fm.ascent(), text)
+        painter.end()
+        img.setDevicePixelRatio(2)
+        return img
+
+    def _embed_math(self, doc, html: str, maths: list, pending: set,
+                    centered_urls: set = None) -> str:
+        """把 HTML 中的公式占位标记替换为公式图片。
+
+        命中缓存的公式直接注册渲染产物；未命中的公式先注册源码占位图，
+        键加入 ``pending`` 并请求后台异步渲染（失败键的重试节奏由
+        MathRenderHub 控制），完成后经资源替换就地更新。
+        ``centered_urls`` 非 None 时收集块级公式图片的 URL——
+        ``insertHtml`` 会丢失片段的 ``align`` 属性，调用方需在插入后
+        用块格式显式居中。
         """
         hub = MathRenderHub.instance()
         color = T("color.text.primary")
         pt = T("font.md") * 0.75  # px → pt（96dpi 下 1pt ≈ 1.333px）
-        self._render_seq += 1
         for i, (latex, display) in enumerate(maths):
             eff_pt = pt * (1.15 if display else 1.0)
             key = hub.key_for(latex, color, eff_pt)
             marker = self._math_mark.format(i)
+            url = self._math_url(key)
             img = hub.get(key)
             if img is not None:
-                url = f"uik-math://{self._render_seq}/{i}"
-                doc.addResource(QTextDocument.ImageResource, QUrl(url), img)
-                tag = f'<img src="{url}" />'
+                pending.discard(key)
             else:
                 pending.add(key)
                 hub.request(key, latex, color, eff_pt, display)
-                # 渲染中 / 渲染失败：以公式源码占位（等宽样式）
-                tag = f"<code>{_html_escape(latex)}</code>"
+                # 渲染中 / 渲染失败：以公式源码占位图显示
+                img = self._math_placeholder(latex, display)
+            doc.addResource(QTextDocument.ImageResource, QUrl(url), img)
+            tag = f'<img src="{url}" />'
+            if display and centered_urls is not None:
+                centered_urls.add(url)
             if display:
                 # 独占段落的块级公式居中
                 html, n = re.subn(
@@ -519,9 +574,27 @@ a {{ color: {T("color.primary")}; }}
         return html
 
     def _on_math_ready(self, key: str) -> None:
-        """后台公式渲染完成：若属于本视图待渲染集合则重排（保持阅读位置）。"""
-        if key in self._pending_math:
-            self._render()
+        """后台公式渲染完成：就地替换文档中的占位图资源（不重解析）。
+
+        资源替换 + ``markContentsDirty`` 触发局部重排，文档结构与流式
+        增量状态完全不受影响——因此与流式追加任意交错都安全，无需
+        全量重渲染。渲染失败（缓存中无图）时保留源码占位图。
+        """
+        if key not in self._pending_math:
+            return
+        img = MathRenderHub.instance().get(key)
+        if img is None:
+            return  # 渲染失败：保留源码占位图
+        self._pending_math.discard(key)
+        bar = self.verticalScrollBar()
+        at_bottom = bar.value() >= bar.maximum() - _SCROLL_MARGIN
+        doc = self.document()
+        doc.addResource(QTextDocument.ImageResource,
+                        QUrl(self._math_url(key)), img)
+        doc.markContentsDirty(0, doc.characterCount())
+        if at_bottom:
+            bar.setValue(bar.maximum())
+        self.viewport().update()
 
     def _on_anchor_clicked(self, url: QUrl) -> None:
         self.linkActivated.emit(url.toString())
@@ -602,6 +675,12 @@ a {{ color: {T("color.primary")}; }}
                 i = j + 1
                 continue
             if stripped in ("$$", "\\["):
+                if i == len(lines) - 1:
+                    # 末行尚不完整：可能是多行块开启行，也可能是单行
+                    # $$...$$ 的前缀（单行形式由段落重解析处理），
+                    # 留待行完整后判定，避免误判为未闭合块吞掉后续内容
+                    i += 1
+                    continue
                 closer = "$$" if stripped == "$$" else "\\]"
                 j = i + 1
                 while j < len(lines) and lines[j].strip() != closer:
@@ -612,6 +691,10 @@ a {{ color: {T("color.primary")}; }}
                 continue
             m = re.match(r"\\begin\{(\w+\*?)\}\s*$", stripped)
             if m and m.group(1).rstrip("*") in _MATH_ENVS:
+                if i == len(lines) - 1:
+                    # 同上：不完整的 \begin{...} 行不做开启判定
+                    i += 1
+                    continue
                 closer = "\\end{" + m.group(1) + "}"
                 j = i + 1
                 while j < len(lines) and lines[j].strip() != closer:
@@ -714,9 +797,14 @@ a {{ color: {T("color.primary")}; }}
             if idx != -1:
                 # 段落结束：行尾空格被折叠，剥离后与全量渲染一致
                 commit = commit.rstrip(" ")
+            elif c0.endswith("\n"):
+                # 末行完整：行尾空格随换行一并延迟
+                commit = commit.rstrip(" ")
             else:
                 # 中段：构造前缀行延迟（逐字到达的围栏 / 块级公式开行）；
-                # 前缀剥离后暴露的换行与空格一并延迟（语义待定）
+                # 前缀剥离后暴露的换行与空格一并延迟（语义待定）。
+                # 仅当末行不完整时才可能是前缀——完整行（如围栏 / 块级
+                # 公式的闭合行）内容恰为 ``` 或 $$，剥离会产生幻影开启行
                 commit = _strip_construct_prefix(commit)
                 if commit.endswith("\n") or c0[len(commit):]:
                     commit = commit.rstrip("\n").rstrip(" ")
@@ -742,9 +830,15 @@ a {{ color: {T("color.primary")}; }}
             self._para_pos = self._doc_end()
         if p:
             commit = p.rstrip("\n")
-            commit = _strip_construct_prefix(commit)
-            if commit.endswith("\n") or p[len(commit):]:
-                commit = commit.rstrip("\n").rstrip(" ")
+            if p.endswith("\n"):
+                # 末行完整：行尾空格随换行一并延迟；完整行内容恰为
+                # ``` 或 $$ 时是构造的闭合行，不可按前缀剥离
+                commit = commit.rstrip(" ")
+            else:
+                # 末行不完整才可能是构造前缀
+                commit = _strip_construct_prefix(commit)
+                if commit.endswith("\n") or p[len(commit):]:
+                    commit = commit.rstrip("\n").rstrip(" ")
             if commit:
                 self._commit_paragraph_text(commit)
             self._tail = p[len(commit):]
@@ -764,7 +858,7 @@ a {{ color: {T("color.primary")}; }}
             if self.document().characterCount() > 1:
                 # 仅空文档可直接填充；有内容时必须另起新块（含表格
                 # 尾随空块——它属于表格结构，填充会吞掉分隔换行）
-                cur.insertBlock()
+                _insert_fresh_block(cur)
             self._para_pos = cur.position()
             self._para_mode = "open"
             self._para_dirty = False
@@ -822,14 +916,17 @@ a {{ color: {T("color.primary")}; }}
         cur.setPosition(self._para_pos)
         cur.movePosition(QTextCursor.End, QTextCursor.KeepAnchor)
         cur.removeSelectedText()
-        html = self._parse_html(core)
+        html, centered = self._parse_html(core)
         if _fragment_starts_with_table(html) and self._para_pos > 0:
             # 表格需前置块：纯文本段落删除后残留清空块，移除后使表格
             # 紧接上一块（对齐全量渲染）；若删除的是既有表格，Qt 会连
             # 同前置关系一并移除、光标落入上一块末尾，此时不可再删
             if cur.block().text() == "":
                 cur.deletePreviousChar()
+        first_block = cur.blockNumber()
         cur.insertHtml(html)
+        if centered:
+            self._apply_math_alignment(first_block, centered)
         if keep_trailing and tail_spaces:
             cur.movePosition(QTextCursor.End)
             cur.setCharFormat(self._body_format())
@@ -839,16 +936,38 @@ a {{ color: {T("color.primary")}; }}
         self._para_rich = True
         self._para_trail_space = bool(keep_trailing and tail_spaces)
 
-    def _parse_html(self, text: str) -> str:
-        """文本 → 样式化 HTML（公式提取 + 占位替换，与全量渲染同管线）。"""
+    def _parse_html(self, text: str):
+        """文本 → (样式化 HTML, 块级公式图片 URL 集合)（与全量渲染同管线）。
+
+        块级公式 URL 集合用于插入后显式居中（``insertHtml`` 会丢失
+        片段的 ``align`` 属性）。
+        """
         processed, maths = _extract_math(text, self._math_mark)
         scratch = QTextDocument()
         scratch.setDefaultStyleSheet(self._stylesheet())
         scratch.setMarkdown(processed)
         html = scratch.toHtml()
+        centered = set()
         if maths:
-            html = self._embed_math(self.document(), html, maths, self._pending_math)
-        return html
+            html = self._embed_math(self.document(), html, maths,
+                                    self._pending_math, centered)
+        return html, centered
+
+    def _apply_math_alignment(self, first_block: int, centered: set) -> None:
+        """把新插入区域中含块级公式图片的段落设为居中。"""
+        doc = self.document()
+        for n in range(max(0, first_block), doc.blockCount()):
+            block = doc.findBlockByNumber(n)
+            it = block.begin()
+            while not it.atEnd():
+                fmt = it.fragment().charFormat()
+                if fmt.isImageFormat() and fmt.toImageFormat().name() in centered:
+                    cur = QTextCursor(block)
+                    bfmt = cur.blockFormat()
+                    bfmt.setAlignment(Qt.AlignHCenter)
+                    cur.setBlockFormat(bfmt)
+                    break
+                it += 1
 
     def _insert_parsed(self, text: str) -> None:
         """把一段自含文本按完整管线解析后插入文档末尾（块级冲刷）。
@@ -856,13 +975,16 @@ a {{ color: {T("color.primary")}; }}
         表格片段直接插入上一块末尾（表格自带前置块需求，额外
         insertBlock 会留下并入表格结构的空块）；其余片段先建块。
         """
-        html = self._parse_html(text)
+        html, centered = self._parse_html(text)
         cur = self.textCursor()
         cur.movePosition(QTextCursor.End)
+        first_block = self.document().blockCount() - 1
         if (not _fragment_starts_with_table(html)
                 and self.document().characterCount() > 1):
-            cur.insertBlock()
+            _insert_fresh_block(cur)
         cur.insertHtml(html)
+        if centered:
+            self._apply_math_alignment(first_block, centered)
         self.setTextCursor(cur)
 
     def _delete_from(self, pos: int) -> None:
@@ -915,8 +1037,8 @@ a {{ color: {T("color.primary")}; }}
         """未闭合结构缓冲期的新增内容：闭合检测 → 闭合后重排 / 降级提交。"""
         self._pending_src += chunk
         if self._pending_close_found():
-            src = self._pending_src
             self._pending_type = None
+            src = self._pending_src
             self._pending_src = ""
             self._delete_from(self._pending_pos)
             self._tail = src
@@ -951,7 +1073,7 @@ a {{ color: {T("color.primary")}; }}
         cur.movePosition(QTextCursor.End)
         if self._pending_type == "fence":
             if self._pending_first and self.document().characterCount() > 1:
-                cur.insertBlock()
+                _insert_fresh_block(cur)
             fmt, bfmt = self._fence_formats()
             cur.setCharFormat(fmt)
             cur.setBlockFormat(bfmt)
@@ -993,14 +1115,14 @@ a {{ color: {T("color.primary")}; }}
                     # 行尾空格在空行分隔前被折叠（Qt 导入剥离行尾空白）
                     cur.deletePreviousChar()
                 if self.document().characterCount() > 1:
-                    cur.insertBlock()
+                    _insert_fresh_block(cur)
             elif total == 1:
                 if not self._pending_trail_space:
                     # 行尾空格 + 软换行折叠为单个空格（"x \ny" → 'x y'）
                     cur.insertText(" ")
             elif self._pending_first and self._para_mode == "none":
                 if self.document().characterCount() > 1:
-                    cur.insertBlock()
+                    _insert_fresh_block(cur)
             display = _display_text(_unescape_display(body))
             cur.insertText(display)
             self._pending_trail_space = display.endswith(" ")
