@@ -1,12 +1,13 @@
 [project]
 name = "instructionx-uikit"
-# 项目版本号统一为 alpha-v1.0.1（见 InstructionX_UIKit.__version__）；
-# pyproject 受 PEP 440 限制，此处为其规范等价形式 1.0.1a1
-version = "1.0.1a1"
-description = "基于 PySide6 的纯桌面 UI 组件库：设计令牌双主题、57 组件、12 布局、52 动画、原生图表引擎与蓝图节点图"
+# 项目版本号统一为 alpha-v1.0.2（见 InstructionX_UIKit.__version__）；
+# pyproject 受 PEP 440 限制，此处为其规范等价形式 1.0.2a1
+version = "1.0.2a1"
+description = "基于 PySide6 的纯桌面 UI 组件库：设计令牌双主题、58 组件、13 布局、52 动画、原生图表引擎与蓝图节点图"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "matplotlib>=3.11.1",
     "pyside6>=6.11.1",
     "qrcode[pil]>=7.4",
 ]

@@ -33,6 +33,8 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QApplication
 
 from ..theme import T
+from ._utils import ON_FILL_WHITE, clamp as _clamp, dist_point_segment, \
+    to_float as _to_float, with_alpha
 from .axes import chart_font, format_value
 from .core import SeriesRenderer, register_series
 
@@ -51,24 +53,15 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# 公共工具
+# 公共工具（数值 / 几何工具统一见 charts._utils：_to_float / _clamp /
+# with_alpha / dist_point_segment，语义以过滤 NaN/Inf 版为准）
 # ---------------------------------------------------------------------------
 
-def _to_float(v, default=0.0):
-    """宽松转 float；失败 / None / bool 返回 default。"""
-    if isinstance(v, bool) or v is None:
-        return float(default)
-    try:
-        f = float(v)
-    except (TypeError, ValueError):
-        return float(default)
-    if math.isnan(f) or math.isinf(f):
-        return float(default)
-    return f
+#: 历史别名（统一实现见 charts._utils.with_alpha）
+_alpha = with_alpha
 
-
-def _clamp(v, lo, hi):
-    return max(lo, min(hi, v))
+#: 历史别名（统一实现见 charts._utils.dist_point_segment）
+_point_segment_dist = dist_point_segment
 
 
 def _parse_pct(v, base, default=0.0):
@@ -83,27 +76,8 @@ def _parse_pct(v, base, default=0.0):
     return _to_float(v, default)
 
 
-def _alpha(color, a):
-    """返回设置 alpha（0-255）后的 QColor 副本。"""
-    c = QColor(color)
-    c.setAlpha(int(_clamp(a, 0, 255)))
-    return c
-
-
 def _dist(a, b):
     return math.hypot(a.x() - b.x(), a.y() - b.y())
-
-
-def _point_segment_dist(p, a, b):
-    """点 p 到线段 ab 的距离。"""
-    ax, ay = a.x(), a.y()
-    bx, by = b.x(), b.y()
-    dx, dy = bx - ax, by - ay
-    length_sq = dx * dx + dy * dy
-    if length_sq <= 1e-12:
-        return math.hypot(p.x() - ax, p.y() - ay)
-    t = _clamp(((p.x() - ax) * dx + (p.y() - ay) * dy) / length_sq, 0.0, 1.0)
-    return math.hypot(p.x() - (ax + t * dx), p.y() - (ay + t * dy))
 
 
 def _text_color(key="color.text.primary"):
@@ -317,7 +291,7 @@ class PieSeriesRenderer(SeriesRenderer):
             if pos == "inside":
                 r = (sec["r0"] + sec["r1"]) / 2
                 pt = self._pt(mid, r)
-                p.setPen(QColor("#ffffff"))
+                p.setPen(QColor(ON_FILL_WHITE))
                 p.drawText(QRectF(pt.x() - 40, pt.y() - fm.height() / 2,
                                   80, fm.height()),
                            Qt.AlignCenter, pct)
@@ -559,8 +533,9 @@ class GaugeSeriesRenderer(SeriesRenderer):
     option 键：
     - ``data``: [{"name","value"}]（取首项）；
     - ``min`` / ``max``: 量程（默认 0 / 100）；
-    - ``startAngle`` / ``endAngle``: 自 3 点方向顺时针度数
-      （默认 225 / -45，即底部 270° 开口）；
+    - ``startAngle`` / ``endAngle``: ECharts 角度约定——0° 在 3 点方向、
+      逆时针为正（90° 为 12 点方向）；默认 225 / -45，即 270° 弧、
+      **开口在底部**（与 ECharts 默认观感一致，针自左下经顶部扫到右下）；
     - ``radius``: "75%" / px；
     - ``progress``: {"show": True, "width": px}（当前值进度弧）；
     - ``axisLine``: {"lineStyle": {"width": px, "color": [[frac, "#..."], ...]}}
@@ -585,11 +560,23 @@ class GaugeSeriesRenderer(SeriesRenderer):
         v0, v1 = self._vmin(), _to_float(self.opt.get("max"), 100.0)
         return v1 if v1 > v0 else v0 + 1.0
 
+    @staticmethod
+    def _to_internal_angle(a):
+        """ECharts 角度（0=3 点、逆时针为正）→ 内部角度（0=3 点、顺时针为正）。"""
+        return -_to_float(a, 0.0)
+
     def _start_angle(self):
-        return _to_float(self.opt.get("startAngle"), 225.0)
+        """内部起始角（默认 ECharts 225° → 内部 -225° = 左下）。"""
+        return self._to_internal_angle(self.opt.get("startAngle", 225.0))
 
     def _end_angle(self):
-        return _to_float(self.opt.get("endAngle"), -45.0)
+        """内部终止角（默认 ECharts -45° → 内部 45° 右下，归一化 > start，
+        即 405°：自左下顺时针经顶部扫到右下，270° 弧、开口在底部）。"""
+        e = self._to_internal_angle(self.opt.get("endAngle", -45.0))
+        s = self._start_angle()
+        while e <= s:
+            e += 360.0
+        return e
 
     def layout(self, rect: QRectF) -> None:
         self._center = rect.center()
@@ -610,7 +597,14 @@ class GaugeSeriesRenderer(SeriesRenderer):
         return self._start_angle() + (self._end_angle() - self._start_angle()) * f
 
     def _arc(self, p, a_hi, a_lo, r, width, color):
-        """绘制顺时针角区间 [a_lo, a_hi] 的圆弧（pen 宽度 width）。"""
+        """绘制内部角度下自 a_lo 顺时针扫到 a_hi 的圆弧（pen 宽度 width）。
+
+        内部角度：0=3 点方向、顺时针为正（start 归一化后恒 < end）。
+        QPainter.drawArc 为「0=3 点、逆时针为正」，故起点角取负、跨度取反
+        （此前跨度取正导致扫向相反，开口在顶部与 ECharts 默认观感不符，
+        现已对齐）。参数顺序不敏感（内部取 min/max）。
+        """
+        a_lo, a_hi = min(a_lo, a_hi), max(a_lo, a_hi)
         if a_hi <= a_lo or r <= 0:
             return
         rect = QRectF(self._center.x() - r, self._center.y() - r, 2 * r, 2 * r)
@@ -618,7 +612,7 @@ class GaugeSeriesRenderer(SeriesRenderer):
         pen.setCapStyle(Qt.FlatCap)
         p.setPen(pen)
         p.setBrush(Qt.NoBrush)
-        p.drawArc(rect, int(-a_hi * 16), int((a_hi - a_lo) * 16))
+        p.drawArc(rect, int(-a_lo * 16), int((a_lo - a_hi) * 16))
 
     def paint(self, p: QPainter, anim_t: float) -> None:
         p.save()
@@ -720,14 +714,14 @@ class GaugeSeriesRenderer(SeriesRenderer):
         d = _dist(pos, self._center)
         if d > self._radius + 6:
             return None
-        # 角度需落在表盘范围内（允许中心区域命中）
+        # 角度需落在表盘范围内（允许中心区域命中）；
+        # atan2(dy, dx) 与内部角度同约定（0=3 点、顺时针为正）
         if d > 12:
             a = math.degrees(math.atan2(pos.y() - self._center.y(),
                                         pos.x() - self._center.x()))
             start, end = self._start_angle(), self._end_angle()
-            span = start - end
-            rel = (start - a) % 360.0
-            if rel > span + 1e-6:
+            rel = (a - start) % 360.0
+            if rel > (end - start) + 1e-6:
                 return None
         name = self._entries[0][0] if self._entries else self.name
         return {"name": name, "value": self._value, "series": self.name}
@@ -841,7 +835,7 @@ class FunnelSeriesRenderer(SeriesRenderer):
             value_text = format_value(layer["value"])
             if inside:
                 text = f"{name} {value_text}"
-                p.setPen(QColor("#ffffff"))
+                p.setPen(QColor(ON_FILL_WHITE))
                 p.drawText(QRectF(layer["left"], layer["cy"] - fm.height() / 2,
                                   layer["right"] - layer["left"], fm.height()),
                            Qt.AlignCenter, text)
@@ -1067,7 +1061,7 @@ class SunburstSeriesRenderer(SeriesRenderer):
             p.save()
             p.translate(pt)
             p.rotate(deg + (180.0 if flip else 0.0))
-            p.setPen(QColor("#ffffff"))
+            p.setPen(QColor(ON_FILL_WHITE))
             band_w = math.radians(span) * rm
             text = node.name
             tw = fm.horizontalAdvance(text)
@@ -1241,8 +1235,8 @@ class TreemapSeriesRenderer(SeriesRenderer):
             if r.width() < fm.horizontalAdvance(node.name) * 0.9 \
                     or r.height() < fm.height() + 2:
                 continue  # 矩形过小省略标签
-            p.setPen(QColor("#ffffff") if node.depth == 0
-                     else _alpha(QColor("#ffffff"), 230))
+            p.setPen(QColor(ON_FILL_WHITE) if node.depth == 0
+                     else _alpha(QColor(ON_FILL_WHITE), 230))
             p.drawText(QRectF(r.left() + 3, r.top() + 1, r.width() - 6,
                               fm.height()),
                        Qt.AlignLeft | Qt.AlignVCenter, node.name)
@@ -1908,12 +1902,18 @@ class LinesSeriesRenderer(SeriesRenderer):
         return dict(eff or {})
 
     def _on_tick(self):
-        """亮点推进；渲染器已被替换 / 隐藏时停止并销毁定时器（不泄漏）。"""
+        """亮点推进。统一定时器策略：仅可见时 tick——
+
+        - 渲染器已被替换（update_option 重建）→ 停止并销毁定时器（不泄漏）；
+        - 系列被 legend 隐藏 → 暂停（不销毁），重新显示经
+          ``_on_visible_changed`` 恢复，动画不再永久消失；
+        - 可见 → 推进相位并重绘（定时器意外停止时自愈重启）。
+        """
         timer = self._timer
         if timer is None:
             return
         try:
-            alive = self in self.chart.series_renderers and self.visible
+            alive = self in self.chart.series_renderers
         except RuntimeError:
             alive = False  # chart 已销毁
         if not alive:
@@ -1921,10 +1921,21 @@ class LinesSeriesRenderer(SeriesRenderer):
             timer.deleteLater()
             self._timer = None
             return
+        if not self.visible:
+            if timer.isActive():
+                timer.stop()
+            return
+        if not timer.isActive():
+            timer.start()
         effect = self._effect_opt()
         period = max(0.5, _to_float(effect.get("period"), 4.0))
         self._phase = (self._phase + 0.04 / period) % 1.0
         self.chart.update()
+
+    def _on_visible_changed(self):
+        """显隐变化钩子（core.set_series_visible 调用）：显示恢复时重启定时器。"""
+        if self.visible and self._timer is not None and not self._timer.isActive():
+            self._timer.start()
 
     def layout(self, rect: QRectF) -> None:
         self._segments = []
@@ -1991,7 +2002,7 @@ class LinesSeriesRenderer(SeriesRenderer):
         if bool(effect.get("show", False)) and anim_t > 0.5:
             dot_size = _to_float(effect.get("symbolSize"), 6.0)
             dot_color = QColor(str(effect.get("color"))) \
-                if effect.get("color") else QColor("#ffffff")
+                if effect.get("color") else QColor(ON_FILL_WHITE)
             n = len(self._segments)
             for i, seg in enumerate(self._segments):
                 phase = (self._phase + i / max(1, n)) % 1.0

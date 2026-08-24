@@ -32,6 +32,7 @@ from InstructionX_UIKit.components.line_edit import LineEdit
 from InstructionX_UIKit.components.slider import Slider
 from InstructionX_UIKit.components.spin_box import DoubleSpinBox, SpinBox
 from InstructionX_UIKit.theme import T, set_property
+from InstructionX_UIKit.tokens import EASING
 
 __all__ = [
     "ParamForm",
@@ -61,7 +62,8 @@ def add_specs(form: "ParamForm", opts: dict, specs) -> None:
         ("bool",   key, 标签, 默认)
         ("text",   key, 标签, 默认)
     """
-    easings = ["standard", "entrance", "spring", "emphasis", "linear"]
+    # 缓动键列表取自 tokens.EASING（唯一数值来源），避免硬编码漂移
+    easings = list(EASING)
     for spec in specs:
         kind = spec[0]
         if kind == "int":

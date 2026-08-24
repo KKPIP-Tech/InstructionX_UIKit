@@ -1,14 +1,21 @@
 # -*- coding: utf-8 -*-
 """表格组件（SPEC §5.2 table）。
 
-斑马纹、紧凑行高、列排序；无数据时在视口中央绘制空状态占位文本。
+斑马纹、紧凑行高、列排序；无数据时以覆盖视口的子标签显示
+空状态占位文本（普通子控件随 resize / 主题切换自动重绘，
+不依赖在父 paintEvent 里向 viewport 绘制）。
 """
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPainter
-from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QTableWidget, QTableWidgetItem
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QHeaderView,
+    QLabel,
+    QTableWidget,
+    QTableWidgetItem,
+)
 
-from InstructionX_UIKit.theme import T, ThemeManager
+from InstructionX_UIKit.theme import T, ThemeManager, set_property
 
 __all__ = ["Table"]
 
@@ -42,6 +49,18 @@ class Table(QTableWidget):
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.setShowGrid(False)
         self.setSortingEnabled(sortable)
+
+        # 空态覆盖标签：作为普通子控件存在，随 resize / 主题切换自动
+        # 重绘（主题热切换经由全局 QSS role 样式刷新），不再在
+        # Table.paintEvent 里向 viewport 绘制（viewport 重绘会擦除）。
+        self._empty_label = QLabel(self._empty_text, self)
+        self._empty_label.setAlignment(Qt.AlignCenter)
+        self._empty_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        set_property(self._empty_label, "role", "tertiary")
+        font = self._empty_label.font()
+        font.setPixelSize(T("font.md"))
+        self._empty_label.setFont(font)
+        self._update_empty_overlay()
         ThemeManager.instance().theme_changed.connect(self.viewport().update)
 
     # ------------------------------------------------------------------ 数据
@@ -70,11 +89,13 @@ class Table(QTableWidget):
                     item.setData(Qt.EditRole, value)
                 self.setItem(r, c, item)
         self.setSortingEnabled(sorting)
+        self._update_empty_overlay()
 
     def set_empty_text(self, text: str) -> None:
         """设置空状态占位文本。"""
         self._empty_text = text
-        self.viewport().update()
+        self._empty_label.setText(text)
+        self._update_empty_overlay()
 
     def empty_text(self) -> str:
         return self._empty_text
@@ -83,16 +104,13 @@ class Table(QTableWidget):
         """紧凑（28px）/ 常规（32px）行高切换。"""
         self.verticalHeader().setDefaultSectionSize(28 if compact else _ROW_H)
 
-    # ------------------------------------------------------------------ 绘制
-    def paintEvent(self, event) -> None:
-        super().paintEvent(event)
-        if self.rowCount() > 0:
-            return
-        painter = QPainter(self.viewport())
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QColor(T("color.text.tertiary")))
-        font = painter.font()
-        font.setPixelSize(T("font.md"))
-        painter.setFont(font)
-        painter.drawText(self.viewport().rect(), Qt.AlignCenter, self._empty_text)
-        painter.end()
+    # ------------------------------------------------------------------ 空态
+    def _update_empty_overlay(self) -> None:
+        """空态覆盖标签跟随视口几何与行数状态。"""
+        self._empty_label.setGeometry(self.viewport().geometry())
+        self._empty_label.setVisible(self.rowCount() == 0)
+        self._empty_label.raise_()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_empty_overlay()

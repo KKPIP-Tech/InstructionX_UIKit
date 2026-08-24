@@ -37,6 +37,8 @@ class ImageView(QLabel):
         self._failed = False
         self._radius = radius
         self._hovered = False
+        self._scaled = QPixmap()      # 缩放结果缓存（按 (宽, 高, DPR) 为键）
+        self._scaled_key = None
         self.setAttribute(Qt.WA_Hover)
         self.setCursor(Qt.PointingHandCursor)
         self.setMinimumSize(120, 90)
@@ -52,6 +54,7 @@ class ImageView(QLabel):
         else:
             self._pixmap = QPixmap(str(source))
         self._failed = self._pixmap.isNull()
+        self._scaled_key = None  # 源图变化，缩放缓存失效
         self.update()
 
     def pixmap(self) -> QPixmap:  # noqa: A003 - 与 QLabel.pixmap 语义一致
@@ -131,9 +134,15 @@ class ImageView(QLabel):
         painter.setClipPath(path)
 
         if not self._failed and not self._pixmap.isNull():
-            scaled = self._pixmap.scaled(
-                self.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
-            )
+            # 按 (宽, 高, DPR) 缓存缩放结果：悬停 / 重绘不重复做全图
+            # SmoothTransformation 缩放（大图下开销显著）
+            key = (self.width(), self.height(), self.devicePixelRatioF())
+            if self._scaled_key != key:
+                self._scaled = self._pixmap.scaled(
+                    self.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
+                )
+                self._scaled_key = key
+            scaled = self._scaled
             painter.drawPixmap(
                 (self.width() - scaled.width()) // 2,
                 (self.height() - scaled.height()) // 2,
@@ -146,10 +155,17 @@ class ImageView(QLabel):
         if self._hovered and not self._failed:
             overlay = QColor(T("color.overlay"))
             painter.fillRect(rect, overlay)
-            painter.setPen(QColor("#FFFFFF"))
+            # 蒙层前景：overlay 在亮 / 暗主题下均使画面变暗，前景需保持浅色。
+            # 令牌体系没有 on.overlay 前景令牌：亮色取 on.primary（#FFFFFF，
+            # 与历史渲染一致）；暗色 on.primary 为深色（#15181E，压在黑色
+            # 遮罩上不可见），改取 text.primary（暗色主文字即浅色）。
+            fg = QColor(T("color.on.primary")
+                        if ThemeManager.instance().mode != "dark"
+                        else T("color.text.primary"))
+            painter.setPen(fg)
             # 放大镜图标
             cx, cy = rect.center().x(), rect.center().y() - 8
-            pen = QPen(QColor("#FFFFFF"), 1.8)
+            pen = QPen(fg, 1.8)
             pen.setCapStyle(Qt.RoundCap)
             painter.setPen(pen)
             painter.setBrush(Qt.NoBrush)

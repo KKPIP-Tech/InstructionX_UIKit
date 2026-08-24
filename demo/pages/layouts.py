@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""布局预设演示页：12 个布局预设，每页以实尺寸嵌入对应布局。
+"""布局预设演示页：13 个布局预设，每页以实尺寸嵌入对应布局。
 
 布局本身（InstructionX_UIKit.layouts）为 API 驱动、不含假数据；
 本页负责生成示例内容（见 ``layout_samples.py``）并传入布局。
@@ -7,10 +7,12 @@
 开发者照此即可用 Kit 复现相同效果。
 """
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QFrame, QWidget
 
 from InstructionX_UIKit.layouts.card_grid import create_card_grid
 from InstructionX_UIKit.layouts.centered_container import create_centered_container
+from InstructionX_UIKit.layouts.chat_conversation import create_chat_conversation
 from InstructionX_UIKit.layouts.dashboard_grid import create_dashboard_grid
 from InstructionX_UIKit.layouts.hero_section import create_hero_section
 from InstructionX_UIKit.layouts.holy_grail import create_holy_grail
@@ -85,6 +87,49 @@ def _build_media_left_right() -> QWidget:
     return create_media_left_right(**samples.MEDIA_LEFT_RIGHT)
 
 
+def _build_chat_conversation() -> QWidget:
+    """流式对话演示：提交后模拟 AI 逐 token 流式回复；气泡操作条常显，
+    演示复制 / 删除 / 编辑与重新生成 / 继续生成信号接线。"""
+    conv = create_chat_conversation(messages=samples.CHAT_MESSAGES)
+    conv.set_actions_always_visible(True)
+
+    def _stream_reply(idx, text):
+        """逐段流式输出 text 到消息 idx，结束后冻结计时。"""
+        chunks = [text[i:i + 6] for i in range(0, len(text), 6)]
+        timer = QTimer(conv)
+
+        def _tick():
+            if not chunks:
+                timer.stop()
+                timer.deleteLater()
+                conv.finish_message(idx)
+                return
+            conv.append_to_message(idx, chunks.pop(0))
+
+        timer.timeout.connect(_tick)
+        timer.start(50)
+
+    def _on_submit(text):
+        user_idx = conv.add_message("user", text)
+        conv.finish_message(user_idx)
+        idx = conv.add_message("assistant", "", info="InstructionX-Lite")
+        _stream_reply(idx, samples.CHAT_STREAM_REPLY)
+
+    def _on_regenerate(index):
+        # 演示：清空原内容后重新流式输出同一回复（真实场景由调用方重新请求模型）
+        conv.update_message(index, "")
+        _stream_reply(index, samples.CHAT_STREAM_REPLY)
+
+    def _on_continue(index):
+        conv.append_to_message(index, samples.CHAT_STREAM_CONTINUE)
+        conv.finish_message(index)
+
+    conv.messageSubmitted.connect(_on_submit)
+    conv.regenerateRequested.connect(_on_regenerate)
+    conv.continueRequested.connect(_on_continue)
+    return conv
+
+
 # (导航键, 标题, 说明, 布局工厂, 预览高度)
 _LAYOUTS = [
     ("top_nav_bar", "顶部导航栏", "Logo + 菜单 + 搜索 + 头像的窗口级顶部导航。",
@@ -111,6 +156,8 @@ _LAYOUTS = [
      _build_waterfall, 640),
     ("media_left_right", "图文左右", "图左文右 / 图右文左交替段落。",
      _build_media_left_right, 640),
+    ("chat_conversation", "流式对话", "AI 对话页面：Markdown 消息气泡 + 流式追加 + 底部输入区。",
+     _build_chat_conversation, 560),
 ]
 
 
@@ -183,6 +230,10 @@ def create_media_left_right_page() -> QWidget:
     return _make("media_left_right")
 
 
+def create_chat_conversation_page() -> QWidget:
+    return _make("chat_conversation")
+
+
 #: 布局页注册表：(导航键, 标题, 页面工厂)
 LAYOUT_PAGES = [
     ("top_nav_bar", "顶部导航栏", create_top_nav_bar_page),
@@ -197,4 +248,5 @@ LAYOUT_PAGES = [
     ("centered_container", "居中容器", create_centered_container_page),
     ("waterfall", "瀑布流", create_waterfall_page),
     ("media_left_right", "图文左右", create_media_left_right_page),
+    ("chat_conversation", "流式对话", create_chat_conversation_page),
 ]

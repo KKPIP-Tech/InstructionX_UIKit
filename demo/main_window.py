@@ -2,7 +2,7 @@
 """Demo 主窗口：顶部条 + 左侧导航树 + 右侧 QStackedWidget。
 
 - 顶部条：标题「InstructionX_UIKit」+ 亮 / 暗主题切换 SegmentedControl + 版本标签（取自包级 __version__）；
-- 左侧：QTreeWidget 导航（9 个分类，懒加载子页）；
+- 左侧：QTreeWidget 导航（10 个分类，含蓝图，懒加载子页）；
 - 右侧：QStackedWidget 切换演示页；
 - 顶部条与版本标签为自绘元素，随 theme_changed 实时换肤，无需重启。
 """

@@ -6,7 +6,8 @@
 
 ``series_cartesian`` / ``series_hierarchy`` / ``components`` / ``interact``
 由后续代理（C2/C3/C4）提供，此处以 try/except 惰性导入：任一模块缺失或
-依赖未就绪时静默跳过，不影响 core 的使用。
+依赖未就绪时跳过（不影响 core 的使用），并向 stderr 记录一次
+（``_utils.warn_once`` 去重）。
 """
 
 from .core import (
@@ -63,14 +64,17 @@ __all__ = [
 
 # ---------------------------------------------------------------------------
 # 惰性导入后续代理模块（导入时完成各自的 register_series / register_component；
-# 失败不影响 core 使用）
+# 失败不影响 core 使用，但至少向 stderr 记录一次——「神秘消失」必须可见）
 # ---------------------------------------------------------------------------
 
 import importlib as _importlib
 
+from ._utils import warn_once
+
 for _mod in ("series_cartesian", "series_hierarchy", "components", "interact"):
     try:
         _importlib.import_module(f"{__name__}.{_mod}")
-    except Exception:
-        pass
+    except Exception as _exc:  # noqa: BLE001 —— 契约要求失败不影响 core
+        warn_once(f"import:{_mod}",
+                  f"charts 子模块导入失败 {_mod}: {_exc!r}")
 del _importlib, _mod

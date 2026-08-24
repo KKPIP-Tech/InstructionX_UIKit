@@ -32,6 +32,7 @@ from PySide6.QtGui import (
 )
 
 from ..theme import T
+from ._utils import dist_point_segment, to_float as _to_float, with_alpha
 from .axes import CalendarCoord, GridCoord, chart_font, format_value
 from .core import SeriesRenderer, parse_data_point, register_series
 
@@ -50,25 +51,16 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# 小工具
+# 小工具（数值 / 几何工具统一见 charts._utils：_to_float / with_alpha /
+# dist_point_segment，语义以过滤 NaN/Inf 版为准）
 # ---------------------------------------------------------------------------
 
-def _to_float(v, default=None):
-    """宽松转 float；失败返回 default。"""
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return default
+#: 历史别名（统一实现见 charts._utils.with_alpha）
+_with_alpha = with_alpha
 
 
 def _lerp(a, b, t):
     return a + (b - a) * t
-
-
-def _with_alpha(color, alpha):
-    c = QColor(color)
-    c.setAlpha(max(0, min(255, int(alpha))))
-    return c
 
 
 def _ramp_color(colors, t):
@@ -115,16 +107,8 @@ def _smooth_path(points, smooth=0.5):
 
 
 def _dist_to_segment(pos, a, b):
-    """点 pos 到线段 a-b 的距离。"""
-    ax, ay = a.x(), a.y()
-    bx, by = b.x(), b.y()
-    dx, dy = bx - ax, by - ay
-    length_sq = dx * dx + dy * dy
-    if length_sq == 0:
-        return math.hypot(pos.x() - ax, pos.y() - ay)
-    t = ((pos.x() - ax) * dx + (pos.y() - ay) * dy) / length_sq
-    t = max(0.0, min(1.0, t))
-    return math.hypot(pos.x() - (ax + t * dx), pos.y() - (ay + t * dy))
+    """点 pos 到线段 a-b 的距离（统一语义见 charts._utils）。"""
+    return dist_point_segment(pos, a, b)
 
 
 def _datum_list(item):
@@ -134,7 +118,7 @@ def _datum_list(item):
         return None
     out = []
     for x in v:
-        f = _to_float(x)
+        f = _to_float(x, None)
         if f is None:
             return None
         out.append(f)
@@ -142,9 +126,13 @@ def _datum_list(item):
 
 
 def _grid_series_opts(chart):
-    """当前 option 中落在 grid 坐标系的系列 option 列表。"""
+    """当前 option 中落在 grid 坐标系的系列 option 列表。
+
+    内部引用路径：经 ``chart._option_ref()`` 直接读取（无 deepcopy），
+    布局每帧调用零拷贝；公共 API ``chart.option()`` 的拷贝语义不变。
+    """
     out = []
-    for s in chart.option().get("series") or []:
+    for s in chart._option_ref().get("series") or []:
         if not isinstance(s, dict):
             continue
         if s.get("coordinateSystem") in (None, "cartesian2d", "grid"):
@@ -206,11 +194,15 @@ def _grid_value_extent(chart):
 
 
 def _axis_label(axis, x):
-    """类别轴标签（x 为类别名或下标）；数值轴退回 format_value。"""
+    """类别轴标签（x 为类别名或下标；dataZoom 窗口外经全量类别解析）；
+    数值轴退回 format_value。"""
     if axis is not None and axis.type == "category" and axis.categories:
         idx = axis.category_index(x)
         if 0 <= idx < len(axis.categories):
             return axis.categories[idx]
+        all_cats = getattr(axis, "_all_categories", None) or []
+        if 0 <= idx < len(all_cats):
+            return all_cats[idx]
     return format_value(x)
 
 
@@ -256,9 +248,11 @@ class BarSeriesRenderer(SeriesRenderer):
         _fix_value_axis(val_axis, self.chart)
         self._plot = coord.plot
 
-        # 槽位：grid 内全部 bar 系列按 stack 名 / 自身序号分槽
+        # 槽位：grid 内全部 bar 系列按 stack 名 / 自身序号分槽。
+        # 自身定位优先用 core 注入的 ``_series_index``（对象语义，未命名 /
+        # 内容相同系列不碰撞）；兜底回退字典相等扫描（手工构造路径）。
         slot_keys = []
-        series_opts = self.chart.option().get("series") or []
+        series_opts = self.chart._option_ref().get("series") or []
         for idx, s in enumerate(series_opts):
             if not isinstance(s, dict) or str(s.get("type") or "") != "bar":
                 continue
@@ -268,11 +262,13 @@ class BarSeriesRenderer(SeriesRenderer):
                 else ("own", idx)
             if key not in slot_keys:
                 slot_keys.append(key)
-        my_index = 0
-        for idx, s in enumerate(series_opts):
-            if isinstance(s, dict) and s == self.opt:
-                my_index = idx
-                break
+        my_index = getattr(self, "_series_index", None)
+        if not isinstance(my_index, int) or not (0 <= my_index < len(series_opts)):
+            my_index = 0
+            for idx, s in enumerate(series_opts):
+                if isinstance(s, dict) and s == self.opt:
+                    my_index = idx
+                    break
         my_key = ("stack", str(self.opt.get("stack"))) \
             if self.opt.get("stack") else ("own", my_index)
         slot_idx = slot_keys.index(my_key) if my_key in slot_keys else 0
@@ -289,8 +285,8 @@ class BarSeriesRenderer(SeriesRenderer):
         slot_w = group_w / n_slots
         bar_w = self._resolve_bar_width(slot_w)
 
-        # 堆叠基线：同 stack 且排在我之前的可见 bar 系列的同号值累加
-        bases = self._stack_bases()
+        # 堆叠基线：同 stack 且排在我之前的可见 bar 系列按正负分桶累加
+        pos_bases, neg_bases = self._stack_bases()
         prev = self.prev_data if isinstance(self.prev_data, list) else None
         radius = self.opt.get("barBorderRadius", 0)
         if isinstance(radius, (list, tuple)):
@@ -301,7 +297,7 @@ class BarSeriesRenderer(SeriesRenderer):
             x, y = parse_data_point(item, i)
             if y is None:
                 continue
-            v0 = bases.get(i, 0.0)
+            v0 = (pos_bases if y >= 0 else neg_bases).get(i, 0.0)
             v1 = v0 + y
             center = cat_axis.map(x, c0, c1)
             slot_center = center - group_w / 2 + slot_w * (slot_idx + 0.5)
@@ -326,7 +322,7 @@ class BarSeriesRenderer(SeriesRenderer):
             })
 
     def _resolve_bar_width(self, slot_w):
-        bw = _to_float(self.opt.get("barWidth"))
+        bw = _to_float(self.opt.get("barWidth"), None)
         if bw is None:
             return max(2.0, slot_w * 0.75)
         if 0 < bw <= 1:
@@ -334,11 +330,15 @@ class BarSeriesRenderer(SeriesRenderer):
         return max(2.0, min(bw, slot_w))
 
     def _stack_bases(self):
-        """同 stack 前序可见 bar 系列的逐点同号累加基线 {index: base}。"""
-        bases = {}
+        """同 stack 前序可见 bar 系列的逐点基线 ``(pos, neg)`` 双桶。
+
+        与 ``_grid_value_extent`` 同构：正值 / 负值**分桶**累加（互不抵消），
+        负值柱自 0 向下、正值柱自 0 向上，正负同桶不再叠加。
+        """
+        pos, neg = {}, {}
         stack = self.opt.get("stack")
         if not stack:
-            return bases
+            return pos, neg
         for r in self.chart.series_renderers:
             if r is self:
                 break
@@ -350,8 +350,9 @@ class BarSeriesRenderer(SeriesRenderer):
                 _, y = parse_data_point(item, i)
                 if y is None:
                     continue
-                bases[i] = bases.get(i, 0.0) + y
-        return bases
+                bucket = pos if y >= 0 else neg
+                bucket[i] = bucket.get(i, 0.0) + y
+        return pos, neg
 
     @staticmethod
     def _cat_label(cat_axis, x, i):
@@ -359,6 +360,9 @@ class BarSeriesRenderer(SeriesRenderer):
             idx = cat_axis.category_index(x)
             if 0 <= idx < len(cat_axis.categories):
                 return cat_axis.categories[idx]
+            all_cats = getattr(cat_axis, "_all_categories", None) or []
+            if 0 <= idx < len(all_cats):
+                return all_cats[idx]
         return format_value(x)
 
     # -- 绘制 -------------------------------------------------------------
@@ -412,8 +416,9 @@ class BarSeriesRenderer(SeriesRenderer):
         return None
 
     def value_at_index(self, index: int):
+        idx = self._full_index(index)  # dataZoom 窗口偏移换算
         for bar in self._bars:
-            if bar["index"] == index:
+            if bar["index"] == idx:
                 r = bar["rect"]
                 if self._horizontal:
                     pos = QPointF(r.right(), r.center().y())
@@ -440,7 +445,7 @@ class PictorialBarSeriesRenderer(BarSeriesRenderer):
     """
 
     def _stack_bases(self):  # 象形柱不堆叠
-        return {}
+        return {}, {}
 
     def _symbol_size(self):
         ss = self.opt.get("symbolSize", 10)
@@ -737,12 +742,13 @@ class LineSeriesRenderer(SeriesRenderer):
                 "dataIndex": best, "x": x}
 
     def value_at_index(self, index: int):
-        if not isinstance(index, int) or not (0 <= index < len(self._entries)):
+        idx = self._full_index(index)  # dataZoom 窗口偏移换算
+        if not isinstance(idx, int) or not (0 <= idx < len(self._entries)):
             return None
-        x, y = self._entries[index]
+        x, y = self._entries[idx]
         if y is None:
             return None
-        pos = self._points[index] if index < len(self._points) else None
+        pos = self._points[idx] if idx < len(self._points) else None
         return {"name": self.name, "value": y, "series": self.name, "pos": pos}
 
 
@@ -768,7 +774,7 @@ class ScatterSeriesRenderer(SeriesRenderer):
     def _third_dim(self, item):
         v = item.get("value") if isinstance(item, dict) else item
         if isinstance(v, (list, tuple)) and len(v) >= 3:
-            return _to_float(v[2])
+            return _to_float(v[2], None)
         return None
 
     def layout(self, rect: QRectF) -> None:
@@ -777,7 +783,7 @@ class ScatterSeriesRenderer(SeriesRenderer):
         if coord is None:
             return
         single = getattr(coord, "kind", "") == "singleAxis"
-        fixed = _to_float(self.opt.get("symbolSize"))
+        fixed = _to_float(self.opt.get("symbolSize"), None)
         thirds = [self._third_dim(it) for it in self.data()]
         known = [t for t in thirds if t is not None]
         zmin = min(known) if known else 0.0
@@ -835,8 +841,9 @@ class ScatterSeriesRenderer(SeriesRenderer):
                 "series": self.name, "dataIndex": best["index"], "x": best["x"]}
 
     def value_at_index(self, index: int):
+        idx = self._full_index(index)  # dataZoom 窗口偏移换算
         for d in self._dots:
-            if d["index"] == index:
+            if d["index"] == idx:
                 return {"name": self.name, "value": d["value"],
                         "series": self.name, "pos": d["pt"]}
         return None
@@ -855,7 +862,8 @@ class EffectScatterSeriesRenderer(ScatterSeriesRenderer):
 
     动画生命周期：QTimer 以 chart（ChartWidget）为 parent，随控件销毁；
     回调经 weakref 持有渲染器，渲染器被替换（update_option 重建）后回调
-    自动停止并 deleteLater，不泄漏。
+    自动停止并 deleteLater，不泄漏。仅系列可见时推进（隐藏后定时器暂停、
+    重新显示时经 ``_on_visible_changed`` 恢复，不空转）。
     """
 
     _TICK_MS = 40
@@ -878,6 +886,20 @@ class EffectScatterSeriesRenderer(ScatterSeriesRenderer):
                     t.stop()
                     t.deleteLater()
                 return
+            try:
+                alive = self_obj in self_obj.chart.series_renderers
+            except RuntimeError:
+                alive = False  # chart 已销毁
+            if not alive:
+                t.stop()
+                t.deleteLater()
+                return
+            if not self_obj.visible:
+                if t.isActive():
+                    t.stop()  # 隐藏不空转；重新显示经 _on_visible_changed 恢复
+                return
+            if not t.isActive():
+                t.start()
             self_obj._tick()
 
         timer.timeout.connect(_on_timeout)
@@ -888,6 +910,11 @@ class EffectScatterSeriesRenderer(ScatterSeriesRenderer):
         """推进涟漪相位并请求重绘（测试可手动调用）。"""
         self._phase = (self._phase + self._TICK_MS / (self._period * 1000.0)) % 1.0
         self.chart.update()
+
+    def _on_visible_changed(self):
+        """显隐变化钩子（core.set_series_visible 调用）：显示恢复时重启定时器。"""
+        if self.visible and self._timer is not None and not self._timer.isActive():
+            self._timer.start()
 
     def paint(self, p: QPainter, anim_t: float) -> None:
         super().paint(p, anim_t)
@@ -937,7 +964,7 @@ class CandlestickSeriesRenderer(SeriesRenderer):
         band = coord.x_axis.band_width(coord.plot.left(), coord.plot.right())
         if band <= 0:
             band = coord.plot.width() / max(1, len(self.data()))
-        w = _to_float(self.opt.get("barWidth"))
+        w = _to_float(self.opt.get("barWidth"), None)
         w = max(3.0, min(w, band * 0.9)) if w else min(band * 0.6, 24.0)
         prev = self.prev_data if isinstance(self.prev_data, list) else None
         for i, item in enumerate(self.data()):
@@ -1026,8 +1053,9 @@ class CandlestickSeriesRenderer(SeriesRenderer):
 
     def value_at_index(self, index: int):
         coord = self.chart.coord_for(self.opt)
+        idx = self._full_index(index)  # dataZoom 窗口偏移换算
         for it in self._items:
-            if it["index"] == index:
+            if it["index"] == idx:
                 pos = None
                 if isinstance(coord, GridCoord):
                     yc = coord.y_axis.map(it["close"], coord.plot.bottom(),
@@ -1063,7 +1091,7 @@ class BoxplotSeriesRenderer(SeriesRenderer):
         band = coord.x_axis.band_width(coord.plot.left(), coord.plot.right())
         if band <= 0:
             band = coord.plot.width() / max(1, len(self.data()))
-        w = _to_float(self.opt.get("barWidth"))
+        w = _to_float(self.opt.get("barWidth"), None)
         w = max(4.0, min(w, band * 0.9)) if w else min(band * 0.5, 28.0)
         for i, item in enumerate(self.data()):
             nums = _datum_list(item)
@@ -1131,8 +1159,9 @@ class BoxplotSeriesRenderer(SeriesRenderer):
 
     def value_at_index(self, index: int):
         coord = self.chart.coord_for(self.opt)
+        idx = self._full_index(index)  # dataZoom 窗口偏移换算
         for it in self._items:
-            if it["index"] == index:
+            if it["index"] == idx:
                 pos = None
                 if isinstance(coord, GridCoord):
                     y_med = coord.y_axis.map(it["vals"][2], coord.plot.bottom(),
@@ -1157,8 +1186,8 @@ class HeatmapSeriesRenderer(SeriesRenderer):
       GitHub 风格逐格填充（圆角小格）。
 
     色带：默认 ``color.primary.subtle`` → ``color.primary`` 按值线性插值；
-    option 含 ``visualMap``（顶层，经 ``chart.option().get("visualMap")``
-    读取）时按 ``visualMap.min/max`` 与 ``visualMap.inRange.colors`` 映射。
+    option 含 ``visualMap``（顶层，经 chart 内部 option 引用读取）时按
+    ``visualMap.min/max`` 与 ``visualMap.inRange.colors`` 映射。
     """
 
     def __init__(self, chart, opt):
@@ -1175,20 +1204,20 @@ class HeatmapSeriesRenderer(SeriesRenderer):
             if not isinstance(v, (list, tuple)) or len(v) < 2:
                 continue
             if self._calendar:
-                val = _to_float(v[1])
+                val = _to_float(v[1], None)
                 if val is not None:
                     out.append((v[0], None, val))
             else:
                 if len(v) < 3:
                     continue
-                val = _to_float(v[2])
+                val = _to_float(v[2], None)
                 if val is not None:
                     out.append((v[0], v[1], val))
         return out
 
     def _colors_and_range(self, items):
         """→ (colors, vmin, vmax)：visualMap 优先，否则默认色带 + 数据范围。"""
-        vm = self.chart.option().get("visualMap")
+        vm = self.chart._option_ref().get("visualMap")
         colors = None
         vmin = vmax = None
         if isinstance(vm, dict):
@@ -1196,8 +1225,8 @@ class HeatmapSeriesRenderer(SeriesRenderer):
             if isinstance(in_range.get("colors"), list) \
                     and in_range["colors"]:
                 colors = in_range["colors"]
-            vmin = _to_float(vm.get("min"))
-            vmax = _to_float(vm.get("max"))
+            vmin = _to_float(vm.get("min"), None)
+            vmax = _to_float(vm.get("max"), None)
         if colors is None:
             colors = [T("color.primary.subtle"), T("color.primary")]
         vals = [v for _, _, v in items]
@@ -1302,14 +1331,14 @@ class ParallelSeriesRenderer(SeriesRenderer):
         return rows
 
     def _dims(self, rows):
-        pa = self.chart.option().get("parallelAxis")
+        pa = self.chart._option_ref().get("parallelAxis")
         dims = []
         if isinstance(pa, list) and pa:
             for d in pa:
                 if isinstance(d, dict):
                     dims.append({"name": str(d.get("name") or f"dim{len(dims)}"),
-                                 "min": _to_float(d.get("min")),
-                                 "max": _to_float(d.get("max"))})
+                                 "min": _to_float(d.get("min"), None),
+                                 "max": _to_float(d.get("max"), None)})
                 else:
                     dims.append({"name": str(d), "min": None, "max": None})
             return dims, rows
@@ -1325,7 +1354,7 @@ class ParallelSeriesRenderer(SeriesRenderer):
         self._rows = []
         rows = self._raw_rows()
         dims, rows = self._dims(rows)
-        rows = [r for r in rows if all(_to_float(x) is not None for x in r)]
+        rows = [r for r in rows if all(_to_float(x, None) is not None for x in r)]
         if not dims or not rows:
             return
         n = len(dims)
@@ -1457,7 +1486,7 @@ class ThemeRiverSeriesRenderer(SeriesRenderer):
             v = item.get("value") if isinstance(item, dict) else item
             if not isinstance(v, (list, tuple)) or len(v) < 3:
                 continue
-            t, val, name = v[0], _to_float(v[1]), str(v[2])
+            t, val, name = v[0], _to_float(v[1], None), str(v[2])
             if val is None:
                 continue
             t = str(t)

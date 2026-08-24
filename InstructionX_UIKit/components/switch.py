@@ -10,12 +10,12 @@ from PySide6.QtCore import Qt, QVariantAnimation
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QAbstractButton
 
-from ..theme import T, ThemeManager, set_property
+from ..theme import T, ThemeManager
 from ..tokens import DURATION, EASING, TokenState
+from ._mixin import SizeMixin
 
 __all__ = ["Switch"]
 
-_SIZES = ("sm", "md")
 #: 各尺寸档 (宽, 高)
 _GEOMETRY = {"sm": (32, 16), "md": (44, 22)}
 
@@ -28,7 +28,7 @@ def _blend(c1: QColor, c2: QColor, ratio: float) -> QColor:
     return QColor(int(r), int(g), int(b))
 
 
-class Switch(QAbstractButton):
+class Switch(SizeMixin, QAbstractButton):
     """滑块开关。
 
     用途:
@@ -45,6 +45,10 @@ class Switch(QAbstractButton):
         sw.toggled.connect(lambda on: print("开关:", on))
         sw.setChecked(False)
     """
+
+    #: 合法尺寸档（SizeMixin 校验用）
+    _SIZES = ("sm", "md")
+    _size_label = "开关"
 
     def __init__(self, checked: bool = False, size: str = "md", parent=None):
         super().__init__(parent)
@@ -67,17 +71,10 @@ class Switch(QAbstractButton):
     # 尺寸
     # ------------------------------------------------------------------
 
-    def set_size(self, size: str) -> None:
-        """设置尺寸档：``sm`` / ``md``。"""
-        if size not in _SIZES:
-            raise ValueError(f"未知开关尺寸: {size!r}")
-        set_property(self, "size", size)
+    def _apply_size(self, size: str) -> None:
+        """SizeMixin 钩子：按尺寸档固定宽高。"""
         w, h = _GEOMETRY[size]
         self.setFixedSize(w, h)
-
-    def size_name(self) -> str:
-        """当前尺寸档名。"""
-        return self.property("uiksize") or "md"
 
     # ------------------------------------------------------------------
     # 动画

@@ -92,20 +92,28 @@ class Transfer(QWidget):
 
         self._all = []
         if items:
-            self.set_items(items)
+            self.set_items(items, emit=False)
 
     # ------------------------------------------------------------------
     # 数据接口
     # ------------------------------------------------------------------
 
-    def set_items(self, items) -> None:
-        """设置全部条目（重置为：全部在源列表）。"""
+    def set_items(self, items, emit: bool = True) -> None:
+        """设置全部条目（重置为：全部在源列表，目标列表清空）。
+
+        参数:
+            items: 新条目（重置后全部位于源列表）。
+            emit: 是否发射 ``changed`` 信号。构造路径传 ``False``，
+                此时静默重置——``changed`` 仅在构造完成后的变更时发射
+                （构造期间连接监听的应用收不到初始事件是预期行为）。
+        """
         self._all = [str(x) for x in items]
         self._source.clear()
         self._target.clear()
         for text in self._all:
             QListWidgetItem(text, self._source)
-        self._emit_changed()
+        if emit:
+            self._emit_changed()
 
     def source_items(self) -> list:
         """源列表条目文案。"""

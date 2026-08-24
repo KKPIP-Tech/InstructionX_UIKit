@@ -38,6 +38,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QFileDialog
 
 from ..theme import T
+from ._utils import clamp as _clamp, to_float as _to_float
 from .axes import GridCoord, chart_font, format_value, nice_ticks
 from .core import parse_data_point, register_component
 
@@ -50,20 +51,8 @@ __all__ = [
 ]
 
 
-def _to_float(v, default=None):
-    """宽松数值转换，失败返回 default。"""
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return default
-
-
-def _clamp(v, lo, hi):
-    return min(max(v, lo), hi)
-
-
 # ---------------------------------------------------------------------------
-# dataZoom
+# dataZoom（数值工具 _to_float / _clamp 统一见 charts._utils）
 # ---------------------------------------------------------------------------
 
 class DataZoomComponent(QObject):
@@ -83,6 +72,10 @@ class DataZoomComponent(QObject):
     重建时旧过滤器会被移除，不会累积）；拖拽平移与滑块拖动经
     on_mouse_press / move / release 钩子。toolbox 的 dataZoom 开关经
     ``chart.datazoom_enabled`` 属性关闭 inside 交互（slider 常可用）。
+
+    **与 brush 共存时的显式优先级**：option 同时配置 brush 时，plot 内
+    左键拖拽归 brush（矩形刷选），inside 仅保留滚轮缩放、不再响应拖拽
+    平移（见 ``on_mouse_press`` 的 ``_brush_active`` 判断）。
     """
 
     option_key = "dataZoom"
@@ -174,6 +167,7 @@ class DataZoomComponent(QObject):
         self.start = self.init_start
         self.end = self.init_end
         self.apply()
+        self.chart.invalidate_layout()  # 窗口变化 → 失效布局缓存
         self.chart.update()
 
     # -- 布局 / 绘制（slider） ---------------------------------------------
@@ -275,6 +269,7 @@ class DataZoomComponent(QObject):
             self.end = 100.0
         self.start = _clamp(self.start, 0.0, 96.0)
         self.apply()
+        self.chart.invalidate_layout()  # 窗口变化 → 失效布局缓存
         self.chart.update()
 
     def _pan(self, dx_px: float) -> None:
@@ -287,9 +282,15 @@ class DataZoomComponent(QObject):
         self.start += shift
         self.end += shift
         self.apply()
+        self.chart.invalidate_layout()  # 窗口变化 → 失效布局缓存
         self.chart.update()
 
     # -- 鼠标钩子 ------------------------------------------------------------
+    def _brush_active(self) -> bool:
+        """option 同时配置 brush 时返回 True（左键拖拽让位给刷选，见类 docstring）。"""
+        return any(getattr(c, "option_key", "") == "brush"
+                   for c in self.chart.components)
+
     def on_mouse_press(self, pos: QPointF) -> bool:
         if self.has_slider and not self._track.isNull():
             grab = 6.0
@@ -305,7 +306,8 @@ class DataZoomComponent(QObject):
             if mid.contains(pos):
                 self._drag = ("move", pos.x())
                 return True
-        if self._inside_enabled() and self._plot().contains(pos):
+        if self._inside_enabled() and not self._brush_active() \
+                and self._plot().contains(pos):
             self._drag = ("pan", pos.x())
             return True
         return False
@@ -323,6 +325,7 @@ class DataZoomComponent(QObject):
                 self.end = max(pct, self.start + 2.0)
             self._update_handles()
             self.apply()
+            self.chart.invalidate_layout()  # 窗口变化 → 失效布局缓存
             self.chart.update()
         elif kind == "move":
             dx = pos.x() - last_x
@@ -333,6 +336,7 @@ class DataZoomComponent(QObject):
             self.end = self.start + span
             self._update_handles()
             self.apply()
+            self.chart.invalidate_layout()  # 窗口变化 → 失效布局缓存
             self.chart.update()
         elif kind == "pan":
             self._pan(pos.x() - last_x)
@@ -354,7 +358,7 @@ class DataZoomComponent(QObject):
 # ---------------------------------------------------------------------------
 
 class BrushComponent(QObject):
-    """矩形刷选：Grid 上拖出半透明框，命中数据点集合。
+    """矩形刷选：Grid 上拖出半透明框，命中数据点集合并高亮（CHART_SPEC §5）。
 
     option::
 
@@ -363,13 +367,21 @@ class BrushComponent(QObject):
     松开后命中点列表存入 ``self.selected_items``（元素为
     {"series", "dataIndex", "value", "x"}），并发出 ``selected(list)``
     信号；配置了 ``outOfBrush`` 时框外区域以背景色降透明遮罩。
-    再次按下开始新一次刷选并清空旧选区。
+    再次按下开始新一次刷选并清空旧选区。选中点由 ``paint`` 绘制高亮环
+    （系列色描边 + 加亮，选中集与未选中集视觉区分）。
+
+    **与 dataZoom inside 共存时的显式优先级**：本组件配置后 plot 内左键
+    拖拽归刷选，dataZoom inside 仅保留滚轮缩放（见 DataZoomComponent 的
+    ``_brush_active`` 判断）。
     """
 
     option_key = "brush"
 
     #: 刷选完成信号：list[{"series","dataIndex","value","x"}]
     selected = Signal(list)
+
+    #: 选中点高亮环半径（px）
+    HIGHLIGHT_R = 7.0
 
     def __init__(self, chart, opt):
         super().__init__()
@@ -418,7 +430,11 @@ class BrushComponent(QObject):
         return True
 
     def _collect(self) -> None:
-        """统计选框内的数据点（经 parse_data_point + coord 映射，通用各系列）。"""
+        """统计选框内的数据点（经 parse_data_point + coord 映射，通用各系列）。
+
+        dataZoom category 窗口：先判断数据点是否落在当前窗口内，窗外点
+        直接跳过（不映射，避免坍缩到边缘 band 被误选）。
+        """
         self.selected_items = []
         coord = self.chart.primary_coord()
         if self._rect is None or not isinstance(coord, GridCoord):
@@ -430,6 +446,11 @@ class BrushComponent(QObject):
                 x, y = parse_data_point(item, i)
                 if y is None:
                     continue
+                if coord.x_axis.type == "category":
+                    idx = coord.x_axis.local_index(x)
+                    n = len(coord.x_axis.categories)
+                    if not (0 <= idx < n):
+                        continue  # 窗口外数据点跳过（不映射，防坍缩误选）
                 try:
                     pt = coord.map_point(x, y)
                 except Exception:
@@ -439,7 +460,34 @@ class BrushComponent(QObject):
                         "series": r.name, "dataIndex": i, "value": y, "x": x,
                     })
 
+    def _highlight_points(self) -> list:
+        """选中点像素位置列表 [(QPointF, QColor)]（绘制高亮用；系列已隐藏
+        或映射失败的条目跳过）。"""
+        out = []
+        coord = self.chart.primary_coord()
+        if not isinstance(coord, GridCoord):
+            return out
+        renderers = {r.name: r for r in self.chart.series_renderers}
+        for item in self.selected_items:
+            r = renderers.get(item.get("series"))
+            if r is None or not r.visible:
+                continue
+            y = item.get("value")
+            if y is None:
+                continue
+            try:
+                pt = coord.map_point(item.get("x"), y)
+            except Exception:
+                continue
+            if not coord.plot.adjusted(-2, -2, 2, 2).contains(pt):
+                continue
+            out.append((pt, r.color()))
+        return out
+
     def paint(self, p: QPainter, anim_t: float = 1.0) -> None:
+        # 选中点高亮（无论选框是否仍在，选中集持续可见）
+        if self.selected_items:
+            self._paint_highlight(p)
         if self._rect is None or self._rect.isNull():
             return
         plot = self._plot()
@@ -469,6 +517,24 @@ class BrushComponent(QObject):
         p.drawRect(rect)
         p.restore()
 
+    def _paint_highlight(self, p: QPainter) -> None:
+        """绘制选中点高亮：系列色描边环 + 亮色内芯（CHART_SPEC §5）。"""
+        p.save()
+        r = self.HIGHLIGHT_R
+        for pt, color in self._highlight_points():
+            ring = QColor(color)
+            ring.setAlpha(200)
+            pen = QPen(ring, 1.8)
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            p.drawEllipse(pt, r, r)
+            core = QColor(color).lighter(140)
+            core.setAlpha(120)
+            p.setPen(Qt.NoPen)
+            p.setBrush(core)
+            p.drawEllipse(pt, r * 0.45, r * 0.45)
+        p.restore()
+
     def layout(self, rect: QRectF) -> None:
         pass
 
@@ -492,6 +558,8 @@ class VisualMapComponent:
     ``map_color(v)`` 为公共方法：系列（map / heatmap 等）经
     ``chart.components`` 查找本组件调用。colors 缺省为
     primary.subtle → primary（T() 实时取，主题感知）。
+
+    ``type: "piecewise"``（SPEC 标可选）按需后置，当前仅连续渐变。
     """
 
     option_key = "visualMap"
@@ -520,7 +588,7 @@ class VisualMapComponent:
 
     def map_color(self, v) -> QColor:
         """值 → 颜色（按 min..max 归一后在色带上分段线性插值）。"""
-        fv = _to_float(v)
+        fv = _to_float(v, None)
         if fv is None:
             return QColor(T("color.bg.muted"))
         frac = _clamp((fv - self.min) / (self.max - self.min), 0.0, 1.0)

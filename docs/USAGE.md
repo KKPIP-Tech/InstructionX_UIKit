@@ -1,6 +1,6 @@
 # USAGE — InstructionX_UIKit 使用方法
 
-> 本文档覆盖安装、快速开始、主题系统、全部 57 个组件、12 个布局、52 个动画预设、图表引擎与蓝图（节点图）组件的最小可运行示例。
+> 本文档覆盖安装、快速开始、主题系统、全部 58 个组件、13 个布局、52 个动画预设、图表引擎与蓝图（节点图）组件的最小可运行示例。
 > 所有示例均与仓库真实 API 一致；离屏验证一律使用 `QT_QPA_PLATFORM=offscreen`。
 
 ## 目录
@@ -88,7 +88,7 @@ ThemeManager.instance().theme_changed.connect(lambda mode: self.update())
 ```python
 from InstructionX_UIKit.theme import T
 
-color = T("color.primary")       # "#3563E9"（亮）/ "#5B87F2"（暗）
+color = T("color.primary")       # "#3F5E8C"（亮）/ "#7C98C4"（暗）
 gap = T("space.4")               # 16
 radius = T("radius.md")          # 6
 shadow = T("shadow.md")          # {"blur": 16, "offset": (0, 4), "color": (16, 24, 40, 64)}
@@ -290,7 +290,7 @@ rt.set_read_only(True)                          # 展示模式
 
 ```python
 from InstructionX_UIKit.components.color_picker import ColorPicker
-cp = ColorPicker(color="#3563E9", size="md", show_text=True)
+cp = ColorPicker(color="#3F5E8C", size="md", show_text=True)
 cp.colorChanged.connect(lambda c: print(c.name()))
 ```
 
@@ -430,6 +430,12 @@ tl = Timeline(pending="进行中...")
 tl.add_item("创建订单", time="09:30")
 tl.add_item("支付成功", time="09:35", color="success")   # color: primary/success/warning/danger
 tl.add_item("发货", time="10:00", color="primary")
+# 绘制参数（可选）：轴线侧 / 线宽线型 / 节点半径 / 行距 / 字号
+tl.set_axis_side("right")            # "left"（默认）或 "right"
+tl.set_line(1.5, Qt.DashLine)
+tl.set_dot(6)
+tl.set_row_spacing(4)
+tl.set_fonts(title_size=14, time_size=11)
 ```
 
 **Statistic**（`statistic.py`）—— 统计数值卡。
@@ -523,6 +529,36 @@ pop = Popover(title="筛选", content=QLabel("条件区域"))
 pop.show_for(anchor_button, placement="bottom")    # top/bottom/left/right，空间不足自动翻转
 ```
 
+**MarkdownView**（`markdown_view.py`）—— Markdown 渲染（Qt 内置引擎，原生渲染，无 WebView）。
+
+```python
+from InstructionX_UIKit.components.markdown_view import MarkdownView
+view = MarkdownView("# 标题\n\n**加粗**、`行内代码`、表格、任务列表均支持")
+view.append_markdown("\n\n- 流式追加的一项")      # AI 逐 token 输出场景
+view.linkActivated.connect(print)                  # 点击链接信号（默认系统浏览器打开 http/https）
+```
+
+支持 CommonMark + 部分 GFM（表格 / 任务列表 / 删除线 / 代码围栏）。样式全部来自设计令牌：代码块为等宽字族 + `bg.subtle` 底色，文字颜色与正文一致，**不做语法高亮**。`variant="plain"` 为透明无边框变体（嵌入气泡 / 列表用）。无内容时显示空占位（`set_empty_text()` 可改）。已知限制：脚注 / 内嵌 HTML 不支持，网络图片不加载。
+
+**LaTeX 数学公式**：支持 `$...$` 行内公式、`$$...$$` / `\[...\]` / `\(...\)` 与 `\begin{equation}` 等环境的块级公式。公式由 matplotlib mathtext 引擎在后台线程异步渲染为透明底图片（2x 超采样，高 DPI 清晰），结果按（源码, 颜色, 字号）LRU 缓存（上限 512 条）——流式追加触发全文重渲染时命中缓存零耗时。渲染期间公式以等宽源码占位，完成后自动重排；渲染失败回退为源码显示。代码围栏 / 行内代码中的 `$...$` 不会被当作公式，货币写法（`$5`）遵循 Pandoc 规则不误判。块级公式独占段落时自动居中。主题切换后公式按新文本色自动重绘。
+
+**Mermaid 图表**：闭合的 ` ```mermaid ` 代码围栏渲染为**交互式图表**（`MermaidView` 查看器叠加在文档中的图位上）：拖动平移、Ctrl+滚轮缩放（普通滚轮留给页面滚动）、右上角工具条（放大 / 缩小 / 复位 / 适宽），像 GitHub 的 Mermaid 展示一样可随意调整。图位块级居中，按视口可用宽度的 80% 适配，视口尺寸变化时自动重适配。渲染由 `InstructionX_UIKit.mermaid` 子包完成：默认经 QWebEnginePage 执行**官方 mermaid.js**（v10.9.3，随包分发不联网；这是项目内唯一破例使用 Web 技术的位置），排版与光栅化都在 Chromium 内完成（SVG → canvas 2x → PNG，透明底）——官方全量图型可用（flowchart、sequenceDiagram、pie、gantt、classDiagram、stateDiagram、erDiagram、mindmap 等），且与官方渲染逐像素一致；WebEngine 不可用时自动降级为内置 QPainter 自绘渲染器（flowchart / sequenceDiagram / pie 子集，查看器降级为自绘画布，交互保留）。渲染经 LRU 缓存 + 后台异步执行，与公式共享同一套占位 → 就地资源替换管线；流式追加中未闭合的 mermaid 围栏按普通代码块降级显示，闭合后重排为图表。图表颜色全部来自主题令牌（mermaid `theme: 'base'` + `themeVariables`），主题切换自动重绘。语法错误时显示失败占位图（不叠加查看器）。已知限制：`erDiagram` 中含中文的实体名 / 关系标签需加双引号；WebEngine 首次渲染有页面加载延迟（后续命中缓存零耗时）。
+
+`MermaidView` 也可脱离 MarkdownView 单独使用（交互查看器）：
+
+```python
+from InstructionX_UIKit.mermaid import MermaidView
+v = MermaidView("flowchart LR\n    A[开始] --> B[结束]")
+v.render_failed.connect(print)     # 语法错误信号；rendered() 为成功信号（无参数，尺寸经 v.natural_size() 获取）
+```
+
+注意：`QWebEngineView` 基于 Qt Quick RHI（Windows 默认 Direct3D11）。若同一顶层窗口里还有 `QOpenGLWidget`（如蓝图 GL 视口）或无边框半透明窗口导致合成走 OpenGL，需在 `QApplication` 创建前统一图形 API：
+
+```python
+from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
+QQuickWindow.setGraphicsApi(QSGRendererInterface.GraphicsApi.OpenGL)
+```
+
 ### 4.3 导航与反馈
 
 **Tabs**（`tabs.py`）—— 标签页：line / card / segmented 三种样式。
@@ -607,6 +643,12 @@ steps = Steps(orientation=Qt.Horizontal)
 steps.set_steps(["填写信息", "确认订单", {"title": "支付", "description": "扫码或刷卡"}])
 steps.set_current(1)                  # 之前自动 finish，当前 process，之后 wait
 steps.set_status(2, "error")          # wait/process/finish/error
+steps.clear_status(2)                 # 清除显式状态，恢复按 current 推导
+# 绘制参数（可选）：节点半径 / 连接线宽线型 / 字号
+steps.set_node(10)
+steps.set_link(1.5, Qt.DashLine)
+steps.set_fonts(title_size=14, desc_size=12)
+steps.steps()                         # 归一化步骤副本；steps.orientation() 返回方向
 ```
 
 **Alert**（`alert.py`）—— 警告提示条。
@@ -745,6 +787,7 @@ w = TopNavBar()                   # 不传内容：结构 + 空占位
 | `create_centered_container(...)` | `title` / `subtitle` / `actions` / `cards=[(标题, 描述, 色块键)]` / `note` |
 | `create_waterfall(...)` | `items=[(标题, 色块键, 档位2-6[, 元信息])]`（或 QWidget） |
 | `create_media_left_right(...)` | `sections=[(标题, 正文, 色块键)]` / `link_text` |
+| `create_chat_conversation(...)` | `messages=[{"role": "user"/"assistant", "content": markdown, "info": 自定义文案}]` / `show_input`；`add_message(info=...)` / `append_to_message()` 流式追加 / `finish_message()` 冻结计时 / `update_message()` 整体替换 / `set_message_stats()` 覆盖统计 / `set_message_info()` 更新 AI 气泡自定义文案 / `set_actions_always_visible()`；气泡操作条（复制 / 删除 / 编辑 / 重新生成 / 继续生成）；信号 `messageSubmitted` / `messageDeleted` / `messageEdited` / `regenerateRequested` / `continueRequested` |
 
 | 函数 | 适用场景 |
 |---|---|
@@ -760,6 +803,22 @@ w = TopNavBar()                   # 不传内容：结构 + 空占位
 | `create_centered_container()` | 内容限宽 960 的居中容器页 |
 | `create_waterfall()` | 瀑布流：2-4 列不等高卡片 |
 | `create_media_left_right()` | 产品介绍页：图左文右 / 图右文左交替段落 |
+| `create_chat_conversation()` | AI 对话页：Markdown 消息气泡 + 流式追加 + 气泡操作条 + 底部输入区 |
+
+**流式对话的气泡操作条**：每个气泡底部悬停显现一行操作条（`set_actions_always_visible(True)` 可常显）。左侧为统计文案「约 N tokens」（AI 消息追加「· M tok/s · 用时 X.Xs」，token 数为启发式估算，可用 `set_message_stats()` 传入真实值覆盖）；AI 消息可在统计区最前段显示开发者自定义文案（`add_message(..., info="模型名")` 或 `set_message_info(index, text)`，如模型名称、运行状态，流式途中可多次更新）。右侧图标按钮：共有复制 / 删除，AI 消息加重新生成 / 继续生成，用户消息加编辑（内联编辑）。流式输出结束时调用 `finish_message(index)` 冻结计时。
+
+```python
+conv = create_chat_conversation()
+idx = conv.add_message("assistant", "", info="InstructionX-Lite")
+for chunk in stream:                      # 逐 token 追加
+    conv.append_to_message(idx, chunk)
+conv.finish_message(idx)                  # 冻结「用时」统计
+conv.set_message_info(idx, "已完成")       # 更新自定义文案（如运行状态流转）
+conv.regenerateRequested.connect(         # 操作条「重新生成」
+    lambda i: conv.update_message(i, "")) #   → 清空后重新流式追加
+conv.messageEdited.connect(lambda i, t: print("编辑为:", t))
+conv.messageDeleted.connect(lambda i: print("删除了第", i, "条（索引已前移）"))
+```
 
 ## 6. 动画用法
 
@@ -781,6 +840,7 @@ animp.mask_reveal(banner, direction="circle")           # 遮罩揭示：right/l
 animp.hover_lift(card, dy=4)                            # 悬停上浮 + 阴影（装事件过滤器）
 h = animp.button_morph_loading(submit_btn); h.restore() # 按钮收缩为方块呼吸；restore() 还原
 animp.ripple(primary_btn)                               # 点击涟漪叠加层
+animp.clear_ripple(primary_btn)                         # 清除涟漪滤镜与叠加层（演示重放 / 场景重置用）
 animp.switch_toggle(switch_btn)                         # 按压回弹 + 切换选中态
 animp.pulse(icon, loops=3)                              # 心跳缩放
 animp.bounce(ok_icon)                                   # 弹跳（OutBounce）
@@ -790,7 +850,7 @@ animp.flash_highlight(row, times=2)                     # 高亮闪烁（默认 
 animp.float_loop(tip_card)                              # 无限上下漂浮
 animp.pulse_glow(avatar)                                # 阴影半径呼吸（辉光）
 animp.breathing(tip_label)                              # 透明度呼吸
-animp.gradient_flow(panel, colors=["#3563E9", "#1E9E6A"])  # 背景渐变流动
+animp.gradient_flow(panel, colors=["#3F5E8C", "#3E7E5F"])  # 背景渐变流动（无限循环，用 anim.restore() 还原）
 animp.gradient_text_flow(title_label)                   # 文字逐字渐变流动
 animp.cross_fade(stacked, index=1)                      # 页面交叉淡化（或 a 淡出 b 淡入）
 animp.page_transition(stacked, 1, kind="slide")         # QStackedWidget 切页 fade/slide
@@ -826,7 +886,7 @@ sh = StickyHeader(); sh.setHeaderWidget(bar); sh.setBody(body, cover_height=120)
 ScrollProgressBar(area=scroll_area, height=4)            # 滚动进度条
 st = ScrollStoryArea(); st.addStep("第一步", "准备环境")   # 滚动驱动叙事时间线
 MarqueeLabel(text="很长很长的公告文本", speed=1.6)        # 跑马灯
-FluidBackground(colors=["#3563E9", "#1E9E6A"], blobs=3)  # 流体渐变背景
+FluidBackground(colors=["#3F5E8C", "#3E7E5F"], blobs=3)  # 流体渐变背景
 TypewriterLabel(text="逐字打出这段话", interval=60)       # 打字机
 TextDecodeLabel(text="解码这段文字")                      # 乱码→明文解码
 nr = NumberRollLabel(value=0, decimals=0, prefix="¥"); nr.setValue(12800)   # 数字滚动 count-up
@@ -1158,7 +1218,7 @@ Demo 蓝图页的「运行」按 exec 链拓扑序用 QTimer 逐节点模拟（�
 
 画布绘制由内部视口承载，**运行时自动选择后端，调用方无需修改任何代码**：
 
-- **GL 后端（默认，可用时）**：视口为 `QOpenGLWidget`，背景 / 网格 / 边 / 节点位图合成走 GPU；无可见自定义体（`body_builder`）的节点以缓存位图代理由视口统一绘制，平移 / 缩放 / 拖动期间节点内容零重绘，高分辨率（4K+）与大节点量场景显著流畅。带可见自定义体的节点自动回退为真实控件渲染。
+- **GL 后端（默认，可用时）**：视口为 `QOpenGLWidget`，背景 / 网格 / 边 / 节点位图合成走 GPU；无可见自定义体（`body_builder`）的节点以缓存位图代理由视口统一绘制，平移 / 缩放 / 拖动期间节点内容零重绘，高分辨率（4K+）与大节点量场景显著流畅。带可见自定义体的节点平时回退为真实控件渲染，但**视图手势（平移 / 滚轮缩放 / 节点拖动）期间同样临时切换为位图代理**——手势开始时抓取含自定义体的整节点冻结位图交由视口绘制，真实子控件暂时隐藏，手势结束（平移或拖动释放 / 缩放停顿 150ms）自动恢复真实控件并补偿几何落位。该优化使带体节点在最大化窗口下的平移帧耗从约 76ms 降至约 15ms、单节点拖动从约 140ms 降至约 15ms（11 节点实测）。
 - **软件后端（自动回退）**：无 GL 环境（含 `QT_QPA_PLATFORM=offscreen` 的测试环境）时使用普通 QWidget 视口，行为与历史版本一致，离屏测试与截图回归不受影响。
 
 环境变量 `UIKIT_BLUEPRINT_GL` 可控制后端选择：`auto`（默认，自动探测）/ `on`（强制尝试，失败仍回退并记 WARNING）/ `off`（强制软件渲染，可用于排查显示问题）。
@@ -1169,6 +1229,8 @@ os.environ["UIKIT_BLUEPRINT_GL"] = "off"   # 在 QApplication 创建前设置
 ```
 
 > **注意（GL 后端的 Qt 固有行为）**：`QOpenGLWidget` 加入**已可见**的顶层窗口时，Qt 会重建该窗口的原生句柄，表现为窗口短暂关闭后重开一次。建议像 Demo 的 `MainWindow` 一样，在顶层窗口 `show()` 之前创建 `BlueprintCanvas`（或至少预创建一次蓝图页面）；一次性创建并长期持有画布的应用不受影响。
+>
+> **无边框半透明顶层窗口**：`FramelessWindowHint` + `WA_TranslucentBackground` 的顶层窗口下，`QOpenGLWidget` 首帧可能把旧的合成结果送上屏幕（FBO 内容完整但节点不显示，任意一次重绘即恢复）。GL 视口已在 `showEvent` 中强制一次重绘规避该问题，调用方无需处理。
 
 ### 8.7 序列化
 

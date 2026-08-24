@@ -6,7 +6,7 @@
 """
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QKeySequence, QPainter, QPainterPath, QPen, QShortcut
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -22,9 +22,18 @@ from shiboken6 import isValid as _shiboken_is_valid
 
 
 def _connect_theme(widget, slot) -> None:
-    """连接主题切换信号；控件销毁后自动忽略回调。"""
-    ThemeManager.instance().theme_changed.connect(
-        lambda *_: slot() if _shiboken_is_valid(widget) else None)
+    """连接主题切换信号；组件销毁时断开连接（shiboken 守卫双保险）。"""
+    manager = ThemeManager.instance()
+    receiver = lambda *_: slot() if _shiboken_is_valid(widget) else None
+    manager.theme_changed.connect(receiver)
+
+    def _cleanup(_obj=None):
+        try:
+            manager.theme_changed.disconnect(receiver)
+        except (RuntimeError, TypeError):
+            pass
+
+    widget.destroyed.connect(_cleanup)
 
 __all__ = ["Tour"]
 
@@ -147,6 +156,11 @@ class Tour(QWidget):
         self._bubble.nextClicked.connect(self.next)
         if parent is not None:
             parent.installEventFilter(self)
+        # Esc 跳过：引导层本身不持有焦点，keyPressEvent 收不到按键，
+        # 用 QShortcut（窗口级）保证父窗口活动时 Esc 可达。
+        self._esc = QShortcut(QKeySequence(Qt.Key_Escape), self)
+        self._esc.setContext(Qt.WindowShortcut)
+        self._esc.activated.connect(self._on_escape)
         self.hide()
         _connect_theme(self, self.update)
 
@@ -243,9 +257,15 @@ class Tour(QWidget):
     def mousePressEvent(self, event) -> None:
         event.accept()  # 阻断点击穿透到被遮罩的控件
 
-    def keyPressEvent(self, event) -> None:
-        if event.key() == Qt.Key_Escape:
+    def _on_escape(self) -> None:
+        """Esc 快捷键回调（仅在引导进行中生效，避免误发 skipped）。"""
+        if self.is_running():
             self.skip()
+
+    def keyPressEvent(self, event) -> None:
+        # 兜底路径：引导层获得焦点时仍可 Esc 跳过
+        if event.key() == Qt.Key_Escape:
+            self._on_escape()
         else:
             super().keyPressEvent(event)
 
@@ -261,8 +281,10 @@ class Tour(QWidget):
             hole_path.addRoundedRect(hole.x(), hole.y(), hole.width(),
                                      hole.height(), radius, radius)
             painter.fillPath(full.subtracted(hole_path), _overlay_color())
-            # 高亮描边
-            pen = QPen(QColor(255, 255, 255, 230))
+            # 高亮描边（主色令牌，主题实时感知）
+            stroke = QColor(T("color.primary"))
+            stroke.setAlpha(230)
+            pen = QPen(stroke)
             pen.setWidthF(2.0)
             painter.setPen(pen)
             painter.setBrush(Qt.NoBrush)

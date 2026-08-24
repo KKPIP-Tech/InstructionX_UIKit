@@ -129,10 +129,10 @@ class Empty(QWidget):
         return btn
 
     def set_action_widget(self, widget: QWidget) -> None:
-        """用自定义控件填充操作槽。"""
+        """用自定义控件填充操作槽（替换旧控件，旧控件销毁）。"""
         while self._action_layout.count():
             item = self._action_layout.takeAt(0)
             if item.widget() is not None:
-                item.widget().setParent(None)
+                item.widget().deleteLater()
         self._action_layout.addWidget(widget, 0, Qt.AlignHCenter)
         self._action_host.setVisible(True)

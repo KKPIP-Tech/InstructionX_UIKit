@@ -195,6 +195,47 @@ def _draw_check(p: QPainter, color: QColor) -> None:
     _polyline(p, [(4.8, 12.6), (10, 17.6), (19.2, 7)])
 
 
+def _draw_copy(p: QPainter, color: QColor) -> None:
+    """复制：双矩形错位（前框 + 后框右上露边）。"""
+    _polyline(p, [(15, 8.8), (15, 5), (15, 4.2), (20, 4.2), (20, 13.2),
+                  (15.8, 13.2)])
+    _rect(p, 4, 8.8, 11, 11.4, 1.6)
+
+
+def _draw_trash(p: QPainter, color: QColor) -> None:
+    """删除：垃圾桶（盖 + 提手 + 桶身 + 两道竖痕）。"""
+    _line(p, 4.2, 6.6, 19.8, 6.6)
+    _polyline(p, [(9.4, 6.6), (9.4, 4.4), (14.6, 4.4), (14.6, 6.6)])
+    _polyline(p, [(6, 6.6), (6.8, 19.8), (17.2, 19.8), (18, 6.6)])
+    _line(p, 10, 10.4, 10, 16.4)
+    _line(p, 14, 10.4, 14, 16.4)
+
+
+def _draw_refresh(p: QPainter, color: QColor) -> None:
+    """重新生成：回旋箭头（3/4 圆弧 + 端部箭头）。"""
+    path = QPainterPath()
+    path.arcMoveTo(QRectF(4.8, 4.8, 14.4, 14.4), 50)
+    path.arcTo(QRectF(4.8, 4.8, 14.4, 14.4), 50, 290)
+    p.drawPath(path)
+    _polyline(p, [(14.6, 3.6), (19.2, 5.1), (17.4, 9.6)])
+
+
+def _draw_play(p: QPainter, color: QColor) -> None:
+    """继续生成：三角播放（描边圆角三角）。"""
+    path = QPainterPath(QPointF(9, 6.2))
+    path.lineTo(QPointF(18.6, 12))
+    path.lineTo(QPointF(9, 17.8))
+    path.closeSubpath()
+    p.drawPath(path)
+
+
+def _draw_edit(p: QPainter, color: QColor) -> None:
+    """编辑：铅笔（斜笔身 + 笔尖 + 底线）。"""
+    _polyline(p, [(14.8, 5.4), (18.6, 9.2), (9.6, 18.2), (5.2, 18.8),
+                  (5.8, 14.4), (14.8, 5.4)])
+    _line(p, 12.8, 7.4, 16.6, 11.2)
+
+
 #: 图标注册表：名称 -> 绘制函数
 _DRAWERS = {
     "home": _draw_home,
@@ -213,6 +254,11 @@ _DRAWERS = {
     "info": _draw_info,
     "warning": _draw_warning,
     "check": _draw_check,
+    "copy": _draw_copy,
+    "trash": _draw_trash,
+    "refresh": _draw_refresh,
+    "play": _draw_play,
+    "edit": _draw_edit,
 }
 
 #: 全部可用图标名（注册表键的有序列表）

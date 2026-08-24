@@ -13,9 +13,18 @@ from shiboken6 import isValid as _shiboken_is_valid
 
 
 def _connect_theme(widget, slot) -> None:
-    """连接主题切换信号；控件销毁后自动忽略回调。"""
-    ThemeManager.instance().theme_changed.connect(
-        lambda *_: slot() if _shiboken_is_valid(widget) else None)
+    """连接主题切换信号；组件销毁时断开连接（shiboken 守卫双保险）。"""
+    manager = ThemeManager.instance()
+    receiver = lambda *_: slot() if _shiboken_is_valid(widget) else None
+    manager.theme_changed.connect(receiver)
+
+    def _cleanup(_obj=None):
+        try:
+            manager.theme_changed.disconnect(receiver)
+        except (RuntimeError, TypeError):
+            pass
+
+    widget.destroyed.connect(_cleanup)
 
 __all__ = ["Anchor"]
 
@@ -42,6 +51,7 @@ class Anchor(QWidget):
         self._buttons = {}        # key -> QPushButton
         self._current = None
         self._scroll_area = None
+        self._scroll_conn = None  # 滚动条 valueChanged 连接（重绑时断开）
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(0)
@@ -81,9 +91,22 @@ class Anchor(QWidget):
                        for k, t, w in self._items]
 
     def bind_scroll_area(self, area: QScrollArea) -> None:
-        """绑定滚动区域，滚动时自动高亮当前段落。"""
+        """绑定滚动区域，滚动时自动高亮当前段落。
+
+        重复绑定时断开旧滚动条的连接，避免旧信号仍驱动高亮
+        （行为错位 / 双触发）。
+        """
+        if self._scroll_area is not None \
+                and _shiboken_is_valid(self._scroll_area) \
+                and self._scroll_conn is not None:
+            try:
+                self._scroll_area.verticalScrollBar().valueChanged.disconnect(
+                    self._scroll_conn)
+            except (RuntimeError, TypeError):
+                pass
         self._scroll_area = area
-        area.verticalScrollBar().valueChanged.connect(self._on_scroll)
+        self._scroll_conn = area.verticalScrollBar().valueChanged.connect(
+            self._on_scroll)
 
     def set_current(self, key: str) -> None:
         """设置当前高亮锚点。"""

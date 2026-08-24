@@ -57,6 +57,7 @@ class RadioGroup(QButtonGroup):
         super().__init__(parent)
         self.setExclusive(exclusive)
         self._auto_id = 0
+        self._owned_buttons = []  # 字符串创建的按钮（组内保活，防 GC）
 
     # ------------------------------------------------------------------
     # 按钮管理
@@ -67,13 +68,20 @@ class RadioGroup(QButtonGroup):
 
         参数:
             button: ``RadioButton`` 实例或选项文案。
-            id: 业务 id，缺省时自增分配。
+            id: 业务 id（整数），缺省时自增分配；非整数抛 ``ValueError``。
 
         返回:
             添加的按钮实例。
+
+        备注:
+            由字符串创建的按钮没有外部引用，由组持有保活（无父控件的
+            按钮被垃圾回收后 C++ 对象随之销毁，会从界面消失）。
         """
+        if id is not None and not isinstance(id, int):
+            raise ValueError(f"非法单选按钮 id: {id!r}，应为整数")
         if isinstance(button, str):
             button = RadioButton(button)
+            self._owned_buttons.append(button)
         if id is None:
             self._auto_id += 1
             id = self._auto_id

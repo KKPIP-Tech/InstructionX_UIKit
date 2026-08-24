@@ -118,7 +118,7 @@ class Dialog(QDialog):
         self.set_content(label)
 
     def set_content(self, widget: QWidget) -> None:
-        """设置内容区控件（替换原有内容）。"""
+        """设置内容区控件（替换原有内容，旧控件销毁）。"""
         while self._body_layout.count():
             item = self._body_layout.takeAt(0)
             w = item.widget()
@@ -164,7 +164,11 @@ class Dialog(QDialog):
 
 
 def _track(dlg: Dialog) -> None:
-    """持有非阻塞对话框引用，finished 后释放。"""
+    """持有非阻塞对话框引用，finished / destroyed 后释放。
+
+    仅 finished 会漏掉直接 deleteLater 的路径（死包装器残留），
+    补连 destroyed 双保险。
+    """
     _OPEN_DIALOGS.append(dlg)
 
     def _release(*_):
@@ -172,3 +176,4 @@ def _track(dlg: Dialog) -> None:
             _OPEN_DIALOGS.remove(dlg)
 
     dlg.finished.connect(_release)
+    dlg.destroyed.connect(_release)

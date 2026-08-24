@@ -111,7 +111,7 @@ class SidebarLayout(QWidget):
         lay.addSpacing(T("space.3"))
 
         self.nav_buttons = []
-        self._nav_buttons = []
+        self._nav_items = []  # 私有：(按钮, 图标名, 文本) 三元组，区别于公开的 nav_buttons
         first = None
         for icon_name, text in nav_items:
             btn = QToolButton()
@@ -121,7 +121,7 @@ class SidebarLayout(QWidget):
             btn.setIconSize(QSize(_NAV_ICON_SIZE, _NAV_ICON_SIZE))
             btn.toggled.connect(self._refresh_nav_icons)
             lay.addWidget(btn)
-            self._nav_buttons.append((btn, icon_name, text))
+            self._nav_items.append((btn, icon_name, text))
             self.nav_buttons.append(btn)
             if first is None:
                 first = btn
@@ -162,7 +162,7 @@ class SidebarLayout(QWidget):
         self._sidebar.setFixedWidth(_COLLAPSED_WIDTH if collapsed else _EXPANDED_WIDTH)
         self._brand.setVisible(not collapsed and bool(self._brand.text()))
         self._center_logo(collapsed)
-        for btn, _icon_name, text in self._nav_buttons:
+        for btn, _icon_name, text in self._nav_items:
             policy = btn.sizePolicy()
             if collapsed:
                 btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
@@ -184,7 +184,7 @@ class SidebarLayout(QWidget):
 
     def _refresh_nav_icons(self, *_args):
         """按选中态与当前主题重建导航图标（选中主色，未选中次要文本色）。"""
-        for btn, icon_name, _text in self._nav_buttons:
+        for btn, icon_name, _text in self._nav_items:
             key = "color.primary" if btn.isChecked() else "color.text.secondary"
             btn.setIcon(get_icon(icon_name, _NAV_ICON_SIZE, T(key)))
 
