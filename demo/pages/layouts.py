@@ -112,7 +112,7 @@ def _build_chat_conversation() -> QWidget:
     def _on_submit(text):
         user_idx = conv.add_message("user", text)
         conv.finish_message(user_idx)
-        idx = conv.add_message("assistant", "")
+        idx = conv.add_message("assistant", "", info="InstructionX-Lite")
         _stream_reply(idx, samples.CHAT_STREAM_REPLY)
 
     def _on_regenerate(index):

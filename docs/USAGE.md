@@ -787,7 +787,7 @@ w = TopNavBar()                   # 不传内容：结构 + 空占位
 | `create_centered_container(...)` | `title` / `subtitle` / `actions` / `cards=[(标题, 描述, 色块键)]` / `note` |
 | `create_waterfall(...)` | `items=[(标题, 色块键, 档位2-6[, 元信息])]`（或 QWidget） |
 | `create_media_left_right(...)` | `sections=[(标题, 正文, 色块键)]` / `link_text` |
-| `create_chat_conversation(...)` | `messages=[{"role": "user"/"assistant", "content": markdown}]` / `show_input`；`add_message()` / `append_to_message()` 流式追加 / `finish_message()` 冻结计时 / `update_message()` 整体替换 / `set_message_stats()` 覆盖统计 / `set_actions_always_visible()`；气泡操作条（复制 / 删除 / 编辑 / 重新生成 / 继续生成）；信号 `messageSubmitted` / `messageDeleted` / `messageEdited` / `regenerateRequested` / `continueRequested` |
+| `create_chat_conversation(...)` | `messages=[{"role": "user"/"assistant", "content": markdown, "info": 自定义文案}]` / `show_input`；`add_message(info=...)` / `append_to_message()` 流式追加 / `finish_message()` 冻结计时 / `update_message()` 整体替换 / `set_message_stats()` 覆盖统计 / `set_message_info()` 更新 AI 气泡自定义文案 / `set_actions_always_visible()`；气泡操作条（复制 / 删除 / 编辑 / 重新生成 / 继续生成）；信号 `messageSubmitted` / `messageDeleted` / `messageEdited` / `regenerateRequested` / `continueRequested` |
 
 | 函数 | 适用场景 |
 |---|---|
@@ -805,14 +805,15 @@ w = TopNavBar()                   # 不传内容：结构 + 空占位
 | `create_media_left_right()` | 产品介绍页：图左文右 / 图右文左交替段落 |
 | `create_chat_conversation()` | AI 对话页：Markdown 消息气泡 + 流式追加 + 气泡操作条 + 底部输入区 |
 
-**流式对话的气泡操作条**：每个气泡底部悬停显现一行操作条（`set_actions_always_visible(True)` 可常显）。左侧为统计文案「约 N tokens」（AI 消息追加「· M tok/s · 用时 X.Xs」，token 数为启发式估算，可用 `set_message_stats()` 传入真实值覆盖）；右侧图标按钮：共有复制 / 删除，AI 消息加重新生成 / 继续生成，用户消息加编辑（内联编辑）。流式输出结束时调用 `finish_message(index)` 冻结计时。
+**流式对话的气泡操作条**：每个气泡底部悬停显现一行操作条（`set_actions_always_visible(True)` 可常显）。左侧为统计文案「约 N tokens」（AI 消息追加「· M tok/s · 用时 X.Xs」，token 数为启发式估算，可用 `set_message_stats()` 传入真实值覆盖）；AI 消息可在统计区最前段显示开发者自定义文案（`add_message(..., info="模型名")` 或 `set_message_info(index, text)`，如模型名称、运行状态，流式途中可多次更新）。右侧图标按钮：共有复制 / 删除，AI 消息加重新生成 / 继续生成，用户消息加编辑（内联编辑）。流式输出结束时调用 `finish_message(index)` 冻结计时。
 
 ```python
 conv = create_chat_conversation()
-idx = conv.add_message("assistant", "")
+idx = conv.add_message("assistant", "", info="InstructionX-Lite")
 for chunk in stream:                      # 逐 token 追加
     conv.append_to_message(idx, chunk)
 conv.finish_message(idx)                  # 冻结「用时」统计
+conv.set_message_info(idx, "已完成")       # 更新自定义文案（如运行状态流转）
 conv.regenerateRequested.connect(         # 操作条「重新生成」
     lambda i: conv.update_message(i, "")) #   → 清空后重新流式追加
 conv.messageEdited.connect(lambda i, t: print("编辑为:", t))

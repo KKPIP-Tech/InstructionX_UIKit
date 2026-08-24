@@ -16,7 +16,8 @@
 ``continueRequested`` 信号，AI 逻辑由调用方承载。
 
 **API 驱动，无内置假数据**：消息列表由调用方以
-``[{"role": "user" | "assistant", "content": "<markdown>"}, ...]``
+``[{"role": "user" | "assistant", "content": "<markdown>",
+"info": "<自定义文案，仅 AI 气泡展示>"}, ...]``
 传入；全部为空时显示优雅的空占位（「暂无对话」）。
 
 滚动跟随：追加内容时若滚动条在底部则自动跟随，用户上翻后不打断。
@@ -360,7 +361,9 @@ class ChatConversation(QWidget):
 
     参数:
         messages: 初始消息列表，每项 ``{"role": "user" | "assistant",
-            "content": "<markdown 文本>"}``；为空显示空占位。
+            "content": "<markdown 文本>"}``，可选 ``"info"`` 为开发者
+            自定义文案（仅 AI 气泡展示，如模型名称、运行状态）；
+            为空显示空占位。
         show_input: 是否显示底部输入区（TextArea + 发送按钮）。
         parent: 父控件。
 
@@ -476,17 +479,30 @@ class ChatConversation(QWidget):
             content = msg.get("content")
             if content is None:
                 content = ""
-            normalized.append((role, str(content)))
+            info = msg.get("info")
+            if info is None:
+                info = ""
+            normalized.append((role, str(content), str(info)))
         self.clear_messages()
-        for role, content in normalized:
-            self.add_message(role, content)
+        for role, content, info in normalized:
+            self.add_message(role, content, info=info)
 
-    def add_message(self, role: str, content: str = "") -> int:
-        """追加一条消息，返回消息索引（供 ``append_to_message`` 使用）。"""
+    def add_message(self, role: str, content: str = "", info: str = None) -> int:
+        """追加一条消息，返回消息索引（供 ``append_to_message`` 使用）。
+
+        参数:
+            role: ``"user"`` 或 ``"assistant"``。
+            content: Markdown 消息内容。
+            info: 开发者自定义文案（仅 AI 气泡展示，如模型名称、
+                运行状态），显示在操作条统计区的最前段；可用
+                ``set_message_info`` 随时更新。
+        """
         if role not in _ROLES:
             raise ValueError(f"未知消息角色: {role!r}，应为 {_ROLES} 之一")
         if content is None:
             content = ""
+        if info is None:
+            info = ""
         self._hide_placeholder()
         bubble = _Bubble(role, str(content))
         bubble._controller = self
@@ -495,7 +511,8 @@ class ChatConversation(QWidget):
         # 气泡文档尺寸变化（流式追加 / 公式图片就绪）后保持底部跟随
         bubble.view.document().documentLayout().documentSizeChanged.connect(
             self._follow_after_doc_change)
-        self._messages.append({"role": role, "content": str(content)})
+        self._messages.append({"role": role, "content": str(content),
+                               "info": str(info)})
         self._bubbles.append(bubble)
         self._stats.append(self._fresh_stats())
         self._refresh_stats(len(self._messages) - 1)
@@ -579,6 +596,19 @@ class ChatConversation(QWidget):
             st["speed"] = speed
         self._refresh_stats(index)
 
+    def set_message_info(self, index: int, text: str) -> None:
+        """设置消息的开发者自定义文案（仅 AI 气泡展示）。
+
+        显示在操作条统计区的最前段，例如模型名称、回答对应的运行
+        状态；空串清除。流式输出途中可多次调用（如状态流转）。
+        """
+        if not 0 <= index < len(self._messages):
+            raise IndexError(f"消息索引越界: {index}，当前共 {len(self._messages)} 条")
+        if text is None:
+            text = ""
+        self._messages[index]["info"] = str(text)
+        self._refresh_stats(index)
+
     def set_actions_always_visible(self, visible: bool) -> None:
         """设置气泡操作条是否常显（默认 False，悬停气泡时显现）。"""
         self._actions_always = bool(visible)
@@ -638,7 +668,8 @@ class ChatConversation(QWidget):
     def _stats_text(self, index: int) -> str:
         """统计文案：共有「约 N tokens」；AI 消息在有数据时追加
         「· M tok/s · 用时 X.Xs」（无速度数据则不显示速度段；未经
-        流式追加且未 finish 的静态 AI 消息不显示用时）。"""
+        流式追加且未 finish 的静态 AI 消息不显示用时）；AI 消息的
+        开发者自定义文案（``info``）显示在最前段。"""
         msg = self._messages[index]
         st = self._stats[index]
         tokens = st["tokens"]
@@ -646,6 +677,9 @@ class ChatConversation(QWidget):
             tokens = _estimate_tokens(msg["content"])
         parts = [f"约 {tokens} tokens"]
         if msg["role"] == "assistant":
+            info = msg.get("info", "")
+            if info:
+                parts.insert(0, info)
             speed = st["speed"]
             if speed is None and st["chunks"] >= 2 and st["first"] is not None:
                 span = st["last"] - st["first"]
