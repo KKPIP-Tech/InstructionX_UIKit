@@ -474,7 +474,7 @@ MEDIA_LEFT_RIGHT = dict(
 #: 分割线、表格、代码围栏、行内 / 块级公式、Mermaid 图、链接。
 CHAT_MESSAGES = [
     {"role": "user", "content": "这个 UI Kit 的 Markdown 组件支持哪些语法？"},
-    {"role": "assistant",
+    {"role": "assistant", "info": "InstructionX-Lite",
      "content": "**MarkdownView** 基于 Qt 内置引擎，支持：\n\n"
                 "- 标题、**加粗**、*斜体*、~~删除线~~\n"
                 "- 有序 / 无序 / 任务列表\n"
@@ -483,18 +483,18 @@ CHAT_MESSAGES = [
                 "```python\nfrom InstructionX_UIKit.components import MarkdownView\n\n"
                 "view = MarkdownView(\"# 你好\")\n```"},
     {"role": "user", "content": "代码块会做语法高亮吗？"},
-    {"role": "assistant",
+    {"role": "assistant", "info": "InstructionX-Lite",
      "content": "不会。代码块文字颜色与正文一致，仅以等宽字族和底色区分。\n\n"
                 "| 特性 | 状态 |\n|------|------|\n"
                 "| 语法高亮 | 不支持 |\n| 等宽字族 | 支持 |\n| 底色 | `bg.subtle` 令牌 |"},
     {"role": "user", "content": "能渲染数学公式吗？"},
-    {"role": "assistant",
+    {"role": "assistant", "info": "InstructionX-Lite",
      "content": "可以，支持 LaTeX 语法。行内公式如 $E=mc^2$，块级公式：\n\n"
                 "$$\\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}$$\n\n"
                 "公式由 matplotlib mathtext 后台异步渲染并缓存，"
                 "流式追加时命中缓存零耗时。"},
     {"role": "user", "content": "能画 Mermaid 图吗？"},
-    {"role": "assistant",
+    {"role": "assistant", "info": "InstructionX-Lite",
      "content": "可以，由官方 mermaid.js 引擎渲染（WebEngine，随包分发不联网），"
                 "全量图型可用。图表可交互：**拖动平移、Ctrl+滚轮缩放**，"
                 "右上角工具条支持放大 / 缩小 / 复位 / 适宽。\n\n"
@@ -512,7 +512,7 @@ CHAT_MESSAGES = [
                 "    A->>A: 推理与检索\n"
                 "    A-->>U: 流式返回回答\n```"},
     {"role": "user", "content": "剩下的格式一口气展示一下吧。"},
-    {"role": "assistant",
+    {"role": "assistant", "info": "InstructionX-Lite",
      "content": "好的，以下是其余全部格式。\n\n"
                 "## 标题层级\n\n"
                 "支持 `#` 至 `######` 六级标题，正文段落自动换行。\n\n"
