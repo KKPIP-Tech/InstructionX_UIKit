@@ -5,7 +5,7 @@
 ![Python](https://img.shields.io/badge/Python-3.14%2B-3776AB?logo=python&logoColor=white)
 ![PySide6](https://img.shields.io/badge/PySide6-6.11.1%2B-41CD52?logo=qt&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
-![Version](https://img.shields.io/badge/Version-alpha--v1.0.1-orange)
+![Version](https://img.shields.io/badge/Version-alpha--v1.0.2-orange)
 
 ## 特性
 
