@@ -8,6 +8,13 @@
 （``TextArea`` + 发送按钮），提交时发射 ``messageSubmitted`` 信号，
 布局本身不承载任何 AI 逻辑。
 
+每个气泡底部带操作条（悬停气泡显现，``set_actions_always_visible``
+可常显）：左侧统计文案（token 估算，AI 消息附速度 / 用时），右侧
+图标按钮——共有「复制 / 删除」，AI 消息加「重新生成 / 继续生成」，
+用户消息加「编辑」（内联编辑态）。复制 / 删除 / 编辑由布局直接
+执行，重新生成 / 继续生成仅发射 ``regenerateRequested`` /
+``continueRequested`` 信号，AI 逻辑由调用方承载。
+
 **API 驱动，无内置假数据**：消息列表由调用方以
 ``[{"role": "user" | "assistant", "content": "<markdown>"}, ...]``
 传入；全部为空时显示优雅的空占位（「暂无对话」）。
@@ -25,11 +32,14 @@
     win.show()
 """
 
+import time
+
 from PySide6.QtCore import QCoreApplication, QEvent, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtGui import QColor, QGuiApplication, QPainter
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
+    QLabel,
     QScrollArea,
     QSizePolicy,
     QVBoxLayout,
@@ -37,11 +47,13 @@ from PySide6.QtWidgets import (
 )
 
 from ..components.button import Button
+from ..components.icon_button import IconButton
 from ..components.markdown_view import MarkdownView
 from ..components.text_area import TextArea
-from ..theme import T, ThemeManager
+from ..icons import get_icon
+from ..theme import T, ThemeManager, set_property
 from ..tokens import Breakpoint
-from .helpers import empty_placeholder
+from .helpers import apply_token_font, empty_placeholder
 
 __all__ = ["ChatConversation", "create_chat_conversation"]
 
@@ -59,6 +71,58 @@ _SCROLL_MARGIN = 4
 
 #: 合法消息角色
 _ROLES = ("user", "assistant")
+
+#: 操作条高度（像素，预留以避免悬停时布局跳动）
+_ACTION_BAR_HEIGHT = 24
+
+#: 操作条图标边长（像素，IconButton sm 档点击区 24px）
+_ACTION_ICON_SIZE = 14
+
+#: 复制成功反馈时长（毫秒）：图标短暂切换为对勾后复原
+_COPY_FEEDBACK_MS = 1000
+
+#: 各角色气泡的操作按钮：(操作名, 图标名, 提示文案)
+_ACTIONS = {
+    "user": (("copy", "copy", "复制"),
+             ("edit", "edit", "编辑"),
+             ("delete", "trash", "删除")),
+    "assistant": (("copy", "copy", "复制"),
+                  ("regenerate", "refresh", "重新生成"),
+                  ("continue", "play", "继续生成"),
+                  ("delete", "trash", "删除")),
+}
+
+
+def _is_cjk(ch: str) -> bool:
+    """判断字符是否属于 CJK（中日韩）相关区块。"""
+    code = ord(ch)
+    return (0x3000 <= code <= 0x9FFF        # CJK 符号、假名、统一表意文字
+            or 0xF900 <= code <= 0xFAFF     # 兼容表意文字
+            or 0xFF00 <= code <= 0xFFEF     # 全角字符
+            or 0x20000 <= code <= 0x2A6DF)  # 扩展 B 区
+
+
+def _estimate_tokens(text: str) -> int:
+    """启发式 token 估算：CJK 字符每字 1 token，其余按连续非空白片段
+    （近似单词）计 1 token。
+
+    仅用于操作条统计展示的估算值；真实 token 数可经
+    ``ChatConversation.set_message_stats`` 传入覆盖。
+    """
+    tokens = 0
+    run = 0  # 连续非 CJK 非空白片段长度
+    for ch in text:
+        if ch.isspace() or _is_cjk(ch):
+            if run:
+                tokens += 1
+                run = 0
+            if _is_cjk(ch):
+                tokens += 1
+        else:
+            run += 1
+    if run:
+        tokens += 1
+    return tokens
 
 
 class _BubbleView(MarkdownView):
@@ -92,11 +156,23 @@ class _BubbleView(MarkdownView):
 
 
 class _Bubble(QFrame):
-    """单条消息气泡：user 右对齐主色底，assistant 整宽 `bg.subtle` 底。"""
+    """单条消息气泡：user 右对齐主色底，assistant 整宽 `bg.subtle` 底。
+
+    底部带操作条（高度预留，内容默认隐藏，悬停气泡时显现；
+    ``set_actions_always_visible`` 可常显）：左侧统计文案，右侧图标
+    按钮按角色区分（见 ``_ACTIONS``）。按钮点击统一转发给外层
+    ``ChatConversation._on_bubble_action``（``_controller`` 由其在
+    ``add_message`` 时注入）。用户气泡支持内联编辑态：内容区换为
+    ``TextArea`` + 确定 / 取消按钮，期间操作条隐藏。
+    """
 
     def __init__(self, role: str, content: str, parent=None):
         super().__init__(parent)
         self.role = role
+        self._controller = None      # ChatConversation（add_message 时注入）
+        self._always_visible = False  # 操作条常显开关
+        self._hover = False
+        self._editing = False
         # user 气泡水平贴合内容（宽度上限由外层按列宽 2/3 设置），
         # 垂直方向一律贴合内容高度
         horizontal = (QSizePolicy.Maximum if role == "user"
@@ -105,15 +181,167 @@ class _Bubble(QFrame):
         lay = QVBoxLayout(self)
         pad = T("space.2")
         lay.setContentsMargins(pad, pad, pad, pad)
+        lay.setSpacing(T("space.1"))
         self.view = _BubbleView(content)
         lay.addWidget(self.view)
-        ThemeManager.instance().theme_changed.connect(lambda *_: self.update())
+
+        # 内联编辑区（默认隐藏）：原文本 + 确定 / 取消
+        self._editor = TextArea(auto_height=True, min_rows=1, max_rows=8)
+        self._editor.hide()
+        # 编辑器高度随内容变化时同步气泡固定高度
+        self._editor.document().documentLayout().documentSizeChanged.connect(
+            self._on_editor_doc_size)
+        lay.addWidget(self._editor)
+        self._edit_bar = QWidget(self)
+        edit_lay = QHBoxLayout(self._edit_bar)
+        edit_lay.setContentsMargins(0, 0, 0, 0)
+        edit_lay.setSpacing(T("space.2"))
+        edit_lay.addStretch(1)
+        ok_btn = Button("确定", variant="primary", size="sm")
+        cancel_btn = Button("取消", size="sm")
+        ok_btn.clicked.connect(self._on_edit_ok)
+        cancel_btn.clicked.connect(self._on_edit_cancel)
+        edit_lay.addWidget(ok_btn)
+        edit_lay.addWidget(cancel_btn)
+        self._edit_bar.hide()
+        lay.addWidget(self._edit_bar)
+
+        # 操作条：高度常驻预留（避免悬停时布局跳动），内容默认隐藏
+        self._footer = QWidget(self)
+        self._footer.setFixedHeight(_ACTION_BAR_HEIGHT)
+        foot_lay = QHBoxLayout(self._footer)
+        foot_lay.setContentsMargins(T("space.1"), 0, 0, 0)
+        foot_lay.setSpacing(T("space.05"))
+        self._stats_label = QLabel(self._footer)
+        set_property(self._stats_label, "role", "hint")
+        apply_token_font(self._stats_label, "font.xs")
+        foot_lay.addWidget(self._stats_label, 1)
+        self._action_icons = {}    # 操作名 -> 图标名（主题切换时重绘）
+        self._action_buttons = {}  # 操作名 -> IconButton
+        for action, icon_name, tip in _ACTIONS[role]:
+            btn = IconButton(get_icon(icon_name, _ACTION_ICON_SIZE),
+                             size="sm", parent=self._footer)
+            btn.setToolTip(tip)
+            btn.clicked.connect(
+                lambda _checked=False, a=action: self._dispatch(a))
+            self._action_icons[action] = icon_name
+            self._action_buttons[action] = btn
+            foot_lay.addWidget(btn)
+        self._stats_label.hide()
+        for btn in self._action_buttons.values():
+            btn.hide()
+        lay.addWidget(self._footer)
+
+        ThemeManager.instance().theme_changed.connect(self._on_theme_changed)
         self._sync_bubble_height()
 
+    # ------------------------------------------------------------------ 高度
     def _sync_bubble_height(self) -> None:
-        """气泡固定高度 = 视图高度 + 内边距（确定性，不依赖布局事件传播）。"""
-        m = self.layout().contentsMargins()
-        self.setFixedHeight(self.view.height() + m.top() + m.bottom())
+        """气泡固定高度 = 可见内容区高度 + 操作条 + 内边距（确定性，
+        不依赖布局事件传播）。操作条高度常驻预留，不随显隐变化。"""
+        lay = self.layout()
+        m = lay.contentsMargins()
+        if self._editing:
+            content_h = (self._editor.height() + self._edit_bar.height()
+                         + lay.spacing())
+        else:
+            content_h = self.view.height()
+        h = (m.top() + m.bottom() + content_h + _ACTION_BAR_HEIGHT
+             + lay.spacing() * 2)
+        self.setFixedHeight(h)
+
+    def _on_editor_doc_size(self, _size) -> None:
+        if self._editing:
+            self._sync_bubble_height()
+
+    # ------------------------------------------------------------------ 操作条
+    def set_stats_text(self, text: str) -> None:
+        """更新操作条左侧统计文案（由 ChatConversation 计算后写入）。"""
+        self._stats_label.setText(text)
+
+    def set_actions_always_visible(self, visible: bool) -> None:
+        """设置操作条是否常显（False 时仅在悬停气泡时显现）。"""
+        self._always_visible = bool(visible)
+        self._apply_actions_visibility()
+
+    def _apply_actions_visibility(self) -> None:
+        visible = (self._always_visible or self._hover) and not self._editing
+        self._stats_label.setVisible(visible)
+        for btn in self._action_buttons.values():
+            btn.setVisible(visible)
+
+    def _dispatch(self, action: str) -> None:
+        if self._controller is not None:
+            self._controller._on_bubble_action(self, action)
+
+    def flash_copy_done(self) -> None:
+        """复制成功反馈：图标短暂切换为对勾，约 1 秒后换回。
+
+        定时器以气泡为父对象，气泡销毁时自动失效，无悬垂回调。
+        """
+        self._action_buttons["copy"].set_icon(
+            get_icon("check", _ACTION_ICON_SIZE, T("color.success")))
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(self._restore_copy_icon)
+        timer.start(_COPY_FEEDBACK_MS)
+
+    def _restore_copy_icon(self) -> None:
+        self._action_buttons["copy"].set_icon(
+            get_icon("copy", _ACTION_ICON_SIZE))
+
+    # ------------------------------------------------------------------ 编辑态
+    def start_edit(self, text: str) -> None:
+        """进入内联编辑态：内容区换为编辑器（填入原文本），操作条隐藏。"""
+        if self._editing:
+            return
+        self._editing = True
+        self.view.hide()
+        self._editor.setPlainText(text)
+        self._editor.show()
+        self._edit_bar.show()
+        self._apply_actions_visibility()
+        self._editor.setFocus()
+        self._sync_bubble_height()
+
+    def cancel_edit(self) -> None:
+        """退出内联编辑态（不改变消息内容），恢复内容区与操作条。"""
+        if not self._editing:
+            return
+        self._editing = False
+        self._editor.hide()
+        self._edit_bar.hide()
+        self.view.show()
+        self._apply_actions_visibility()
+        self._sync_bubble_height()
+
+    def edit_text(self) -> str:
+        """编辑器当前文本。"""
+        return self._editor.toPlainText()
+
+    def _on_edit_ok(self) -> None:
+        self._dispatch("edit_ok")
+
+    def _on_edit_cancel(self) -> None:
+        self._dispatch("edit_cancel")
+
+    # ------------------------------------------------------------------ 事件
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self._hover = True
+        self._apply_actions_visibility()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._hover = False
+        self._apply_actions_visibility()
+        super().leaveEvent(event)
+
+    def _on_theme_changed(self, *_args) -> None:
+        """主题切换：重绘图标（令牌色）并刷新气泡底色。"""
+        for action, btn in self._action_buttons.items():
+            btn.set_icon(get_icon(self._action_icons[action],
+                                  _ACTION_ICON_SIZE))
+        self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
         color_key = ("color.primary.subtle" if self.role == "user"
@@ -139,16 +367,36 @@ class ChatConversation(QWidget):
     信号:
         messageSubmitted(str): 输入区提交（点击发送）时发射文本，
             布局不会自动上屏，由调用方决定后续处理。
+        messageDeleted(int): 气泡操作条「删除」后发射，参数为删除前
+            的索引；删除后后续消息索引前移，调用方持有的索引需自行
+            校正。
+        messageEdited(int, str): 用户气泡内联编辑「确定」后发射，
+            参数为消息索引与新文本。
+        regenerateRequested(int): AI 气泡「重新生成」点击时发射索引，
+            布局不承载 AI 逻辑，由调用方响应（可配合
+            ``update_message`` 重置内容）。
+        continueRequested(int): AI 气泡「继续生成」点击时发射索引，
+            由调用方继续 ``append_to_message`` 追加内容。
     """
 
     #: 输入区提交信号，参数为消息文本
     messageSubmitted = Signal(str)
+    #: 删除消息信号，参数为删除前的索引（删除后后续索引前移）
+    messageDeleted = Signal(int)
+    #: 编辑消息信号，参数为消息索引与新文本
+    messageEdited = Signal(int, str)
+    #: 请求重新生成信号，参数为消息索引
+    regenerateRequested = Signal(int)
+    #: 请求继续生成信号，参数为消息索引
+    continueRequested = Signal(int)
 
     def __init__(self, messages=None, show_input: bool = True, parent=None):
         super().__init__(parent)
         self._messages = []
         self._bubbles = []
         self._rows = []            # 包裹气泡的行布局（clear 时逐行清理）
+        self._stats = []           # 每条消息的统计 / 计时状态（按索引对齐）
+        self._actions_always = False  # 操作条常显开关
         self._placeholder = None
         self._follow = True        # 底部跟随状态（用户上翻后暂停）
         self._programmatic_scroll = False
@@ -241,22 +489,105 @@ class ChatConversation(QWidget):
             content = ""
         self._hide_placeholder()
         bubble = _Bubble(role, str(content))
+        bubble._controller = self
+        bubble.set_actions_always_visible(self._actions_always)
         self._insert_bubble(bubble)
         # 气泡文档尺寸变化（流式追加 / 公式图片就绪）后保持底部跟随
         bubble.view.document().documentLayout().documentSizeChanged.connect(
             self._follow_after_doc_change)
         self._messages.append({"role": role, "content": str(content)})
         self._bubbles.append(bubble)
+        self._stats.append(self._fresh_stats())
+        self._refresh_stats(len(self._messages) - 1)
         self._follow_scroll()
         return len(self._messages) - 1
 
     def append_to_message(self, index: int, chunk: str) -> None:
-        """向指定消息流式追加 Markdown 片段（AI 逐 token 输出）。"""
+        """向指定消息流式追加 Markdown 片段（AI 逐 token 输出）。
+
+        记录首个 / 最近 chunk 时间并刷新该气泡的统计标签（速度、
+        用时实时滚动）；流式结束时调用 ``finish_message`` 冻结计时。
+        """
         if not 0 <= index < len(self._messages):
             raise IndexError(f"消息索引越界: {index}，当前共 {len(self._messages)} 条")
         self._messages[index]["content"] += chunk
+        st = self._stats[index]
+        now = time.monotonic()
+        if st["first"] is None:
+            st["first"] = now
+        st["last"] = now
+        st["chunks"] += 1
         self._bubbles[index].view.append_markdown(chunk)
+        self._refresh_stats(index)
         self._follow_scroll()
+
+    def finish_message(self, index: int) -> None:
+        """冻结消息计时（流式输出结束时调用）。
+
+        冻结后「用时」不再随时间滚动；未调用时 AI 消息的统计实时滚动。
+        """
+        if not 0 <= index < len(self._messages):
+            raise IndexError(f"消息索引越界: {index}，当前共 {len(self._messages)} 条")
+        self._stats[index]["finished"] = time.monotonic()
+        self._refresh_stats(index)
+
+    def update_message(self, index: int, content: str) -> None:
+        """整体替换消息内容（重新生成用），并重置该条计时为新一轮。
+
+        该条消息的统计状态（含 ``set_message_stats`` 的覆盖值）全部
+        重置；若正处于内联编辑态则先退出。
+        """
+        if not 0 <= index < len(self._messages):
+            raise IndexError(f"消息索引越界: {index}，当前共 {len(self._messages)} 条")
+        if content is None:
+            content = ""
+        bubble = self._bubbles[index]
+        bubble.cancel_edit()
+        self._messages[index]["content"] = str(content)
+        bubble.view.set_markdown(str(content))
+        self._stats[index] = self._fresh_stats()
+        self._refresh_stats(index)
+        self._follow_scroll()
+
+    def set_message_stats(self, index: int, tokens: int = None,
+                          elapsed: float = None, speed: float = None) -> None:
+        """以真实值覆盖消息的统计展示（覆盖后不再按估算 / 计时更新）。
+
+        参数:
+            index: 消息索引。
+            tokens: 真实 token 数；None 保持 ``_estimate_tokens`` 估算。
+            elapsed: 真实整体用时（秒）；None 保持内部计时。
+            speed: 真实速度（tok/s）；None 保持按 chunk 计时推算。
+        """
+        if not 0 <= index < len(self._messages):
+            raise IndexError(f"消息索引越界: {index}，当前共 {len(self._messages)} 条")
+        st = self._stats[index]
+        if tokens is not None:
+            tokens = int(tokens)
+            if tokens < 0:
+                raise ValueError(f"tokens 应 >= 0，收到 {tokens}")
+            st["tokens"] = tokens
+        if elapsed is not None:
+            elapsed = float(elapsed)
+            if elapsed < 0:
+                raise ValueError(f"elapsed 应 >= 0，收到 {elapsed}")
+            st["elapsed"] = elapsed
+        if speed is not None:
+            speed = float(speed)
+            if speed < 0:
+                raise ValueError(f"speed 应 >= 0，收到 {speed}")
+            st["speed"] = speed
+        self._refresh_stats(index)
+
+    def set_actions_always_visible(self, visible: bool) -> None:
+        """设置气泡操作条是否常显（默认 False，悬停气泡时显现）。"""
+        self._actions_always = bool(visible)
+        for bubble in self._bubbles:
+            bubble.set_actions_always_visible(self._actions_always)
+
+    def actions_always_visible(self) -> bool:
+        """操作条是否常显。"""
+        return self._actions_always
 
     def clear_messages(self) -> None:
         """清空全部消息，回到空占位。
@@ -276,6 +607,7 @@ class ChatConversation(QWidget):
         self._rows.clear()
         self._bubbles.clear()
         self._messages.clear()
+        self._stats.clear()
         # 清空即新会话：从头跟随底部；滚动范围归零，同步重置钳制判定基线
         self._follow = True
         self._last_max = 0
@@ -285,6 +617,106 @@ class ChatConversation(QWidget):
     def messages(self) -> list:
         """当前消息列表的副本。"""
         return [dict(m) for m in self._messages]
+
+    # ------------------------------------------------------------------ 统计
+    @staticmethod
+    def _fresh_stats() -> dict:
+        """新建一条消息的统计 / 计时状态（计时用单调时钟，不受系统时间影响）。"""
+        return {"created": time.monotonic(),  # 消息创建时间
+                "first": None,   # 首个流式 chunk 时间
+                "last": None,    # 最近流式 chunk 时间
+                "chunks": 0,     # 流式 chunk 计数（速度至少需 2 个）
+                "finished": None,  # finish_message 冻结时间
+                "tokens": None,  # set_message_stats 覆盖：真实 token 数
+                "elapsed": None,  # set_message_stats 覆盖：真实用时（秒）
+                "speed": None}   # set_message_stats 覆盖：真实速度（tok/s）
+
+    def _refresh_stats(self, index: int) -> None:
+        """重算并写入指定气泡操作条的统计文案。"""
+        self._bubbles[index].set_stats_text(self._stats_text(index))
+
+    def _stats_text(self, index: int) -> str:
+        """统计文案：共有「约 N tokens」；AI 消息在有数据时追加
+        「· M tok/s · 用时 X.Xs」（无速度数据则不显示速度段；未经
+        流式追加且未 finish 的静态 AI 消息不显示用时）。"""
+        msg = self._messages[index]
+        st = self._stats[index]
+        tokens = st["tokens"]
+        if tokens is None:
+            tokens = _estimate_tokens(msg["content"])
+        parts = [f"约 {tokens} tokens"]
+        if msg["role"] == "assistant":
+            speed = st["speed"]
+            if speed is None and st["chunks"] >= 2 and st["first"] is not None:
+                span = st["last"] - st["first"]
+                if span > 0:
+                    speed = tokens / span
+            if speed is not None:
+                parts.append(f"{speed:.1f} tok/s")
+            elapsed = st["elapsed"]
+            if elapsed is None and (st["finished"] is not None
+                                    or st["first"] is not None):
+                end = (st["finished"] if st["finished"] is not None
+                       else time.monotonic())
+                elapsed = end - st["created"]
+            if elapsed is not None:
+                parts.append(f"用时 {elapsed:.1f}s")
+        return " · ".join(parts)
+
+    # ------------------------------------------------------------------ 气泡操作
+    def _on_bubble_action(self, bubble: _Bubble, action: str) -> None:
+        """气泡操作条按钮分发（由 _Bubble 点击时回调）。"""
+        try:
+            index = self._bubbles.index(bubble)
+        except ValueError:
+            return
+        if action == "copy":
+            # 直接写系统剪贴板，图标短暂切换为对勾反馈
+            QGuiApplication.clipboard().setText(self._messages[index]["content"])
+            bubble.flash_copy_done()
+        elif action == "delete":
+            self._delete_message(index)
+        elif action == "regenerate":
+            self.regenerateRequested.emit(index)
+        elif action == "continue":
+            self.continueRequested.emit(index)
+        elif action == "edit":
+            bubble.start_edit(self._messages[index]["content"])
+        elif action == "edit_ok":
+            self._confirm_edit(index, bubble)
+        elif action == "edit_cancel":
+            bubble.cancel_edit()
+
+    def _confirm_edit(self, index: int, bubble: _Bubble) -> None:
+        """内联编辑「确定」：更新消息与视图，退出编辑态并发射信号。"""
+        text = bubble.edit_text()
+        bubble.cancel_edit()
+        self._messages[index]["content"] = text
+        bubble.view.set_markdown(text)
+        self._refresh_stats(index)
+        self.messageEdited.emit(index, text)
+
+    def _delete_message(self, index: int) -> None:
+        """移除指定消息（行布局逐条目清理，思路同 ``clear_messages``
+        的单行版），随后发射 ``messageDeleted``（删除前索引）。
+
+        删除流式中的消息不作特殊处理，计时随状态一并移除；调用方
+        若持有进行中的流式任务需自行停止。
+        """
+        row = self._rows.pop(index)
+        while row.count():
+            item = row.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.hide()
+                w.deleteLater()
+        self._list_lay.removeItem(row)
+        self._bubbles.pop(index)
+        self._messages.pop(index)
+        self._stats.pop(index)
+        if not self._messages:
+            self._show_placeholder()
+        self.messageDeleted.emit(index)
 
     # ------------------------------------------------------------------ 内部
     def _insert_bubble(self, bubble: _Bubble) -> None:

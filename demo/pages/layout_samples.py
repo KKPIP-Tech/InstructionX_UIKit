@@ -552,3 +552,10 @@ CHAT_STREAM_REPLY = (
     "    P --> R[实时渲染]\n```\n\n"
     "流式输出结束，感谢观看。"
 )
+
+#: 「继续生成」演示文本：接到 continueRequested 信号后向原消息追加
+CHAT_STREAM_CONTINUE = (
+    "\n\n**（继续生成）** 补充说明：操作条的复制 / 删除 / 编辑由布局直接执行，"
+    "重新生成 / 继续生成仅发射 `regenerateRequested` / `continueRequested` "
+    "信号，具体行为完全由调用方决定。"
+)
