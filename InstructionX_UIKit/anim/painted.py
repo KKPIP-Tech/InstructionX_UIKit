@@ -1928,9 +1928,12 @@ class ScrollReveal(QScrollArea):
             except RuntimeError:
                 pass
 
+        def _fade(v, o=overlay):
+            o.opacity = float(v)
+            o.update()  # opacity 是普通属性，须显式触发逐帧重绘
+
         _run_anim(self, DURATION["normal"], EASING["standard"],
-                  lambda v, o=overlay: setattr(o, "opacity", float(v)),
-                  on_finish=_finish)
+                  _fade, on_finish=_finish)
 
 
 # ---------------------------------------------------------------------------
@@ -2271,17 +2274,26 @@ class _StoryStepPanel(QFrame):
     """ScrollStoryArea 的步骤卡片：paintEvent 内按 alpha 参数化整体不透明度。
 
     不使用 QGraphicsOpacityEffect（项目红线：真机 Windows + QSS +
-    高 DPI 下常驻效果可能整片不渲染）。改为「离屏渲染 + 半透明合成」：
-    paintEvent 先经 render() 把完整内容（含 QSS 样式与子控件）画到
-    缓存位图，再按当前 alpha 合成回自身；render() 重入由戳记标志挡
-    住，避免无限递归。
+    高 DPI 下常驻效果可能整片不渲染）。改为「离屏缓存 + 半透明合成」：
+    全不透明内容（含 QSS 样式与子控件）在 paintEvent **之外**经
+    render() 抓进缓存位图，paintEvent 仅按当前 alpha 把缓存合成回
+    自身。【勿改回】在 paintEvent 内直接 ``self.render()``：控件此时
+    正处于自身绘制上下文，Qt 判定递归重绘（"QWidget::repaint:
+    Recursive repaint detected"），后续 QPainter 拿不到 paint engine
+    （"Painter must be active" 系列刷屏）且实际不绘制（真机 Windows
+    与 offscreen 均可复现，探针 temp/_story_probe.py）。
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFrameShape(QFrame.StyledPanel)
         self._alpha = 0.3
-        self._uik_stamp = False   # render() 离屏重入戳记
+        self._cache = None          # 全不透明内容缓存位图（paintEvent 外抓取）
+        self._capture_pending = False
+        self._capturing = False     # 缓存抓取触发的离屏重入戳记
+        # 主题切换后 QSS 颜色变化，缓存需失效重抓；绑定方法随控件销毁
+        # 自动断连（与 _theme_refresh 同一机制）
+        ThemeManager.instance().theme_changed.connect(self._invalidate_cache)
 
     def set_alpha(self, alpha: float):
         """设置整体不透明度 0~1（仅变化时重绘，抑制滚动高频下的无谓重绘）。"""
@@ -2293,28 +2305,56 @@ class _StoryStepPanel(QFrame):
     def alpha(self) -> float:
         return self._alpha
 
-    def paintEvent(self, event):
-        if self._uik_stamp:
-            # render() 触发的离屏重入：直接画基类内容（进入缓存位图）
-            super().paintEvent(event)
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._invalidate_cache()
+
+    def _invalidate_cache(self):
+        """尺寸 / 主题变化后丢弃缓存并按需安排重抓。"""
+        self._cache = None
+        if self._alpha < 0.999:
+            self._schedule_capture()
+
+    def _schedule_capture(self):
+        if self._capture_pending:
             return
-        if self._alpha >= 0.999:
-            super().paintEvent(event)
+        self._capture_pending = True
+        QTimer.singleShot(0, self._capture)
+
+    def _capture(self):
+        """在 paintEvent 外把自身（含 QSS 与子控件）渲染进缓存位图。"""
+        self._capture_pending = False
+        if self.width() < 2 or self.height() < 2:
             return
         dpr = max(1.0, float(self.devicePixelRatioF()))
         pm = QPixmap(max(2, int(math.ceil(self.width() * dpr))),
                      max(2, int(math.ceil(self.height() * dpr))))
         pm.setDevicePixelRatio(dpr)
         pm.fill(Qt.transparent)
-        self._uik_stamp = True
+        # render() 会触发一次离屏 paintEvent：戳记挡在缓存就绪前，
+        # 保证抓进位图的是基类全不透明内容而非缓存自身的二次合成
+        self._capturing = True
         try:
             self.render(pm)
         finally:
-            self._uik_stamp = False
+            self._capturing = False
+        self._cache = pm
+        if self._alpha < 0.999:
+            self.update()
+
+    def paintEvent(self, event):
+        if self._capturing or self._alpha >= 0.999 or self._cache is None:
+            if (not self._capturing and self._alpha < 0.999
+                    and self._cache is None):
+                # 缓存未就绪：先按不透明兜底绘制，异步抓缓存后切换为
+                # 半透明合成（仅首帧，避免在绘制上下文里调用 render()）
+                self._schedule_capture()
+            super().paintEvent(event)
+            return
         p = QPainter(self)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         p.setOpacity(self._alpha)
-        p.drawPixmap(0, 0, pm)
+        p.drawPixmap(0, 0, self._cache)
         p.end()
 
 
