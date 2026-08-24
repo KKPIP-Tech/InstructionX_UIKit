@@ -88,27 +88,45 @@ def _build_media_left_right() -> QWidget:
 
 
 def _build_chat_conversation() -> QWidget:
-    """流式对话演示：提交后模拟 AI 逐 token 流式回复。"""
+    """流式对话演示：提交后模拟 AI 逐 token 流式回复；气泡操作条常显，
+    演示复制 / 删除 / 编辑与重新生成 / 继续生成信号接线。"""
     conv = create_chat_conversation(messages=samples.CHAT_MESSAGES)
+    conv.set_actions_always_visible(True)
 
-    def _on_submit(text):
-        conv.add_message("user", text)
-        idx = conv.add_message("assistant", "")
-        reply = samples.CHAT_STREAM_REPLY
-        chunks = [reply[i:i + 6] for i in range(0, len(reply), 6)]
+    def _stream_reply(idx, text):
+        """逐段流式输出 text 到消息 idx，结束后冻结计时。"""
+        chunks = [text[i:i + 6] for i in range(0, len(text), 6)]
         timer = QTimer(conv)
 
         def _tick():
             if not chunks:
                 timer.stop()
                 timer.deleteLater()
+                conv.finish_message(idx)
                 return
             conv.append_to_message(idx, chunks.pop(0))
 
         timer.timeout.connect(_tick)
         timer.start(50)
 
+    def _on_submit(text):
+        user_idx = conv.add_message("user", text)
+        conv.finish_message(user_idx)
+        idx = conv.add_message("assistant", "")
+        _stream_reply(idx, samples.CHAT_STREAM_REPLY)
+
+    def _on_regenerate(index):
+        # 演示：清空原内容后重新流式输出同一回复（真实场景由调用方重新请求模型）
+        conv.update_message(index, "")
+        _stream_reply(index, samples.CHAT_STREAM_REPLY)
+
+    def _on_continue(index):
+        conv.append_to_message(index, samples.CHAT_STREAM_CONTINUE)
+        conv.finish_message(index)
+
     conv.messageSubmitted.connect(_on_submit)
+    conv.regenerateRequested.connect(_on_regenerate)
+    conv.continueRequested.connect(_on_continue)
     return conv
 
 
