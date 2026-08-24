@@ -490,6 +490,45 @@ def _assert_shot(pm, name):
         raise AssertionError(f"{name} 截图全黑")
 
 
+@check("自定义文案 info：仅 AI 气泡展示最前段，set_message_info 更新 / 清除，越界抛错")
+def _():
+    conv = _make_conv()
+    i_ai = conv.add_message("assistant", "回答内容", info="InstructionX-Lite")
+    i_user = conv.add_message("user", "问题", info="不应显示")
+    lbl_ai = conv._bubbles[i_ai]._stats_label
+    lbl_user = conv._bubbles[i_user]._stats_label
+    if not lbl_ai.text().startswith("InstructionX-Lite · 约"):
+        raise AssertionError(f"AI 气泡应以 info 开头: {lbl_ai.text()}")
+    if "不应显示" in lbl_user.text():
+        raise AssertionError(f"用户气泡不应展示 info: {lbl_user.text()}")
+    # 运行中更新（如状态流转）与清除
+    conv.set_message_info(i_ai, "运行中 · 检索知识库")
+    if not lbl_ai.text().startswith("运行中 · 检索知识库 · 约"):
+        raise AssertionError(f"info 更新未生效: {lbl_ai.text()}")
+    conv.set_message_info(i_ai, "")
+    if not lbl_ai.text().startswith("约"):
+        raise AssertionError(f"info 清除未生效: {lbl_ai.text()}")
+    conv.set_message_info(i_ai, None)  # None 视为清除
+    if not lbl_ai.text().startswith("约"):
+        raise AssertionError(f"info None 清除未生效: {lbl_ai.text()}")
+    # set_messages 字典 info 字段 + messages() 导出
+    conv.set_messages([
+        {"role": "assistant", "content": "带信息", "info": "模型甲"},
+        {"role": "assistant", "content": "不带信息"},
+    ])
+    if not conv._bubbles[0]._stats_label.text().startswith("模型甲 · 约"):
+        raise AssertionError("set_messages 的 info 未展示")
+    if not conv._bubbles[1]._stats_label.text().startswith("约"):
+        raise AssertionError("无 info 的消息不应有前缀")
+    assert_eq(conv.messages()[0]["info"], "模型甲", "messages() 导出 info")
+    assert_eq(conv.messages()[1]["info"], "", "无 info 默认为空串")
+    try:
+        conv.set_message_info(9, "x")
+        raise AssertionError("越界应抛 IndexError")
+    except IndexError:
+        pass
+
+
 @check("操作条常显双主题截图非空白（tests/shots/fix_chatactions_*.png）")
 def _():
     tm = ThemeManager.instance()
