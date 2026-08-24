@@ -9,7 +9,8 @@
 1. ScrollReveal：10 个子控件滚到底后全部 opacity==1 且可见，截图无空白块；
    另含矮块 + 高视口（顶边永远到不了阈值线）的卡住回归；
 2. ScrollStoryArea：滚动条到 maximum 时最后一个步骤点被点亮、
-   末卡片完整可见，progress==1.0；回顶后首步点亮；
+   末卡片完整可见，progress==1.0；回顶后首步点亮；滚动全程无
+   递归重绘警告（paintEvent 内 render 自身回归）；
 3. NumberRollLabel：setValue(0)->setValue(1000) 播放滚动动画，
    中间帧文本 != 终值，最终文本为 "1,000"；构造初始值直接显示；
 4. CardTilt：鼠标到角落（最大倾角）时卡片四角内容像素仍存在、
@@ -236,6 +237,45 @@ def _():
     if w.activeIndex() != 0:
         raise AssertionError(f"回顶首步应点亮: {w.activeIndex()}")
     save_shot(w, "scrollstoryarea_top")
+
+
+@case("ScrollStoryArea 滚动无递归重绘警告（paintEvent 内 render 回归）")
+def _():
+    # 修复前：_StoryStepPanel.paintEvent 在 alpha<1 时于自身绘制上下文内
+    # render 自身，Qt 刷 Recursive repaint / Painter not active 警告。
+    from PySide6.QtCore import qInstallMessageHandler
+
+    hits = []
+    keys = ("Recursive repaint", "Should no longer be called",
+            "Paint device returned engine", "Painter must be active",
+            "Painter not active")
+
+    def _handler(mode, ctx, msg):
+        text = str(msg)
+        if any(k in text for k in keys):
+            hits.append(text)
+
+    prev = qInstallMessageHandler(_handler)
+    try:
+        w = keep(P.ScrollStoryArea())
+        for i in range(5):
+            w.addStep(f"第 {i + 1} 步", "这是步骤的详细说明文本，" * 4)
+        w.resize(300, 200)  # 矮视口：非居中卡片 alpha<1，走半透明合成路径
+        w.show()
+        pump(app, 300)
+        sb = w.verticalScrollBar()
+        step = max(1, sb.maximum() // 10)
+        v = sb.minimum()
+        while v < sb.maximum():
+            v = min(sb.maximum(), v + step)
+            sb.setValue(v)
+            pump(app, 120)
+        sb.setValue(0)
+        pump(app, 200)
+    finally:
+        qInstallMessageHandler(prev)
+    if hits:
+        raise AssertionError(f"滚动期间捕获 {len(hits)} 条重绘警告: {hits[0]}")
 
 
 # ---------------------------------------------------------------------------
