@@ -38,6 +38,7 @@ from .core import SeriesRenderer, parse_data_point, register_series
 from .data import NumericBuffer
 from .sampling import (
     bucket_count,
+    column_aggregate,
     sample_entries,
     sampling_options,
     visible_threshold,
@@ -920,6 +921,88 @@ class ScatterSeriesRenderer(SeriesRenderer):
     def __init__(self, chart, opt):
         super().__init__(chart, opt)
         self._dots = []      # [dict(pt=QPointF, r=float, value, index, x)]
+        #: 是否走了 large 像素桶聚合（聚合后每桶一个图元，语义见 sampling.py）
+        self._aggregated = False
+
+    def _large_enabled(self) -> bool:
+        """是否启用 large 像素桶聚合。
+
+        ``large: true`` 显式开启；``large: "auto"``（或未给出但 sampling
+        开启）时按点数与视口宽度自动判定。判定统一走「保真承诺」的阈值：
+        可见点数未超视口像素量级 → 不聚合。
+        """
+        raw = self.opt.get("large", "auto")
+        if raw is False:
+            return False
+        opts = sampling_options(self.opt)
+        return bool(raw) or opts.enabled
+
+    def _large_x_values(self, coord, single):
+        """``large`` 聚合所需的 x 序列；无需显式 x 时返回 ``None``。
+
+        标量数据（``NumericBuffer`` / 数值列表）在数值 x 轴下的 x 即**下标**。
+        若误用「桶中点下标」当 x，下标量级（0..n-1）会远超实际 x 轴范围
+        （标量数据的 x 轴范围是 [0,1]），点会被全部映射到坐标区之外——
+        实测百万散点整幅**空白**。故此处与折线同样按下标取值。
+        """
+        if single:
+            return None
+        data = self.data_view()
+        n = len(data)
+        if n == 0:
+            return None
+        if isinstance(data, NumericBuffer) or (
+                _np is not None and isinstance(data, _np.ndarray)):
+            if _np is not None:
+                return _np.arange(n, dtype=_np.float64)
+            return list(range(n))
+        # 结构型数据（[x, y] 对）：取各点的真实 x
+        out = []
+        for i in range(n):
+            x, _y = parse_data_point(data[i], i)
+            out.append(x if isinstance(x, (int, float))
+                       and not isinstance(x, bool) else i)
+        return out
+
+    def _large_dots(self, coord, rect):
+        """按像素桶聚合散点，返回 ``[dot, ...]`` 或 ``None``（未聚合）。"""
+        if rect is None:
+            return None
+        plot_rect = getattr(coord, "plot", None)
+        px = None
+        getter = getattr(plot_rect, "width", None)
+        if callable(getter):
+            px = getter()
+        if not isinstance(px, (int, float)) or px <= 0:
+            px = rect.width() if callable(getattr(rect, "width", None)) \
+                else rect.width
+        if not isinstance(px, (int, float)) or px <= 0:
+            return None
+        opts = sampling_options(self.opt)
+        data = self.data_view()
+        n = len(data)
+        threshold = visible_threshold(px, opts.safety)
+        if threshold < 2 or n <= threshold:
+            return None
+        single = getattr(coord, "kind", "") == "singleAxis"
+        xs = self._large_x_values(coord, single)
+        buckets, done = column_aggregate(data, bucket_count(px),
+                                         x_values=xs)
+        if not done or not buckets:
+            return None
+        dots = []
+        for b in buckets:
+            try:
+                pt = coord.map_point(b["value"]) if single \
+                    else coord.map_point(b["x"], b["value"])
+            except Exception:
+                continue
+            dots.append({"pt": pt, "r": 3.0, "value": b["value"],
+                         "index": int(b["x"]) if not isinstance(b["x"], float)
+                         or b["x"].is_integer() else -1,
+                         "x": b["x"], "count": b["count"],
+                         "min": b["min"], "max": b["max"]})
+        return dots or None
 
     # -- 布局 -------------------------------------------------------------
     def _third_dim(self, item):
@@ -930,12 +1013,22 @@ class ScatterSeriesRenderer(SeriesRenderer):
 
     def layout(self, rect: QRectF) -> None:
         self._dots = []
+        self._aggregated = False
         coord = self.chart.coord_for(self.opt)
         if coord is None:
             return
         single = getattr(coord, "kind", "") == "singleAxis"
         fixed = _to_float(self.opt.get("symbolSize"), None)
-        thirds = [self._third_dim(it) for it in self.data()]
+        # large 模式：百万级散点逐点绘制既不可行也无意义（远超屏幕可分辨
+        # 能力），改为按像素桶聚合，每桶一个图元。阈值与折线同源：可见点数
+        # 未超视口像素量级时不聚合。
+        if self._large_enabled() and not single:
+            agg = self._large_dots(coord, rect)
+            if agg is not None:
+                self._dots = agg
+                self._aggregated = True
+                return
+        thirds = [self._third_dim(it) for it in self.data_view()]
         known = [t for t in thirds if t is not None]
         zmin = min(known) if known else 0.0
         zmax = max(known) if known else 1.0
@@ -967,6 +1060,23 @@ class ScatterSeriesRenderer(SeriesRenderer):
         if isinstance(coord, GridCoord):
             p.setClipRect(coord.plot)
         color = self.color()
+        if self._aggregated:
+            # 聚合模式：每像素桶一个方块，桶内点数越多越不透明——这是密度
+            # 语义，与逐点绘制大小无关；尺寸取像素级 2px 保证列间不重叠。
+            p.setPen(Qt.NoPen)
+            scale = max(0.0, anim_t)
+            for d in self._dots:
+                # 桶内点数越多越不透明（密度语义），上限 235 留出叠加余地
+                alpha = 90 + min(145, 12 * int(math.log2(max(1, d["count"]))))
+                p.setBrush(_with_alpha(color, alpha))
+                pt = d["pt"]
+                side = 2.0 * scale
+                if side <= 0:
+                    continue
+                p.drawRect(QRectF(pt.x() - side / 2, pt.y() - side / 2,
+                                  side, side))
+            p.restore()
+            return
         p.setPen(QPen(_with_alpha(color, 230), 1))
         p.setBrush(_with_alpha(color, 190))
         scale = max(0.0, anim_t)

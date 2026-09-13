@@ -31,6 +31,7 @@ __all__ = [
     "bucket_count",
     "bucket_sample",
     "sample_entries",
+    "column_aggregate",
 ]
 
 try:  # pragma: no cover - 环境相关分支
@@ -213,6 +214,76 @@ def bucket_sample(values, threshold: int, x_values=None):
             else:
                 ap((float(x[j]), float(v[j])))
     return out, len(out)
+
+
+def column_aggregate(values, buckets: int, x_values=None):
+    """``large`` 模式：按像素桶**聚合**散点/柱状数据。
+
+    与逐桶保留极值的 :func:`bucket_sample` 不同，本函数把百万级图元压成
+    「每像素桶一个图元」——散点与柱状在百万点量级下逐点绘制既无意义
+    （远超屏幕可分辨能力）又不可行，聚合后每桶输出:
+
+    ``{"value": 桶内均值, "min": 桶内最小值, "max": 桶内最大值,
+       "count": 桶内点数, "x": 代表 x}``
+
+    其中 ``x`` 取该桶的**中点下标**（散点的 y 为聚合值、x 为轴位置，
+    故用中点即可；这与折线不同——折线必须保留极值点的原始 x 以维持形状）。
+
+    返回 ``(buckets_list, True)``；未发生聚合时返回 ``(None, False)``。
+    """
+    try:
+        n = len(values)
+    except TypeError:
+        return None, False
+    bounds = _bucket_bounds(n, buckets)
+    if bounds is None:
+        return None, False
+    if _np is not None:
+        v = values.raw if isinstance(values, NumericBuffer) else values
+        x = None
+        if x_values is not None:
+            x = x_values.raw if isinstance(x_values, NumericBuffer) else x_values
+        try:
+            v = _np.asarray(v, dtype=_np.float64)
+            if x is not None:
+                x = _np.asarray(x, dtype=_np.float64)
+        except (TypeError, ValueError):
+            return None, False
+        out = []
+        for s, e in bounds:
+            if e <= s:
+                continue
+            seg = v[s:e]
+            mid = (s + e - 1) // 2
+            out.append({
+                "value": float(seg.mean()),
+                "min": float(seg.min()),
+                "max": float(seg.max()),
+                "count": int(e - s),
+                "x": float(x[mid]) if x is not None else mid,
+            })
+        return (out, True) if out else (None, False)
+    # 纯 Python 回退
+    out = []
+    for s, e in bounds:
+        if e <= s:
+            continue
+        lo = hi = values[s]
+        total = 0.0
+        for j in range(s, e):
+            val = values[j]
+            total += val
+            if val < lo:
+                lo = val
+            if val > hi:
+                hi = val
+        mid = (s + e - 1) // 2
+        out.append({
+            "value": total / (e - s), "min": lo, "max": hi,
+            "count": e - s,
+            "x": (x_values[mid] if x_values is not None else mid),
+        })
+    return (out, True) if out else (None, False)
 
 
 def _sample_kind(obj) -> str:

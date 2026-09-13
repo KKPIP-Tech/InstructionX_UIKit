@@ -445,13 +445,39 @@ class GridCoord(Coord):
             self.y_axis.set_extent(0.0, 1.0)
         if self.x_axis.type == "value":
             xs = []
+            # 标量数据（``data: [y, ...]``）没有自带 x，各渲染器按下标取值，
+            # 因此坐标范围必须覆盖 [0, n-1]。历史上这里只从 [x, y] 对里取 x，
+            # 标量数据在数值 x 轴下会落入 else 分支取 [0, 1]，而点的 x 是
+            # 0..n-1 → 全部映射到坐标区之外，整幅只剩坐标轴与图例（实测
+            # 百万散点完全空白）。故此处对标量序列补上下标范围。
+            scalar_max = None
             for s in series_opts or []:
                 if not isinstance(s, dict):
                     continue
-                for item in s.get("data") or []:
+                if s.get("coordinateSystem") not in (None, "cartesian2d",
+                                                     "grid"):
+                    continue
+                data = s.get("data")
+                if not isinstance(data, (list, tuple)) and not hasattr(
+                        data, "__len__"):
+                    continue
+                has_own_x = False
+                try:
+                    n = len(data)
+                except TypeError:
+                    continue
+                for item in data:
                     x = _datum_x(item)
                     if isinstance(x, (int, float)) and not isinstance(x, bool):
                         xs.append(float(x))
+                        has_own_x = True
+                if not has_own_x and n > 0:
+                    hi = float(n - 1)
+                    scalar_max = hi if scalar_max is None \
+                        else max(scalar_max, hi)
+            if scalar_max is not None:
+                xs.append(0.0)
+                xs.append(scalar_max)
             if xs:
                 self.x_axis.set_extent(min(xs), max(xs))
             else:
