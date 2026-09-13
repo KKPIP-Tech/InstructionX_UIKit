@@ -15,8 +15,8 @@
 - [5. 布局用法](#5-布局用法)
 - [6. 动画用法](#6-动画用法)
 - [7. 图表用法（InstructionX_UIKit.charts 原生引擎）](#7-图表用法instructionx_uikitcharts-原生引擎)
-- [8. 蓝图模式（InstructionX_UIKit.blueprint 节点图）](#8-蓝图模式instructionx_uikitblueprint-节点图)
-- [9. 常见问题](#9-常见问题)
+- [9. 蓝图模式（InstructionX_UIKit.blueprint 节点图）](#9-蓝图模式instructionx_uikitblueprint-节点图)
+- [10. 常见问题](#9-常见问题)
 
 ## 1. 安装
 
@@ -1107,11 +1107,127 @@ chart.update_option({"series": [{"data": [130, 120, 150, 160, 170, 240]}]})  # �
 - Demo「图表」页已全面切换到 `InstructionX_UIKit.charts` 演示；`PySide6.QtCharts` 不再是图表页依赖，仅当你已有基于 QtCharts 的旧代码时才需要它，两者可共存互不影响。
 - 引擎契约见仓库 `CHART_SPEC.md`；可经 `register_series` / `register_component` 扩展自定义系列与组件。
 
-## 8. 蓝图模式（InstructionX_UIKit.blueprint 节点图）
+## 8. 大数据与实时渲染（图表引擎进阶）
+
+本节所有能力均为**加法式扩展**：既有 `set_option` / `update_option` 语义与调用方式完全不变，
+只在数据规模或刷新频率需要时才启用。
+
+### 8.1 渲染后端：GPU 与软件双视口
+
+图表绘制由内部视口承载，**运行时自动选择后端，调用方无需修改任何代码**：
+
+- **GPU 后端**：GL 可用时为 `QOpenGLWidget`，坐标轴、曲线与文字由 GL paint engine 承担；
+- **软件后端（自动回退）**：无 GL 环境（含 `QT_QPA_PLATFORM=offscreen` 的测试环境）时
+  使用普通 `QWidget` 视口，**行为与历史版本一致，离屏测试与截图回归不受影响**。
+
+环境变量 `UIKIT_CHART_GL` 控制探测：`auto`（默认）/ `on`（强制尝试，失败仍回退并记 WARNING）/
+`off`（强制软件渲染）。
+
+```python
+# 无需任何代码改动；如需排查后端可用性：
+from InstructionX_UIKit.charts.viewport import gl_available
+print(gl_available())        # offscreen 平台恒为 False
+```
+
+### 8.2 自动降采样与保真承诺
+
+百万级数据**无需调用方做任何处理**：点数超过「绘图区像素宽 × 2」时自动降采样，未超过时
+**不做任何降采样**——全部点按原始分辨率参与绘制，即「保真承诺」。
+
+降采样采用**逐桶保留极值**（每桶取 min/max 所在的原始点，按 x 顺序还原），因此尖峰与
+毛刺不会被抹掉。可验证的判据是：降采样后的**逐像素列 y 极值与全量直绘一致**。
+
+```python
+# 默认自动（minmax）；可显式指定或关闭
+{"type": "line", "name": "信号", "data": ys}
+{"type": "line", "name": "信号", "data": ys, "sampling": "minmax"}   # 显式指定
+{"type": "line", "name": "信号", "data": ys, "sampling": None}      # 关闭（帧率不保证）
+{"type": "line", "name": "信号", "data": ys, "samplingSafety": 2.0}  # 阈值系数
+```
+
+**大数组建议直接传 numpy 数组**：此时按**引用**持有、零拷贝，内存不翻倍；传 Python 列表
+则一次性转为紧凑缓冲区。两种方式渲染结果一致。
+
+```python
+import numpy as np
+ys = np.asarray(collect(), dtype=np.float64)
+chart.set_option({"series": [{"type": "line", "name": "信号", "data": ys}]})
+# 注意：传入后请勿原地修改该数组（图表按引用持有）
+```
+
+百万级散点另有 `large` 模式：按像素桶聚合（每桶一个图元、点数越多越不透明），
+把百万图元压到视口像素量级。
+
+```python
+{"type": "scatter", "name": "点云", "data": pts, "large": True}
+```
+
+### 8.3 实时数据接入
+
+采集线程按帧率投递，界面按刷新节奏取数入图，**不阻塞主线程**：
+
+```python
+chart.set_option({"xAxis": {"type": "category", "data": []},
+                  "yAxis": {"type": "value"},
+                  "series": [{"type": "line", "name": "信号", "data": []}]})
+
+sess = chart.stream(series="信号", window=20000)   # 保留最近 2 万点
+sess.write(value)        # 采集线程里高频调用（任意线程安全）
+sess.write([v1, v2, v3])
+sess.close()             # 结束时停止
+
+print(sess.stats)        # {"batches", "points", "frames", "merged", "dropped", "buffered"}
+```
+
+参数：`series`（名称或序号）、`window`（保留点数，决定内存上界）、`interval`（入图节奏，
+默认 1/90 秒）、`auto_scale`（是否自动跟随 y 范围）。
+
+设计要点：写入侧为**无锁单写单读环形缓冲**（先写数据、最后更新长度，故读不到半写状态；
+写满丢最旧且 `dropped` 可观测）；投递频率高于刷新节奏时由**帧合并**聚合，一次入图成批送达
+且不丢点；无新数据时不重绘。底层两个构件也可单独使用：
+
+```python
+from InstructionX_UIKit.charts.stream import RingBuffer, FrameCoalescer
+```
+
+### 8.4 GPU 原生直绘（可选，默认关闭）
+
+把折线顶点直接提交显卡（VBO + GLSL，坐标变换在着色器内完成），**绕过 QPainter 的路径
+构造**。适合「数据静态且希望避免降采样、按全分辨率绘制」的场景：
+
+```python
+{"type": "line", "name": "信号", "data": ys, "gpuDirect": True}
+```
+
+**收益预期要放准**（实测数据）：
+
+| 点数 | QPainter 绘制 | GPU 绘制 |
+|---|---|---|
+| 5,000 | 4.46 ms | 0.05 ms |
+| 50,000 | 42.06 ms | 0.09 ms |
+| 200,000 | 137.33 ms | 0.10 ms |
+
+绘制步骤本身提速最高约 1300 倍，**但默认配置的整体帧耗时由布局、采样与文字主导**
+（150 万点稳态 5.0 ms / 198 fps，已在 90 fps 预算内），因此 `gpuDirect` 不是通用提速
+开关，默认关闭；仅在明确需要「不降采样直绘」时按系列开启。软件回退环境下该选项被
+静默忽略。
+
+### 8.5 同屏多图的性能特征
+
+| 场景 | 帧耗时 | 折合 fps |
+|---|---|---|
+| 16 图同屏稳态（数据未变，缓存命中） | 1.0 ms | 992 |
+| 16 图同屏、**同一帧内全部更新数据** | 89 ms | 11 |
+
+即：稳态下同屏多图没有压力；瓶颈只在「同一帧内所有图的数据都变化」。该场景的硬下限是
+每图采样与布局的固定成本，**建议错开更新时机**（例如不同图用不同 `interval`，或分批投递），
+而不是追求单帧内全部刷新。
+
+## 9. 蓝图模式（InstructionX_UIKit.blueprint 节点图）
 
 类 UE5 Blueprint / ComfyUI 的节点图编辑器：**纯 UI 与交互，不含业务执行逻辑**。扩展性第一——节点类型、引脚类型、菜单、节点体内容全部可注册 / 覆写。完整演示见 Demo「蓝图」页（`demo/pages/blueprint.py`），组件契约见 `BP_SPEC.md`。
 
-### 8.1 核心概念
+### 9.1 核心概念
 
 | 概念 | 类 | 说明 |
 | --- | --- | --- |
@@ -1123,7 +1239,7 @@ chart.update_option({"series": [{"data": [130, 120, 150, 160, 170, 240]}]})  # �
 | 画布 | `BlueprintCanvas` | 平移 / 缩放 / 框选 / 拖线建边 / 创建与右键菜单 / Delete 删除 / 序列化 |
 | 运行指示 | `ExecutionController` | 经 `canvas.execution()` 取得：仅做 UI 状态展示，**不执行业务逻辑** |
 
-### 8.2 快速上手（10 行）
+### 9.2 快速上手（10 行）
 
 ```python
 from PySide6.QtCore import QPointF
@@ -1137,7 +1253,7 @@ graph.add_edge(a.id, "out", b.id, "in")          # 校验通过返回 Edge
 canvas.fit_view()                                # 适应视图
 ```
 
-### 8.3 注册自定义节点（含 body_builder）
+### 9.3 注册自定义节点（含 body_builder）
 
 ```python
 from InstructionX_UIKit.blueprint import register_node_type
@@ -1168,7 +1284,7 @@ register_pin_type("audio", "#E0A030")  # 可选：扩展引脚类型配色
 
 注意：画布为避免与节点拖拽冲突，将节点体设为鼠标透明——`body_builder` 注入的控件在画布内作展示用；交互编辑建议放到侧栏属性面板（Demo 蓝图页用 `demo.pages.playground.ParamForm` 实现，写回同一份 `node.properties` 后 `node.changed.emit()` 刷新外观）。
 
-### 8.4 命名空间隔离（owner）
+### 9.4 命名空间隔离（owner）
 
 多个插件 / 模块可能注册**同名节点类型**（如 `load_image`）但引脚定义不同。注册、查询、创建均可携带 `owner` 关键字参数划定命名空间，同名类型在不同 owner 下共存、互不影响；`owner=None` 为全局命名空间（内置 `start` 等留在全局），**不传 owner 的旧调用行为完全不变**。
 
@@ -1200,7 +1316,7 @@ canvas = BlueprintCanvas(BlueprintGraph(), owner="plugin_a")
 
 完整演示见 Demo「蓝图」页底部「命名空间隔离」小节（`demo/pages/blueprint.py`）。
 
-### 8.5 运行指示 API（ComfyUI 式，纯 UI）
+### 9.5 运行指示 API（ComfyUI 式，纯 UI）
 
 ```python
 ex = canvas.execution()
@@ -1214,7 +1330,7 @@ ex.reset()                        # 全部回 idle，清耗时与路径
 
 Demo 蓝图页的「运行」按 exec 链拓扑序用 QTimer 逐节点模拟（每节点 200–800ms 随机耗时），「单步」逐节点推进——全部只是状态指示，无业务逻辑。
 
-### 8.6 渲染后端（GPU 加速）
+### 9.6 渲染后端（GPU 加速）
 
 画布绘制由内部视口承载，**运行时自动选择后端，调用方无需修改任何代码**：
 
@@ -1232,7 +1348,7 @@ os.environ["UIKIT_BLUEPRINT_GL"] = "off"   # 在 QApplication 创建前设置
 >
 > **无边框半透明顶层窗口**：`FramelessWindowHint` + `WA_TranslucentBackground` 的顶层窗口下，`QOpenGLWidget` 首帧可能把旧的合成结果送上屏幕（FBO 内容完整但节点不显示，任意一次重绘即恢复）。GL 视口已在 `showEvent` 中强制一次重绘规避该问题，调用方无需处理。
 
-### 8.7 序列化
+### 9.7 序列化
 
 ```python
 data = canvas.to_dict()      # {"graph": {...}, "view": {"zoom", "offset"}}
@@ -1242,11 +1358,11 @@ graph.to_dict()              # 仅数据层：{"nodes": [...], "edges": [...]}
 
 全部 JSON 友好（`json.dumps` 可直接序列化），含节点位置、引脚、properties 与画布 zoom/offset。
 
-### 8.8 应用场景
+### 9.8 应用场景
 
 节点图天然适合「可视化拼装 + 数据流」类工具：**PyTorch 模块拼装**（把 Conv / Attention / 融合等模块注册为节点类型，properties 承载超参数，图结构导出为构建脚本）、**着色器 / 材质流水线**（纹理输入、滤镜、混合节点，引脚类型映射数据格式）、**AI 流水线编排**（加载→预处理→推理→后处理→落盘，如 Demo 预置图），以及规则引擎、音视频转码链、ETL 流程等。库只负责编辑与状态展示，真正的执行调度由应用层按图拓扑自行实现。
 
-## 9. 常见问题
+## 10. 常见问题
 
 **Q1：设置了 `size="sm"` 但样式不生效？**
 `size` 是 QWidget 内置 `Q_PROPERTY`，`setProperty("size", "sm")` 会失败且不会成为动态属性。务必使用：
