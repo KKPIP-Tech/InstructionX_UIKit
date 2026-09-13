@@ -1040,17 +1040,69 @@ _MASSIVE_DEFAULT_N = 1_500_000
 #: 点数滑块上限（数据接入本身在毫秒级，此处上限取 500 万以显示余量）
 _MASSIVE_MAX_N = 5_000_000
 
-#: 实时帧率统计的采样窗口（毫秒）
-_LIVE_WINDOW_MS = 600
+#: 实时滚动流的生产者节奏：每 ``_LIVE_SAMPLE_INTERVAL_MS`` 毫秒推一批
+#: ``_LIVE_BATCH`` 个点，合计约 ``_LIVE_RATE`` 点/秒（高速传感器量级）。
+#:
+#: **速率为什么不能只取 50 点/秒**：定长窗口（默认 2 万点）在 50 点/秒下要
+#: 约 7 分钟才写满，演示里既看不到曲线左移、也看不到窗口丢弃最旧点——等于没
+#: 演示出「滚动流」这个形态。取千点量级后窗口在一分钟内写满，滚动与丢弃都
+#: 立刻可见；读数里同时给出实测与目标，口径是透明的。
+_LIVE_SAMPLE_INTERVAL_MS = 30
+_LIVE_BATCH = 30
+_LIVE_RATE = int(_LIVE_BATCH * 1000 / _LIVE_SAMPLE_INTERVAL_MS)
 
-#: 实时帧率的刷新节奏（毫秒）。**不得设为 0**：那会让事件循环不停地堆积重绘
-#: 请求，在「关闭采样 + 百万点」这种单帧长达数秒的配置下会直接把进程拖垮
-#: （实测崩溃）。约 60 Hz 已足够反映真实帧率。
+#: 实时滚动流的读数刷新节奏（毫秒）。**不得设为 0**：那会让事件循环不停地
+#: 堆积重绘请求，在单帧长达数秒的极端配置下会把进程拖垮。
 _LIVE_INTERVAL_MS = 16
 
-#: 单帧超过该耗时（毫秒）时暂停实时帧率：此时测到的是「几秒一帧」，
+#: 实时滚动流默认保留的窗口点数（写入环形缓冲的容量上界）。
+#:
+#: 默认取 20,000 点（约 20 秒 / 1000 点每秒）：信号主频是 ``sin(0.9·t)``，
+#: 周期约 7 秒，故 20 秒窗口里能看到约 3 个完整周期——曲线一眼可辨。窗口太小
+#: （如 500 点 = 0.5 秒）只会截到相位的一小段，画出来近似一条斜线。
+_LIVE_WINDOW = 20_000
+
+#: 单帧超过该耗时（毫秒）时暂停实时滚动：此时测到的是「几秒一帧」，
 #: 既无参考价值，又会把界面拖住。读数条会说明原因。
 _LIVE_MAX_FRAME_MS = 120.0
+
+
+class _LiveSensor(QThread):
+    """模拟高速传感器：按固定周期产出一批采样点（独立线程）。
+
+    线程只做「造数 + 发信号」，信号在 GUI 线程被投进流式会话的环形缓冲，
+    因此这里不触碰任何界面对象。信号用队列连接，天然跨线程安全。
+    """
+
+    #: 一批采样点（长度 ``_LIVE_BATCH`` 的 ndarray）
+    batch = Signal(object)
+
+    def __init__(self, interval_ms: int = _LIVE_SAMPLE_INTERVAL_MS,
+                 batch: int = _LIVE_BATCH, parent=None) -> None:
+        super().__init__(parent)
+        self._step = max(1, int(interval_ms)) / 1000.0
+        self._batch = max(1, int(batch))
+        self._phase = 0.0
+        self._rate = self._batch / self._step        # 采样率（点/秒）
+
+    def run(self) -> None:  # noqa: N802 - Qt 覆写
+        rnd = np.random.default_rng(7)
+        step = 1.0 / self._rate                      # 相邻采样点的时间间隔
+        while not self.isInterruptionRequested():
+            # 与 _massive_signal 同族（低频趋势 + 中频细节 + 噪声），但相位
+            # 连续，故滚动窗口内是一条连续前进的曲线而非重复片段。
+            t = self._phase + step * np.arange(self._batch)
+            self._phase += step * self._batch
+            self.batch.emit(np.sin(t * 0.9) * 45.0
+                            + np.sin(t * 11.0) * 5.0
+                            + rnd.normal(0.0, 0.6, self._batch))
+            self.msleep(max(1, int(self._step * 1000)))
+
+    def stop(self) -> None:
+        """请求停止并等待线程退出（最长约一个采样周期）。"""
+        self.requestInterruption()
+        if self.isRunning():
+            self.wait(2000)
 
 
 def _massive_signal(n: int, seed: int = 2026):
@@ -1101,7 +1153,7 @@ class _MassiveDataWorker(QThread):
 
 
 class MassiveDataDemo(QWidget):
-    """巨量数据综合演示：实时帧率 + 双路径耗时对比 + 后台线程生成。
+    """巨量数据综合演示：实时滚动流 + 双路径耗时对比 + 后台线程生成。
 
     演示要点：
 
@@ -1109,7 +1161,9 @@ class MassiveDataDemo(QWidget):
       ——因为绘制点数由视口像素宽决定，与数据总量无关；
     - **GPU 原生直绘**：开启后折线顶点经 VBO + GLSL 走显卡，绕过 QPainter
       的路径构造（耗时读数会出现数量级差异）；
-    - **实时帧率**：连续重绘并统计真实帧间隔；
+    - **实时滚动流**：模拟 50 点/秒的高速传感器（独立线程写入无锁环形缓冲），
+      图表只保留最近 N 点并持续左移；读数报实测入图频率与采样吞吐，而不是
+      重绘请求数（后者只会量到定时器节奏）；
     - **后台线程生成**：点数较大时在 QThread 中准备数据，界面不卡。
 
     本演示**不提供**「关闭采样」档位：采样阈值就是屏幕像素宽，超过它的点
@@ -1121,11 +1175,15 @@ class MassiveDataDemo(QWidget):
         self._n = _MASSIVE_DEFAULT_N
         self._ys = None
         self._worker = None
-        self._fps_frames = 0
-        self._fps_t0 = 0.0
-        self._peak_fps = 0.0
-        self._live_halted = False
         self._busy = False
+        # 实时滚动流状态（生产者线程 + 流式会话 + 实测读数）
+        self._sensor = None
+        self._sess = None
+        self._live_halted = False
+        self._live_last = 0.0
+        self._live_gaps = []
+        self._live_samples = 0
+        self._live_target = 0
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -1142,7 +1200,10 @@ class MassiveDataDemo(QWidget):
             "逐像素列极值与全量直绘严格一致——所以本演示里没有「关闭采样」这一档，"
             "关掉只会白烧 CPU（单帧从毫秒级涨到秒级，界面随即失去响应）。"
             "两条路径对比的是**同一条采样后曲线**：QPainter 逐点构造路径 vs "
-            "「GPU 原生直绘」把顶点交给 VBO + GLSL。数据在后台线程生成，界面不卡。",
+            "「GPU 原生直绘」把顶点交给 VBO + GLSL。数据在后台线程生成，界面不卡。"
+            "打开「实时滚动流」后改为持续流：独立线程按约 1000 点/秒写入无锁环形"
+            "缓冲，图表只保留最近「窗口」个点、写满丢最旧——读数报的是实测入图"
+            "频率与采样吞吐，不是重绘请求数。",
             role="tertiary"))
 
         # -- 图表 ----------------------------------------------------------
@@ -1159,14 +1220,19 @@ class MassiveDataDemo(QWidget):
                      key="points", step=50_000)
         form.add_bool("GPU 原生直绘", _gl_ready(), self._on_gpu,
                       key="gpuDirect")
-        form.add_bool("实时帧率", False, self._on_live, key="live")
+        form.add_bool("实时滚动流", False, self._on_live, key="live")
+        form.add_choice("滚动窗口", [("500 点（约 0.5 秒）", 500),
+                                 ("2,000 点（约 2 秒）", 2_000),
+                                 ("20,000 点（约 20 秒）", 20_000),
+                                 ("100,000 点（约 100 秒）", 100_000)],
+                        _LIVE_WINDOW, self._on_window, key="window")
         form.add_bool("后台线程生成", False, self._on_threaded, key="threaded")
         lay.addWidget(panel)
         self.panel = panel
         self.form = form
 
-        # 帧率计时器：按固定节奏请求重绘，统计真实帧间隔。
-        # 间隔取 _LIVE_INTERVAL_MS（不能是 0，见该常量说明）。
+        # 读数刷新计时器：只负责按节奏刷新读数条（不驱动重绘——重绘由流式
+        # 会话在有新数据时发起）。间隔取 _LIVE_INTERVAL_MS，不能是 0。
         self._fps_timer = QTimer(self)
         self._fps_timer.setInterval(_LIVE_INTERVAL_MS)
         self._fps_timer.timeout.connect(self._on_fps_tick)
@@ -1182,15 +1248,24 @@ class MassiveDataDemo(QWidget):
         self._rebuild()
 
     def _on_live(self, enabled) -> None:
+        """切换实时滚动流：开则接上模拟传感器，关则回到巨量静态数据。"""
         if enabled:
-            self._fps_frames = 0
-            self._fps_t0 = time.perf_counter()
-            self._peak_fps = 0.0
-            self._live_halted = False
-            self._fps_timer.start()
+            self._start_live()
         else:
-            self._fps_timer.stop()
-            self._fps_frames = 0
+            self._stop_live()
+            self._rebuild()
+
+    def _on_window(self, value) -> None:
+        """滚动窗口变化：仅在流开启时立即重建会话。"""
+        if self._sess is not None:
+            self._start_live()
+
+    def _window(self) -> int:
+        ctrl = self.form.controls.get("window")
+        try:
+            return max(100, int(ctrl.currentData()))
+        except Exception:  # noqa: BLE001
+            return _LIVE_WINDOW
 
     def _on_threaded(self, _enabled) -> None:
         self._rebuild()
@@ -1279,7 +1354,11 @@ class MassiveDataDemo(QWidget):
         self._update_readout()
 
     def _update_readout(self) -> None:
+        """刷新读数条：离线配置报双路径耗时，实时滚动流报实测吞吐。"""
         res = getattr(self, "_res", None)
+        if self._sess is not None:
+            self._live_readout()
+            return
         if res is None:
             return
         n = self._n if self._ys is None else len(self._ys)
@@ -1311,54 +1390,157 @@ class MassiveDataDemo(QWidget):
         # 两条路径画的是同一条采样后曲线，倍数即「路径构造成本」的差距。
         if cpu and res["gpu_ms"]:
             parts.append(f"GPU 快 {cpu / res['gpu_ms']:.0f} 倍")
-        if self._peak_fps:
-            parts.append(f"实测峰值 {self._peak_fps:.0f} fps")
-        elif getattr(self, "_live_halted", False):
-            parts.append("实时帧率已暂停（单帧耗时过长）")
         parts.append("GL 后端 " + ("已启用" if res["gl"] else "软件回退"))
         self.readout.setText(" ｜ ".join(parts))
+
+    def _live_readout(self) -> None:
+        """实时滚动流的读数：只报**实测**量，不掺重绘请求数。
+
+        - **入图频率 / 间隔**：会话每次把新数据写进图表的时间差。有新数据才
+          刷新，故它等于「屏幕上的曲线多久前进一步」；上限受读数定时器节奏
+          （1000/_LIVE_INTERVAL_MS）与合成刷新率约束，**不是**图表能力上限。
+        - **采样吞吐**：生产者累计写入点数 / 运行时长，只由采集线程决定，
+          与界面节奏无关——两者一起看才说明「数据没有被界面拖住」。
+        - **丢弃点数**：窗口写满后覆盖掉的旧点数，即「滚动」的证据。
+        """
+        sess = self._sess
+        if sess is None:
+            return
+        parts = [f"滚动窗口 {sess.ring.capacity:,} 点",
+                 f"已入图 {len(sess.ring):,}"]
+        gaps = self._live_gaps[-60:]
+        if gaps:
+            mean_ms = sum(gaps) / len(gaps)
+            parts.append(f"实测入图 {1000.0 / max(mean_ms, 1e-6):.1f} Hz"
+                         f"（间隔 {mean_ms:.1f} ms）")
+        if self._live_target:
+            rate = self._live_samples / max(self._live_elapsed(), 0.1)
+            parts.append(f"采样 {rate:.0f} 点/秒（目标 {self._live_target}）")
+        parts.append(f"丢弃旧点 {sess.ring.dropped:,}")
+        if self._live_halted:
+            parts.append("实时滚动已暂停（单帧耗时过长）")
+        gl = "已启用" if _gl_ready() else "软件回退"
+        parts.append("GL 后端 " + gl)
+        self.readout.setText(" ｜ ".join(parts))
+
+    def _live_elapsed(self) -> float:
+        """实时滚动流已运行秒数（未开启时为 0）。"""
+        return max(0.0, time.perf_counter() - getattr(self, "_live_t0", 0.0))
 
     def _readout(self, text: str) -> None:
         self.readout.setText(text)
 
-    # -- 实时帧率 ----------------------------------------------------------
-    def _on_fps_tick(self) -> None:
-        """按固定节奏请求重绘并统计真实帧率。
+    # -- 实时滚动流 --------------------------------------------------------
+    def _start_live(self) -> None:
+        """接上模拟传感器：生产者线程 → 环形缓冲 → 按帧入图。
 
-        安全阀：若已知单帧耗时过大（例如关闭采样后的百万点），直接停表——
-        此时继续连发重绘只会把界面拖死，而「几秒一帧」的读数也没有意义。
+        与「离线巨量数据」的区别在于这是个**持续流**：数据只增不减地写入定长
+        环形缓冲，窗口满后丢最旧点，图表始终显示最近 ``window`` 个点。
         """
-        if self._busy:
-            return
-        res = getattr(self, "_res", None)
-        if res is not None and res.get("cpu_ms") \
-                and res["cpu_ms"] > _LIVE_MAX_FRAME_MS \
-                and not res.get("gpu_ms"):
-            self._fps_timer.stop()
-            self._live_halted = True
-            self._update_readout()
-            return
-        self._busy = True
-        try:
-            self.chart.update()
-            self._fps_frames += 1
-            now = time.perf_counter()
-            elapsed = (now - self._fps_t0) * 1000.0
-            if elapsed >= _LIVE_WINDOW_MS:
-                fps = self._fps_frames * 1000.0 / max(elapsed, 1e-6)
-                self._peak_fps = max(self._peak_fps, fps)
-                self._fps_frames = 0
-                self._fps_t0 = now
-                self._update_readout()
-        finally:
-            self._busy = False
+        self._stop_live()
+        window = self._window()
+        self.chart.set_option({
+            "title": {"text": f"实时滚动 · 最近 {window:,} 点"},
+            "legend": {"show": False},
+            "tooltip": {"trigger": "axis"},
+            "grid": {"left": 72, "right": 28, "top": 48, "bottom": 38},
+            "xAxis": {"type": "category", "data": []},
+            # 固定 y 轴而不用 auto_scale：量程固定才能看出曲线在滚动而不是被
+            # 每帧重新拉伸。范围按生成器的理论极值取（两个正弦分量 ±50 与
+            # ±5 叠加 + 噪声），留一点余量。
+            "yAxis": {"type": "value", "min": -58, "max": 58},
+            "series": [{"type": "line", "name": "传感器信号", "data": [],
+                        "showSymbol": False, "lineStyle": {"width": 1.2}}],
+        })
+        self.chart.anim.stop()
+        self.chart.anim.set_progress(1.0)
+        self._sess = self.chart.stream(series="传感器信号", window=window,
+                                       interval=_LIVE_INTERVAL_MS / 1000.0,
+                                       auto_scale=False)
+        self._live_last = 0.0
+        self._live_gaps = []
+        self._live_samples = 0
+        self._live_target = _LIVE_RATE
+        self._live_t0 = time.perf_counter()
+        self._live_halted = False
+        # 清掉离线配置的读数：流运行期间不再做离屏测量（实测入图本身仅
+        # 0.01~0.05 ms，而 benchmark 首次调用要 220 ms 重建缓存，会把刷新
+        # 节奏和读数一起带偏），故只保留流的实测值。
+        self._res = None
+        self._sensor = _LiveSensor(parent=self)
+        self._sensor.batch.connect(self._on_sample)
+        self._sensor.start()
+        self._fps_timer.start()
 
-    def stop(self) -> None:
-        """停止计时器与后台线程（页面销毁 / 测试收尾用）。"""
+    def _stop_live(self) -> None:
+        """断开传感器并结束流式会话（可重复调用）。"""
         try:
             self._fps_timer.stop()
         except Exception:  # noqa: BLE001
             pass
+        sensor, self._sensor = self._sensor, None
+        if sensor is not None:
+            try:
+                sensor.batch.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+            sensor.stop()
+            sensor.deleteLater()
+        sess, self._sess = self._sess, None
+        if sess is not None:
+            try:
+                sess.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _on_sample(self, values) -> None:
+        """生产者信号（GUI 线程）：写入环形缓冲，入图由会话按节奏完成。"""
+        sess = self._sess
+        if sess is None:
+            return
+        try:
+            sess.write(values)
+        except Exception:  # noqa: BLE001 - 单次写入失败不应终止流
+            return
+
+    def _on_fps_tick(self) -> None:
+        """刷新实时滚动读数：实测入图间隔、采样吞吐、单帧耗时。
+
+        **不再把重绘请求数当帧率**：那样量到的是定时器节奏（约 1000/16 ≈ 62
+        「fps」），而它与下面画的是 6 ms 的 QPainter 还是 0.29 ms 的 GPU 无关，
+        两条路径读数永远一样。这里改为量两个真实量：
+
+        - **入图间隔**：会话每次真正把新数据写进图表的时间差——只有在有新数据
+          时才刷新，故它反映的是「屏幕上的曲线多久前进一步」；
+        - **采样吞吐**：生产者累计写入点数 / 运行时长（与 UI 节奏无关）。
+
+        安全阀：单帧耗时过大时停表并说明原因，避免界面被拖住。
+        """
+        if self._busy or self._sess is None:
+            return
+        self._busy = True
+        try:
+            res = getattr(self, "_res", None)
+            if res is not None and res.get("cpu_ms") \
+                    and res["cpu_ms"] > _LIVE_MAX_FRAME_MS \
+                    and not res.get("gpu_ms"):
+                self._fps_timer.stop()
+                self._live_halted = True
+                self._update_readout()
+                return
+            self._live_samples = self._sess.ring.total_written
+            now = time.perf_counter()
+            if self._live_last:
+                self._live_gaps.append((now - self._live_last) * 1000.0)
+                del self._live_gaps[:-240]
+            self._live_last = now
+            self._update_readout()
+        finally:
+            self._busy = False
+
+    def stop(self) -> None:
+        """停止实时滚动与后台线程（页面销毁 / 测试收尾用）。"""
+        self._stop_live()
         w = self._worker
         if w is not None and w.isRunning():
             try:
