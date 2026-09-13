@@ -48,6 +48,12 @@ from ..theme import T, ThemeManager
 from ..tokens import DURATION, EASING
 from ._utils import warn_once
 from .data import NumericBuffer, to_buffer
+from .sampling import (
+    bucket_count,
+    sample_entries,
+    sampling_options,
+    visible_threshold,
+)
 from .axes import (
     CalendarCoord,
     Coord,
@@ -364,6 +370,31 @@ class SeriesRenderer:
         if isinstance(d, NumericBuffer):
             return d
         return d if isinstance(d, list) else []
+
+    def sampled_entries(self, data_length: int, viewport_px):
+        """按当前视口宽度对该系列做运行时降采样，返回 ``[(x, y), ...]``。
+
+        ``None`` 表示**未采样**（点数未超阈值、数据形态不适合采样、
+        或采样被显式关闭），调用方应继续逐点走原始数据——这正是
+        「保真承诺」的落点：可见点数不超过视口像素量级时不做任何降采样。
+
+        阈值与桶数都由 ``viewport_px``（当前坐标区像素宽）实时推导，因此
+        渲染器无需预知轴范围或控件尺寸。``sampling: None`` 可显式关闭。
+
+        返回的 x 是各点**原始**的 x（数值数据通常即数据下标），故
+        ``value_at_index`` 与 tooltip 仍能对应到正确的原始数据项。
+        """
+        opts = sampling_options(self.opt)
+        if not opts.enabled or not viewport_px:
+            return None
+        threshold = visible_threshold(viewport_px, opts.safety)
+        if threshold < 2 or data_length <= threshold:
+            return None
+        entries, sampled = sample_entries(
+            self.data_view(), threshold, bucket_count(viewport_px))
+        if not sampled or not entries:
+            return None
+        return entries
 
     def color(self) -> QColor:
         """系列主色（option color 覆盖 → 全局调色板）。"""

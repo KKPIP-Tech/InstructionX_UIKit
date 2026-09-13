@@ -259,15 +259,19 @@ def _sample_kind(obj) -> str:
 
 
 def sample_entries(data, threshold: int, buckets: int = None,
-                   x_of_index=None):
+                   x_of_index=None, x_values=None):
     """按数据承载形态选择采样路径。
 
     参数:
         data: 系列数据。
         threshold: **判定阈值**——点数不超过它时一律不采样（保真承诺）。
         buckets: **产出桶数**，默认与 ``threshold`` 相同；调用方应传入
-                 ``bucket_count(视口像素宽)`` 以保证逐像素列极值严格一致。
+                 ``bucket_count(视口像素宽)`` 以获得逐像素列对齐的桶边界。
         x_of_index: 可调用对象，把下标映射为 x（缺省用下标本身）。
+        x_values: 已解析好的 x 序列（与 ``data`` 等长）。数值 x 轴下渲染器
+                 需要传真实 x 坐标，此时用本参数直传；**不要**误用
+                 ``x_of_index`` 传序列——那会在内部被当函数调用并抛
+                 ``'list' object is not callable``。
 
     返回 ``(entries, sampled)``：``entries`` 为 ``[(x, y), ...]`` 或 ``None``
     （``None`` 表示未采样，调用方应走原始逐点路径）；``sampled`` 为是否发生
@@ -276,6 +280,8 @@ def sample_entries(data, threshold: int, buckets: int = None,
     仅 ``scalar``（数值序列）与 ``pair``（``[x, y]`` 数值对序列）会采样；
     ``other``（字典项、含 None 混合、缺 y 等）一律不采样。
     """
+    if x_values is not None and x_of_index is not None:
+        raise ValueError("sample_entries: x_values 与 x_of_index 不可同时传入")
     kind = _sample_kind(data)
     if kind == "other":
         return None, False
@@ -286,11 +292,13 @@ def sample_entries(data, threshold: int, buckets: int = None,
         buckets = threshold
 
     if kind == "scalar":
-        if x_of_index is None:
-            entries, _ = bucket_sample(data, buckets)
-        else:
+        if x_values is not None:
+            entries, _ = bucket_sample(data, buckets, x_values)
+        elif x_of_index is not None:
             xs = [x_of_index(i) for i in range(n)]
             entries, _ = bucket_sample(data, buckets, xs)
+        else:
+            entries, _ = bucket_sample(data, buckets)
         return entries, entries is not None
 
     # pair：[x, y] 序列

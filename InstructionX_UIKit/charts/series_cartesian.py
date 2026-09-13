@@ -35,6 +35,18 @@ from ..theme import T
 from ._utils import dist_point_segment, to_float as _to_float, with_alpha
 from .axes import CalendarCoord, GridCoord, chart_font, format_value
 from .core import SeriesRenderer, parse_data_point, register_series
+from .data import NumericBuffer
+from .sampling import (
+    bucket_count,
+    sample_entries,
+    sampling_options,
+    visible_threshold,
+)
+
+try:  # pragma: no cover - 环境相关分支（无 numpy 时走纯 Python 路径）
+    import numpy as _np
+except Exception:  # noqa: BLE001
+    _np = None
 
 __all__ = [
     "BarSeriesRenderer",
@@ -523,6 +535,36 @@ class PictorialBarSeriesRenderer(BarSeriesRenderer):
 # line 折线（完整版，覆盖 core 自检版）
 # ---------------------------------------------------------------------------
 
+def _pin_endpoints(entries, data, xs):
+    """把数据首尾端点并入采样结果，并保持 x 升序。
+
+    ``entries`` 为 ``[(x, y), ...]``；``xs`` 为数值 x 轴下的真实 x 列表，
+    为 ``None`` 时按「x 即下标」处理。返回新的列表。
+    """
+    try:
+        n = len(data)
+    except TypeError:
+        return entries
+    if n < 2:
+        return entries
+    first_y = _to_float(data[0], None)
+    last_y = _to_float(data[n - 1], None)
+    extra = []
+    if first_y is not None:
+        extra.append((0 if xs is None else xs[0], first_y))
+    if last_y is not None:
+        extra.append((n - 1 if xs is None else xs[n - 1], last_y))
+    if not extra:
+        return entries
+    merged = list(entries)
+    have = {e[0] for e in merged}
+    for e in extra:
+        if e[0] not in have:
+            merged.append(e)
+    merged.sort(key=lambda e: e[0])
+    return merged
+
+
 class LineSeriesRenderer(SeriesRenderer):
     """折线图（完整版，注册时覆盖 core 的 SimpleLineSeriesRenderer）。
 
@@ -544,6 +586,101 @@ class LineSeriesRenderer(SeriesRenderer):
         self._prev_points = []   # 上一次布局的点（同长度时用于兜底插值）
         self._entries = []       # [(x, y)]
 
+    def _line_viewport_px(self, coord, rect):
+        """采样阈值所用的视口像素宽（优先绘图区宽度）。
+
+        注意：``QRectF.width`` 是**方法**，必须取调用结果而非方法对象——
+        直接 ``getattr(...)`` 拿到的是绑定方法，真值判断恒为真，随后在
+        ``float()`` 处抛异常并被上游的容错分支吞掉，表现为「采样静默失效、
+        全量点照旧渲染」。
+        """
+        if rect is None:
+            return None
+        plot_rect = getattr(coord, "plot", None)
+        w = None
+        if plot_rect is not None:
+            getter = getattr(plot_rect, "width", None)
+            if callable(getter):
+                w = getter()
+            elif isinstance(getter, (int, float)):
+                w = getter
+        if not isinstance(w, (int, float)) or w <= 0:
+            w = rect.width() if callable(getattr(rect, "width", None)) \
+                else rect.width
+        return w if isinstance(w, (int, float)) and w > 0 else None
+
+    def _auto_x_limit(self) -> int:
+        """数值 x 轴的 x 提取扫描上限（避免百万级下标逐点解析开销）。"""
+        return 200_000
+
+    def _line_x_values(self, coord, single):
+        """数值 x 轴下各数据点的真实 x 列表；category 轴返回 ``None``。
+
+        这一步是**必需的**：category 轴与 singleAxis 下 x 就是数据下标，
+        直接用下标采样即可；但**数值 x 轴下 x 是真实数据坐标**，若仍拿下标
+        当 x 传给采样器，0..n-1 会被当成 x 坐标，曲线会缩到坐标轴左端的一小
+        段里（实测首点 x 由 48 变成 644688，只覆盖约 4% 图宽）。
+
+        性能：数值序列（``NumericBuffer`` / ``ndarray``）没有任何元素携带
+        自己的 x，x 即下标，于是直接用 numpy 生成——逐点调 ``parse_data_point``
+        解析百万级元素要 60 ms 以上，而这里只要微秒级。
+        """
+        if single:
+            return None
+        x_axis = getattr(coord, "x_axis", None)
+        if getattr(x_axis, "type", "") != "value":
+            return None
+        data = self.data_view()
+        n = len(data)
+        if n == 0:
+            return None
+        # 快路径：数值序列的 x 恒为下标（Python list 的 int 项同理）
+        if isinstance(data, NumericBuffer) or (
+                _np is not None and isinstance(data, _np.ndarray)):
+            if _np is not None:
+                return _np.arange(n, dtype=_np.float64)
+            return list(range(n))
+        lim = min(n, self._auto_x_limit())
+        out = []
+        for i in range(lim):
+            x, _y = parse_data_point(data[i], i)
+            out.append(x if isinstance(x, (int, float))
+                       and not isinstance(x, bool) else i)
+        if lim < n:
+            # 超出扫描上限：其余点按下标处理（极端大数据下的保守退化）
+            out.extend(range(lim, n))
+        return out
+
+    def _sample_line(self, coord, single, rect):
+        """在渲染器内完成采样，显式区分 category / 数值 x 两种语义。
+
+        返回 ``[(x, y), ...]`` 或 ``None``（未采样）。
+        """
+        opts = sampling_options(self.opt)
+        if not opts.enabled:
+            return None
+        viewport_px = self._line_viewport_px(coord, rect)
+        if not viewport_px:
+            return None
+        n = len(self.data_view())
+        threshold = visible_threshold(viewport_px, opts.safety)
+        if threshold < 2 or n <= threshold:
+            return None
+        buckets = bucket_count(viewport_px)
+        xs = self._line_x_values(coord, single)
+        if xs is None:
+            entries, sampled = sample_entries(self.data_view(), threshold,
+                                              buckets)
+        else:
+            entries, sampled = sample_entries(self.data_view(), threshold,
+                                              buckets, x_values=xs)
+        if not sampled or not entries:
+            return None
+        # 强制保留数据首尾端点：逐桶取极值时，末尾不足一桶的零头点可能完全
+        # 落不进任何桶的 min/max（实测 150 万点下首点 x=0 与末点被丢掉），
+        # 曲线两端会凭空少一截。折线采样必须钉住端点。
+        return _pin_endpoints(entries, self.data_view(), xs)
+
     # -- 布局 -------------------------------------------------------------
     def layout(self, rect: QRectF) -> None:
         coord = self.chart.coord_for(self.opt)
@@ -553,7 +690,21 @@ class LineSeriesRenderer(SeriesRenderer):
         if coord is None:
             return
         single = getattr(coord, "kind", "") == "singleAxis"
-        for i, item in enumerate(self.data()):
+        # 运行时降采样（§8.2 保真承诺）：可见点数超过视口像素量级时才启用。
+        # 阈值用**绘图区像素宽**（GridCoord.plot.width）而非坐标区宽：两者
+        # 相差左右边距（实测 480 的坐标区里绘图区只有 408），用坐标区宽会
+        # 多产出约 18% 的点，既浪费也削弱「逐像素列一桶」的对齐关系。
+        sampled = self._sample_line(coord, single, rect)
+        if sampled is not None:
+            for x, y in sampled:
+                self._entries.append((x, y))
+                try:
+                    self._points.append(coord.map_point(y) if single
+                                        else coord.map_point(x, y))
+                except Exception:
+                    self._points.append(None)
+            return
+        for i, item in enumerate(self.data_view()):
             x, y = parse_data_point(item, i)
             self._entries.append((x, y))
             if y is None:
