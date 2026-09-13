@@ -50,6 +50,7 @@ from .axes import (
     format_value,
     nice_ticks,
 )
+from .viewport import create_viewport
 
 __all__ = [
     "SERIES_REGISTRY",
@@ -664,6 +665,13 @@ class ChartWidget(QWidget):
         self.tooltip = Tooltip(self)
         self.legend.on_toggle = self.set_series_visible
         self.anim = ChartAnimation(self.update, self)
+        # 绘制视口（CHART_SPEC §7）：GL 可用时为 QOpenGLWidget（GPU 渲染），
+        # 否则为普通 QWidget（软件回退，离屏测试走此路径）。本控件自身不再
+        # 绘制——paintEvent 仅为 grab()/render() 路径保留。
+        self._viewport = create_viewport(self)
+        self._viewport.setGeometry(self.rect())
+        self._viewport.show()
+        self._viewport.raise_()
         # 主题连接：接收者为本控件（PySide 以接收者销毁自动断连）；另在
         # destroyed 时显式 disconnect（保守双保险，防单例信号强引用滞留）
         self._theme_slot = self._on_theme_changed
@@ -748,13 +756,29 @@ class ChartWidget(QWidget):
         return default_palette()
 
     def color_for_series(self, series) -> QColor:
-        """系列主色：series opt 的 "color" → 全局调色板按序号取色。"""
-        if isinstance(series, SeriesRenderer):
-            idx = self._series.index(series) if series in self._series else 0
-            own = series.opt.get("color")
+        """系列主色：series opt 的 "color" → 全局调色板按序号取色。
+
+        ``series`` 可以是渲染器实例，也可以是调色板序号。判别优先用
+        **协议特征**（有 ``opt`` 字典）而非 ``isinstance``——渲染器类可能
+        因模块重载等原因与当前 ``SeriesRenderer`` 不是同一对象，此时
+        ``isinstance`` 失配会让 ``int(series)`` 抛出 TypeError 并中断整幅
+        绘制。序号分支同样做兜底，任何无法解析的输入回落到 0 号色。
+        """
+        own = None
+        opt = getattr(series, "opt", None)
+        if isinstance(opt, dict):
+            self_idx = None
+            for i, r in enumerate(self._series):
+                if r is series:
+                    self_idx = i
+                    break
+            idx = self_idx if self_idx is not None else 0
+            own = opt.get("color")
         else:
-            idx = int(series)
-            own = None
+            try:
+                idx = int(series)
+            except (TypeError, ValueError):
+                idx = 0
         if isinstance(own, str) and own:
             return QColor(own)
         pal = self.palette()
@@ -991,10 +1015,32 @@ class ChartWidget(QWidget):
                               f"组件布局异常（{comp.__class__.__name__}）: {exc!r}")
 
     # ------------------------------------------------------------- Qt 事件
+    def update(self, *args) -> None:
+        """重绘请求转发到内部绘制视口（保持外部 ``chart.update()`` 习惯）。
+
+        本控件自身不再绘制：绘制由 ``_viewport`` 承载（GL 可用时为
+        QOpenGLWidget，否则软件回退）。构造期视口尚未创建时回落基类。
+        """
+        vp = getattr(self, "_viewport", None)
+        if vp is not None:
+            vp.update(*args)
+            return
+        super().update(*args)
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        vp = getattr(self, "_viewport", None)
+        if vp is not None:
+            vp.setGeometry(self.rect())
         self._layout_all()
         self.update()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        vp = getattr(self, "_viewport", None)
+        if vp is not None:
+            vp.setGeometry(self.rect())
+            vp.raise_()
 
     def _on_theme_changed(self, _mode) -> None:
         # 配色全部经 T() 实时取，重绘即生效；主题可能影响字体度量等布局
@@ -1003,7 +1049,22 @@ class ChartWidget(QWidget):
         self.update()
 
     def paintEvent(self, event) -> None:
+        """本控件自身的绘制（仅在 ``grab()`` / ``render()`` 直接渲染本控件时触发）。
+
+        常规屏幕绘制由 ``_viewport`` 承载（见 viewport.py）；此方法保证
+        ``chart.grab()`` 等路径仍能得到完整内容。
+        """
         p = QPainter(self)
+        try:
+            self._paint_contents(p)
+        finally:
+            p.end()
+
+    def _paint_contents(self, p: QPainter, layer=None) -> None:
+        """图表内容的唯一绘制体（软件与 GL 两条视口路径共用同一份代码）。
+
+        ``layer`` 预留给分层渲染（静态层 / 动态层 / 覆盖层），当前未使用。
+        """
         p.setRenderHint(QPainter.Antialiasing)
         p.fillRect(self.rect(), QColor(T("color.bg.base")))
         self._layout_all()
@@ -1037,7 +1098,6 @@ class ChartWidget(QWidget):
         title_rect = QRectF(0, 0, self.width(), self.title.height())
         self.title.paint(p, title_rect)
         self.tooltip.paint(p)
-        p.end()
 
     # -- 鼠标：legend 点击 / tooltip 跟随 / C4 组件钩子 --------------------
     def mousePressEvent(self, event) -> None:
