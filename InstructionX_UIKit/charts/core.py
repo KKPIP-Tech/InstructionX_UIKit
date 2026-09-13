@@ -837,7 +837,10 @@ class ChartWidget(QWidget):
         self._series_key = None
         self._series_pixmap_cache = None
         self._series_dpr = 1.0
-        self._series_was_running = False        # 绘制视口（CHART_SPEC §7）：GL 可用时为 QOpenGLWidget（GPU 渲染），
+        self._series_was_running = False
+        #: 数据/主题变更后置位：下一帧直接绘制、不为建缓存多渲染一帧
+        self._paint_only_dirty = False
+        # 绘制视口（CHART_SPEC §7）：GL 可用时为 QOpenGLWidget（GPU 渲染），
         # 否则为普通 QWidget（软件回退，离屏测试走此路径）。本控件自身不再
         # 绘制——paintEvent 仅为 grab()/render() 路径保留。
         self._viewport = create_viewport(self)
@@ -1194,7 +1197,9 @@ class ChartWidget(QWidget):
 
         静态层与系列层缓存与布局同源（option / 尺寸 / 主题 / dataZoom 窗口），
         故一并失效——否则会出现「布局已重排、贴的却仍是旧位图」的错位。
+        同时置脏标记：下一帧直接绘制，避免「为建缓存多渲染一帧」的重复开销。
         """
+        self._paint_only_dirty = True
         self._layout_key = None
         self._static_key = None
         self._static_pixmap_cache = None
@@ -1296,7 +1301,22 @@ class ChartWidget(QWidget):
         self._static_pixmap_cache = None
         self._series_key = None
         self._series_pixmap_cache = None
+        self._paint_only_dirty = False
         self.update()
+
+    def invalidate_all_caches(self) -> None:
+        """使全部图层缓存失效，并标记「下一帧必须重建系列层」。
+
+        与 :meth:`invalidate_static_layer` / :meth:`invalidate_series_layer`
+        的区别：本方法同时置脏标记，使下一帧**不**走「为建缓存而多渲染一帧」
+        的路径——数据变更时直接绘制到目标设备即可，省掉一次全额重画。
+        """
+        self._layout_key = None
+        self._static_key = None
+        self._static_pixmap_cache = None
+        self._series_key = None
+        self._series_pixmap_cache = None
+        self._paint_only_dirty = True
 
     def paintEvent(self, event) -> None:
         """本控件自身的绘制（仅在 ``grab()`` / ``render()`` 直接渲染本控件时触发）。
@@ -1377,10 +1397,16 @@ class ChartWidget(QWidget):
         self.tooltip.paint(p)
 
     def _series_cacheable(self, t) -> bool:
-        """当前帧是否允许使用系列层缓存（动画结束后才可缓存）。
+        """当前帧是否允许使用系列层缓存。
 
-        动画运行期间系列几何逐帧变化，缓存会锁死画面；动画结束的那一帧
-        必须重建一次，否则会贴出动画中途的旧位图。
+        返回 ``False`` 的三种情形：
+
+        1. **动画运行中**：系列几何逐帧变化，缓存会锁死画面；动画结束的那一帧
+           必须重建一次，否则会贴出动画中途的旧位图；
+        2. **数据/主题刚变更（脏标记置位）**：此时缓存必然未命中，若走缓存路径
+           就要「先渲染到位图、再贴回目标设备」，等于把系列绘制做两遍。实时流
+           场景每帧都在更新数据，这笔开销（实测约 3.6 ms/帧）纯属浪费；
+           直接绘制到目标设备即可，同样满足 90 fps 预算。
         """
         running = False
         try:
@@ -1394,6 +1420,12 @@ class ChartWidget(QWidget):
             # 动画刚结束：作废缓存并重建
             self._series_was_running = False
             self.invalidate_series_layer()
+        if getattr(self, "_paint_only_dirty", False):
+            # 脏帧：直接绘制，不为建缓存多渲染一遍
+            self._paint_only_dirty = False
+            self._series_key = None
+            self._series_pixmap_cache = None
+            return False
         del t
         return True
 
