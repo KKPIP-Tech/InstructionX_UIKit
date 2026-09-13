@@ -216,26 +216,65 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
             p.end()
 
     # -- GPU 原生系列直绘（CHART_SPEC §7.2） ------------------------------
+    def ensure_gpu_pipeline(self):
+        """确保 GPU 直绘管线可用，返回它或 ``None``（供 benchmark 调用）。
+
+        **为什么需要这个钩子**：管线原本只在 ``paintGL`` 中惰性创建，而位于
+        长页面底部的图表可能长期被 ``QScrollArea`` 裁剪、**从未被绘制**——
+        此时从外部调用 :meth:`ChartWidget.benchmark` 会拿不到管线，读数显示
+        「GPU 不可用」，而实际环境完全支持。本方法让测量不依赖「是否已滚动到
+        可见区域」。
+
+        内部会 makeCurrent；调用方负责在结束后 ``doneCurrent``（见
+        ``__enter__`` / ``__exit__``）。
+        """
+        ctx = self.context()
+        if ctx is None or not ctx.isValid():
+            return None
+        pipe = self._gpu_pipe
+        if pipe is not None and pipe.ready:
+            return pipe
+        from .gl_series import GLSeriesPipeline
+        pipe = GLSeriesPipeline()
+        if not pipe.ensure(ctx):
+            logger.warning("GPU 原生直绘管线建立失败，回退 QPainter 路径")
+            return None
+        self._gpu_pipe = pipe
+        return pipe
+
+    def __enter__(self):
+        """上下文管理：让视口上下文 current（测量 GPU 前必须）。"""
+        try:
+            self.makeCurrent()
+            self._ctx_entered = True
+        except Exception:  # noqa: BLE001
+            self._ctx_entered = False
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        if getattr(self, "_ctx_entered", False):
+            try:
+                self.doneCurrent()
+            except Exception:  # noqa: BLE001
+                pass
+            self._ctx_entered = False
+        return False
+
     def _draw_gpu_series(self, ctx) -> None:
         """把开启 ``gpuDirect`` 的系列用 VBO + GLSL 直接绘制。
 
-        仅在 GL 视口内调用；任何失败都静默退回（该系列在 QPainter 阶段已
-        按常规路径绘制，故不会缺图）。绘制顺序为「静态层 → QPainter 动态层
-        → GPU 系列」，与纯 QPainter 路径的遮挡关系一致。
+        仅在 GL 视口内调用；任何失败都记录一次并退回（该系列在 QPainter
+        阶段已按常规路径绘制，故不会缺图）。绘制顺序为「静态层 → QPainter
+        动态层 → GPU 系列」，与纯 QPainter 路径的遮挡关系一致。
         """
         chart = self._chart
         series = [r for r in chart.series_renderers
                   if getattr(r, "gpu_direct", False) and r.visible]
         if not series:
             return
-        pipe = self._gpu_pipe
+        pipe = self.ensure_gpu_pipeline()
         if pipe is None:
-            from .gl_series import GLSeriesPipeline
-            pipe = GLSeriesPipeline()
-            if not pipe.ensure(ctx):
-                self._gpu_pipe = None
-                return
-            self._gpu_pipe = pipe
+            return
         try:
             dpr = float(self.devicePixelRatioF())
         except Exception:  # noqa: BLE001

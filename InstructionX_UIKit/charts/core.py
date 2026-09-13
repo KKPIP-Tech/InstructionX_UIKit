@@ -26,6 +26,7 @@ C4 组件协议（components.py / interact.py）：
 """
 
 import copy
+import time
 
 from PySide6.QtCore import (
     QObject,
@@ -1317,6 +1318,182 @@ class ChartWidget(QWidget):
         self._series_key = None
         self._series_pixmap_cache = None
         self._paint_only_dirty = True
+
+    # ------------------------------------------------------- 性能测量
+    def benchmark(self, frames: int = 8, force_layout: bool = True) -> dict:
+        """测量本图表在两种后端下的**单帧绘制耗时**（供演示与性能验证使用）。
+
+        测量口径（可复现，避免常见陷阱）：
+
+        - 计时对象是**离屏位图上的单次绘制**（``QPainter`` → ``QImage``），
+          因此**不含窗口合成与帧缓冲读回**——``grabFramebuffer()`` 之类的读回
+          本身就要数毫秒，会把真实差异淹没；
+        - **不跑事件循环**、不依赖帧率，故结果不受显示器刷新率影响；
+        - 每档先跑一帧预热（含首次采样与建缓存），**取后续帧的最小值**：
+          最小值代表该路径的稳态能力，均值会被单次调度抖动拉偏。
+
+        ``force_layout=True``（默认）每帧强制重排，代表「数据持续变化」的最坏
+        情形；置 ``False`` 则测「静态画面重复绘制」的稳态。
+
+        返回 ``{"points", "series", "cpu_ms", "gpu_ms", "gpu_active",
+        "gl", "budget_ms", "ok"}``：
+
+        - ``points`` 为当前渲染点数（采样后），``series`` 为系列数；
+        - ``cpu_ms`` 为经 QPainter 的绘制耗时；
+        - ``gpu_ms`` 为 GPU 原生直绘的耗时（``gpuDirect`` 未开启、无 GL、
+          或数据形态不支持时为 ``None``）；
+        - ``gpu_active`` 表示本图是否有一系列走 GPU 直绘；
+        - ``budget_ms`` 为 90 fps 的单帧预算（11.11 ms），``ok`` 表示
+          ``cpu_ms`` 是否落在预算内。
+        """
+        from PySide6.QtGui import QImage
+
+        budget = 1000.0 / 90.0
+        points = max((len(r._points) for r in self._series), default=0)
+        info = {
+            "points": points,
+            "series": len(self._series),
+            "cpu_ms": None,
+            "gpu_ms": None,
+            "gpu_active": any(getattr(r, "gpu_direct", False)
+                              for r in self._series),
+            "gl": False,
+            "budget_ms": budget,
+            "ok": False,
+        }
+        try:
+            from .viewport import gl_available
+            info["gl"] = bool(gl_available())
+        except Exception:  # noqa: BLE001
+            info["gl"] = False
+
+        w, h = max(1, self.width()), max(1, self.height())
+        img = QImage(w, h, QImage.Format.Format_RGB32)
+        reps = max(1, int(frames))
+        best = None
+        for i in range(reps + 1):          # 首帧预热，不计入
+            if force_layout:
+                self._layout_all(force=True)
+            t0 = time.perf_counter()
+            try:
+                p = QPainter(img)
+                try:
+                    self._paint_contents(p)
+                finally:
+                    p.end()
+            except Exception:  # noqa: BLE001
+                return info
+            dt = (time.perf_counter() - t0) * 1000.0
+            if i > 0:
+                best = dt if best is None else min(best, dt)
+        info["cpu_ms"] = best
+        info["ok"] = bool(best is not None and best <= budget)
+
+        # GPU 原生直绘：仅当有系列开启 gpuDirect 且本图挂在 GL 视口下
+        vp = getattr(self, "_viewport", None)
+        if info["gpu_active"] and vp is not None \
+                and type(vp).__name__ == "_GLViewport":
+            ctx = None
+            try:
+                ctx = vp.context()
+            except Exception:  # noqa: BLE001
+                ctx = None
+            if ctx is not None and ctx.isValid():
+                info["gpu_ms"] = self._benchmark_gpu(vp, ctx, reps)
+        return info
+
+    def _benchmark_gpu(self, viewport, ctx, reps: int):
+        """测量 GPU 直绘提交耗时（VBO 稳态 + 逐帧绘制 + glFinish 同步）。
+
+        含 ``glFinish`` 是刻意的：不加就无法确认 GPU 真正完成，测到的只是
+        「命令入队」时间（Qt 会合批），会得出虚假的低耗时。
+
+        **必须显式 makeCurrent**：``QOpenGLWidget`` 的上下文只在 ``paintGL``
+        执行期间是 current 的，在其外直接 ``ctx.functions()`` 会拿到悬空函数
+        指针，实测直接崩溃（访问违例 0xC0000005）。
+
+        注意用 **视口自己的** ``makeCurrent()``：``QOpenGLContext.makeCurrent``
+        只接受 ``QSurface``，而 ``QOpenGLWidget`` 不是 ``QSurface``（传进去抛
+        TypeError）。视口方法内部会正确绑定其 FBO 与上下文。
+        """
+        try:
+            from .gl_series import build_mvp
+            maker = getattr(viewport, "makeCurrent", None)
+            if not callable(maker):
+                return None
+            # 顺序不可颠倒：GL 资源必须在**上下文 current 之后**创建。
+            # 先 ensure 再 makeCurrent 会崩溃（实测访问违例 0xC0000005）。
+            try:
+                maker()
+            except Exception:  # noqa: BLE001
+                return None
+            try:
+                pipe = getattr(viewport, "_gpu_pipe", None)
+                if pipe is None or not pipe.ready:
+                    # 图表可能长期被滚动区域裁剪、从未绘制 → 管线尚未惰性
+                    # 创建。显式要求一次，使测量不依赖「是否已滚动到可见区域」。
+                    hook = getattr(viewport, "ensure_gpu_pipeline", None)
+                    pipe = hook() if callable(hook) else None
+                if pipe is None or not pipe.ready:
+                    return None
+                return self._benchmark_gpu_current(viewport, ctx, pipe,
+                                                   reps, build_mvp)
+            finally:
+                try:
+                    viewport.doneCurrent()
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _benchmark_gpu_current(self, viewport, ctx, pipe, reps, build_mvp):
+        """在**已 makeCurrent** 的前提下执行 GPU 测量。"""
+        renderers = [r for r in self._series
+                     if getattr(r, "gpu_direct", False) and r.visible]
+        if not renderers:
+            return None
+        self._layout_all()
+        f = ctx.functions()
+        if f is None:
+            return None
+        try:
+            dpr = float(viewport.devicePixelRatioF())
+        except Exception:  # noqa: BLE001
+            dpr = 1.0
+        w = max(1, int(viewport.width() * dpr))
+        h = max(1, int(viewport.height() * dpr))
+        f.glViewport(0, 0, w, h)
+        plans = []
+        for r in renderers:
+            vinfo = r.gpu_vertex_data()
+            if vinfo is None:
+                continue
+            pipe.set_vertices(vinfo["vertices"], version=vinfo["version"])
+            if pipe.vertex_count < 2:
+                return None
+            coord = self.coord_for(r.opt)
+            tr = r.gpu_transform(coord)
+            if tr is None:
+                continue
+            x0, x1, y0, y1, plot = tr
+            mvp = build_mvp(x0, x1, y0, y1,
+                            plot=(plot.width(), plot.height(),
+                                  plot.left(), plot.top()),
+                            viewport=(viewport.width(), viewport.height()))
+            if mvp is not None:
+                plans.append((mvp, r.color()))
+        if not plans:
+            return None
+        best = None
+        for i in range(max(1, reps)):
+            t0 = time.perf_counter()
+            for mvp, color in plans:
+                pipe.draw(ctx, mvp, color, mode="line_strip", width=2.0)
+            f.glFinish()
+            dt = (time.perf_counter() - t0) * 1000.0
+            if i > 0:
+                best = dt if best is None else min(best, dt)
+        return best
 
     def paintEvent(self, event) -> None:
         """本控件自身的绘制（仅在 ``grab()`` / ``render()`` 直接渲染本控件时触发）。

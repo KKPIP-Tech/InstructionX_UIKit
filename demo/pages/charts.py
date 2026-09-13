@@ -22,8 +22,10 @@
 """
 
 import random
+import time
 
-from PySide6.QtCore import Qt
+import numpy as np
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFrame,
@@ -1028,8 +1030,350 @@ def _comprehensive_section() -> Section:
     return box
 
 
+# ---------------------------------------------------------------------------
+# 巨量数据综合演示
+# ---------------------------------------------------------------------------
+
+#: 巨量数据的默认点数（OpenGL 渲染的目标场景量级）
+_MASSIVE_DEFAULT_N = 1_500_000
+
+#: 点数滑块上限（数据接入本身在毫秒级，此处上限取 500 万以显示余量）
+_MASSIVE_MAX_N = 5_000_000
+
+#: 实时帧率统计的采样窗口（毫秒）与最小间隔
+_LIVE_WINDOW_MS = 600
+
+
+def _massive_signal(n: int, seed: int = 2026):
+    """生成巨量传感器风格信号（多个正弦叠加 + 噪声 + 少量尖峰）。
+
+    纯数值向量，直接交给 `set_option`：数值序列会按**引用**持有并零拷贝摄入。
+    """
+    idx = np.arange(n, dtype=np.float64)
+    rnd = np.random.default_rng(seed)
+    ys = (np.sin(idx * 0.00035) * 30.0 + np.sin(idx * 0.0071) * 8.0
+          + np.sin(idx * 0.11) * 2.0 + rnd.uniform(-0.8, 0.8, n))
+    for s in np.random.default_rng(seed + 1).integers(0, n, 24):
+        ys[s] += rnd.uniform(40.0, 90.0)
+    return ys
+
+
+def _sparkline_ticks(n: int) -> list:
+    """为巨量数据生成稀疏的 x 轴刻度（避免百万级类别标签拖慢文字绘制）。"""
+    count = min(12, max(2, n // 50_000))
+    return [int(round(i * (n - 1) / (count - 1))) for i in range(count)]
+
+
+class _MassiveDataWorker(QThread):
+    """后台线程生成巨量数据，经信号回到 GUI 线程入图。
+
+    演示两个事实：**数据准备不阻塞界面**；跨线程投递只需信号，无需手动加锁。
+    """
+
+    ready = Signal(object, int)      # (ndarray, 生成耗时毫秒)
+
+    def __init__(self, n: int, seed: int = 2026, parent=None):
+        super().__init__(parent)
+        self._n = int(n)
+        self._seed = int(seed)
+
+    def run(self) -> None:  # noqa: D102 - QThread 覆写
+        t0 = time.perf_counter()
+        ys = _massive_signal(self._n, self._seed)
+        dt = (time.perf_counter() - t0) * 1000.0
+        self.ready.emit(ys, int(round(dt)))
+
+
+class MassiveDataDemo(QWidget):
+    """巨量数据综合演示：实时帧率 + 双路径耗时对比 + 后台线程生成。
+
+    演示要点：
+
+    - **点数滑块实时重建**：从 5 万到 500 万，观察「每帧成本与数据总量解耦」；
+    - **采样开关**：关闭后直接绘制全分辨率点（QPainter 路径会明显变慢）；
+    - **GPU 原生直绘**：开启后折线顶点经 VBO + GLSL 走显卡，绕过 QPainter
+      的路径构造（耗时读数会出现数量级差异）；
+    - **实时帧率**：连续重绘并统计真实帧间隔；
+    - **后台线程生成**：点数较大时在 QThread 中准备数据，界面不卡。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._n = _MASSIVE_DEFAULT_N
+        self._ys = None
+        self._worker = None
+        self._fps_frames = 0
+        self._fps_t0 = 0.0
+        self._peak_fps = 0.0
+        self._busy = False
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+
+        # -- 读数条 --------------------------------------------------------
+        self.readout = hint_label("准备中…", role="secondary")
+        self.readout.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(self.readout)
+        lay.addWidget(hint_label(
+            "对比方法：把「采样」切到「关闭（全分辨率）」，再切换「GPU 原生直绘」。"
+            "关闭采样后 QPainter 需逐点构造路径（百万点量级为秒级），而 GPU 直绘"
+            "把顶点一次性提交显卡、变换在着色器内完成，单帧仍在亚毫秒级——"
+            "这正是本区块要展示的 OpenGL 渲染能力。数据在后台线程生成，界面不卡。",
+            role="tertiary"))
+
+        # -- 图表 ----------------------------------------------------------
+        self.chart = ChartWidget(self)
+        self.chart.setMinimumHeight(340)
+        self.chart.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                 QSizePolicy.Policy.Expanding)
+        lay.addWidget(self.chart, 1)
+
+        # -- 参数面板 ------------------------------------------------------
+        panel = PlaygroundPanel("巨量数据参数", width=280)
+        form = panel.form
+        form.add_int("点数", self._n, 50_000, _MASSIVE_MAX_N, self._on_points,
+                     key="points", step=50_000)
+        form.add_bool("GPU 原生直绘", _gl_ready(), self._on_gpu,
+                      key="gpuDirect")
+        form.add_choice("采样", [("自动（minmax）", "minmax"),
+                               ("关闭（全分辨率）", "off")],
+                        "minmax", self._on_sampling, key="sampling")
+        form.add_bool("实时帧率", False, self._on_live, key="live")
+        form.add_bool("后台线程生成", False, self._on_threaded, key="threaded")
+        lay.addWidget(panel)
+        self.panel = panel
+        self.form = form
+
+        # 帧率计时器：按最小间隔连续重绘，统计真实帧间隔
+        self._fps_timer = QTimer(self)
+        self._fps_timer.setInterval(0)      # 只要事件循环空闲就重绘
+        self._fps_timer.timeout.connect(self._on_fps_tick)
+
+        self._rebuild()
+
+    # -- 参数回调 ----------------------------------------------------------
+    def _on_points(self, value) -> None:
+        self._n = int(value)
+        self._rebuild()
+
+    def _on_gpu(self, enabled) -> None:
+        self._rebuild()
+
+    def _on_sampling(self, value) -> None:
+        self._rebuild()
+
+    def _on_live(self, enabled) -> None:
+        if enabled:
+            self._fps_frames = 0
+            self._fps_t0 = time.perf_counter()
+            self._peak_fps = 0.0
+            self._fps_timer.start()
+        else:
+            self._fps_timer.stop()
+            self._fps_frames = 0
+
+    def _on_threaded(self, _enabled) -> None:
+        self._rebuild()
+
+    def _threaded(self) -> bool:
+        ctrl = self.form.controls.get("threaded")
+        try:
+            return bool(ctrl.isChecked())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _gpu_enabled(self) -> bool:
+        ctrl = self.form.controls.get("gpuDirect")
+        try:
+            return bool(ctrl.isChecked())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _sampling_value(self):
+        ctrl = self.form.controls.get("sampling")
+        try:
+            return ctrl.currentData()
+        except Exception:  # noqa: BLE001
+            return "minmax"
+
+    # -- 构建 --------------------------------------------------------------
+    def _rebuild(self) -> None:
+        """按当前参数准备数据并重建图表（大点数走后台线程）。"""
+        n = self._n
+        if n >= 500_000 and self._threaded():
+            self._readout("后台线程生成 %s 点数据…" % f"{n:,}")
+            self._start_worker(n)
+            return
+        self._apply(_massive_signal(n), 0, threaded=False)
+
+    def _start_worker(self, n: int) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.ready.disconnect()
+            self._worker.quit()
+            self._worker.wait(2000)
+        self._worker = _MassiveDataWorker(n, parent=self)
+        self._worker.ready.connect(self._on_data_ready)
+        self._worker.start()
+
+    def _on_data_ready(self, ys, gen_ms: int) -> None:
+        self._apply(ys, gen_ms, threaded=True)
+
+    def _apply(self, ys, gen_ms: int, threaded: bool) -> None:
+        self._ys = ys
+        n = len(ys)
+        series = {
+            "type": "line",
+            "name": "传感器信号",
+            "data": ys,
+            "lineStyle": {"width": 1.2},
+            "showSymbol": False,
+        }
+        sampling = self._sampling_value()
+        if sampling == "off":
+            series["sampling"] = None
+        if self._gpu_enabled():
+            series["gpuDirect"] = True
+        option = {
+            "title": {"text": f"巨量数据 · {n:,} 点"},
+            "tooltip": {"trigger": "axis"},
+            "grid": {"left": 64, "right": 24, "top": 44, "bottom": 34},
+            "xAxis": {"type": "value"},
+            "yAxis": {"type": "value"},
+            "series": [series],
+        }
+        t0 = time.perf_counter()
+        self.chart.set_option(option)
+        self.chart.anim.stop()
+        self.chart.anim.set_progress(1.0)
+        set_ms = (time.perf_counter() - t0) * 1000.0
+        self._last_set_ms = set_ms
+        self._gen_ms = gen_ms
+        self._threaded_used = threaded
+        # 让 GL 视口完成一次真实绘制，之后 GPU 计时才有可用的管线
+        self.chart.repaint()
+        QTimer.singleShot(30, self._refresh_benchmark)
+
+    def _refresh_benchmark(self) -> None:
+        """跑一次双路径测量并刷新读数（测量本身在毫秒级）。"""
+        try:
+            res = self.chart.benchmark(frames=6)
+        except Exception as exc:  # noqa: BLE001
+            self._readout(f"性能测量失败：{exc!r}")
+            return
+        self._res = res
+        self._update_readout()
+
+    def _update_readout(self) -> None:
+        res = getattr(self, "_res", None)
+        if res is None:
+            return
+        n = self._n if self._ys is None else len(self._ys)
+        parts = [f"数据点数 {n:,}",
+                 f"实际渲染 {res['points']:,}"]
+        if getattr(self, "_gen_ms", 0):
+            parts.append(f"数据生成 {self._gen_ms} ms"
+                         + ("（后台线程）" if getattr(self, "_threaded_used",
+                                                      False) else ""))
+        parts.append(f"set_option {getattr(self, '_last_set_ms', 0):.0f} ms")
+        cpu = res["cpu_ms"]
+        parts.append(f"QPainter 单帧 {cpu:.2f} ms" if cpu is not None else
+                     "QPainter 单帧 —")
+        if res["gpu_ms"] is not None:
+            parts.append(f"GPU 直绘 {res['gpu_ms']:.3f} ms")
+        elif res["gpu_active"]:
+            parts.append("GPU 直绘 不可用（需 GL 后端）")
+        budget = res["budget_ms"]
+        flag = "达标" if res["ok"] else "未达标"
+        parts.append(f"90 fps 预算 {budget:.1f} ms → {flag}")
+        # GPU 相对 QPainter 的倍数：这是本区块要展示的核心结论。
+        # 采样关闭时会达到数千倍（QPainter 在百万点全分辨率下是秒级）。
+        if cpu and res["gpu_ms"]:
+            parts.append(f"GPU 快 {cpu / res['gpu_ms']:.0f} 倍")
+        if self._peak_fps:
+            parts.append(f"实测峰值 {self._peak_fps:.0f} fps")
+        parts.append("GL 后端 " + ("已启用" if res["gl"] else "软件回退"))
+        self.readout.setText(" ｜ ".join(parts))
+
+    def _readout(self, text: str) -> None:
+        self.readout.setText(text)
+
+    # -- 实时帧率 ----------------------------------------------------------
+    def _on_fps_tick(self) -> None:
+        """连续重绘并累计帧数；每统计窗口更新一次读数。"""
+        if self._busy:
+            return
+        self._busy = True
+        try:
+            self.chart.update()
+            self._fps_frames += 1
+            now = time.perf_counter()
+            elapsed = (now - self._fps_t0) * 1000.0
+            if elapsed >= _LIVE_WINDOW_MS:
+                fps = self._fps_frames * 1000.0 / max(elapsed, 1e-6)
+                self._peak_fps = max(self._peak_fps, fps)
+                self._fps_frames = 0
+                self._fps_t0 = now
+                res = getattr(self, "_res", None)
+                if res is not None:
+                    res = dict(res)
+                self._update_readout()
+        finally:
+            self._busy = False
+
+    def stop(self) -> None:
+        """停止计时器与后台线程（页面销毁 / 测试收尾用）。"""
+        try:
+            self._fps_timer.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        w = self._worker
+        if w is not None and w.isRunning():
+            try:
+                w.ready.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+            w.quit()
+            w.wait(3000)
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt 覆写
+        """关闭时停掉后台线程（否则 Qt 会报线程仍在运行的销毁告警）。"""
+        self.stop()
+        super().closeEvent(event)
+
+    def __del__(self) -> None:
+        """析构兜底：尽力停止后台线程。
+
+        说明：QThread 随控件一起被销毁时若仍在运行，Qt 只会打印告警而不会等待，
+        因此「后台线程生成」默认**关闭**——默认路径不做跨线程生命周期管理，
+        演示与测试都只走同步生成。开启该选项时应显式调用 :meth:`stop`
+        （或让控件正常 close）。
+        """
+        try:
+            self.stop()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _gl_ready() -> bool:
+    """当前环境是否具备 GL 后端（决定 GPU 直绘开关的初值）。"""
+    try:
+        from InstructionX_UIKit.charts.viewport import gl_available
+        return bool(gl_available())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _massive_data_section() -> Section:
+    """巨量数据综合演示（展示 OpenGL 对图表渲染的性能）。"""
+    box = Section("巨量数据综合演示（OpenGL 渲染 · 150 万点起）")
+    demo = MassiveDataDemo()
+    box.layout().addWidget(demo)
+    box.demo = demo       # 便于测试访问
+    return box
+
+
 def create_page() -> QWidget:
-    """图表演示页（InstructionX_UIKit.charts 原生引擎全系列）。"""
     sec_cart = Section("直角坐标系列（11 种 · grid / 平行 / 日历）")
     sec_cart.layout().addWidget(ResponsiveCardGrid(_make_cards(_CARTESIAN_CARDS)))
 
@@ -1047,6 +1391,7 @@ def create_page() -> QWidget:
         "InstructionX_UIKit.charts 原生图表引擎（纯 QPainter 自绘，无 WebView）："
         "ECharts 风格 set_option / update_option API，主题感知实时换肤。"
         "21 个系列各配演示卡（随页面宽度 1~3 列自适应排布），另设四坐标系、"
-        "map 与组件综合演示（大图整行撑满）。参数修改即按新 option 重建图表。",
+        "map、组件综合与巨量数据演示（大图整行撑满）。参数修改即按新 option "
+        "重建图表。",
         [sec_cart, sec_hier, sec_rel, sec_coord,
-         _comprehensive_section()])
+         _comprehensive_section(), _massive_data_section()])
