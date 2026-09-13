@@ -86,8 +86,12 @@ class GLSeriesPipeline:
     线程约束：**只能在拥有该 GL 上下文的线程（GUI 线程）内使用**。
     """
 
-    #: 缓存容量上限（顶点数）。超过则不建 VBO——百万点每帧重传不值得。
-    MAX_CACHED_VERTICES = 262_144
+    #: 缓存容量上限（顶点数）。语义是**显存**上限，不是每帧成本——
+    #: 版本缓存保证数据不变时不重传，因此大 VBO 在静态期完全划算
+    #: （150 万点 × 8 字节 ≈ 12 MB）。
+    #: 早期取值 262144 是错的：它会让百万点系列**静默不上传**，GPU 路径实际上
+    #: 什么都不画，而画面仍由采样路径兜底——表现为「测试通过但根本没走 GPU」。
+    MAX_CACHED_VERTICES = 4_000_000
 
     def __init__(self) -> None:
         self._prog = None
@@ -284,25 +288,55 @@ def _as_color(color):
     return tuple(out)
 
 
-def build_mvp(x0, x1, y0, y1):
+def build_mvp(x0, x1, y0, y1, plot=None, viewport=None):
     """构造「数据坐标 → NDC」的 4x4 矩阵（``QMatrix4x4``）。
 
-    用 ``QMatrix4x4`` 而不是裸 numpy 数组：``QOpenGLShaderProgram`` 对前者有
-    明确的 ``setUniformValue`` 重载，对后者的支持取决于版本，风险高。
+    **实现策略**：整个矩阵在 numpy 里一次算好（数据 → NDC），最后才构造
+    ``QMatrix4x4`` 返回。不在 ``QMatrix4x4`` 上做链式 ``translate``/``scale``
+    或矩阵相乘——实测其语义与「矩阵右乘」直觉不符（``mvp * S`` 呈现逐元素
+    相乘的迹象），零散试探无法可靠收敛。
 
-    变换顺序：先把数据坐标平移到以 (x0,y0) 为原点，再缩放到 NDC 尺寸，然后
-    y 轴翻转（屏幕 y 向下、NDC y 向上），最后映射到 [-1,1]。
+    参数:
+        x0..y1: 数据坐标区间，映射到目标区域。
+        plot: 可选 ``QRectF``（绘图区，逻辑像素）。给定时映射到该区域在
+              视口内的位置，而不是铺满整个 NDC。
+        viewport: 可选 ``(w, h)``（逻辑像素），与 ``plot`` 搭配使用。
+
+    变换（y 轴翻转：Qt 屏幕 y 向下、GL NDC y 向上）::
+
+        ndc_x = (data_x - x0) / (x1 - x0) * 2 - 1
+        ndc_y = 1 - (data_y - y0) / (y1 - y0) * 2
+
+    再按 ``plot`` 在视口中的占比与中心把 [-1,1] 缩放到该子区域。
     """
+    if _np is None or x1 == x0 or y1 == y0:
+        return None
+    a = 2.0 / (x1 - x0)
+    b = -1.0 - x0 * a
+    c = -2.0 / (y1 - y0)
+    d = 1.0 - y0 * c
+    if plot is not None and viewport is not None:
+        w, h = float(viewport[0]), float(viewport[1])
+        pw, ph = float(plot[0]), float(plot[1])
+        px, py = float(plot[2]), float(plot[3])
+        if w <= 0 or h <= 0 or pw <= 0 or ph <= 0:
+            return None
+        sx = pw / w
+        sy = ph / h
+        cx = (px + pw / 2.0) / w * 2.0 - 1.0
+        # y 中心：先算子区间中心在视口内的比例，再折算到 NDC。注意 Qt 屏幕
+        # y 向下、NDC y 向上，但**数据 → NDC 的翻转已在 c/d 里做过**，此处
+        # 只需按同向比例折算（写成 1-… 会多翻一次，实测中心点偏到 0.0667
+        # 而非 0）。
+        cy = 1.0 - (py + ph / 2.0) / h * 2.0
+        a, b = a * sx, b * sx + cx
+        c, d = c * sy, d * sy + cy
     try:
         from PySide6.QtGui import QMatrix4x4
     except Exception:  # noqa: BLE001
         return None
-    if x1 == x0 or y1 == y0:
-        return None
-    m = QMatrix4x4()
-    # 顺序要紧：QMatrix4x4 的 translate/scale 是**后乘**（作用于当前矩阵右侧），
-    # 因此必须先缩放再平移——反过来会把平移量也缩放掉（实测 (0,0) 映射成
-    # (-5,-5) 而非 (-1,1)）。
-    m.scale(2.0 / (x1 - x0), -2.0 / (y1 - y0), 1.0)
-    m.translate(-(x0 + x1) / 2.0, -(y0 + y1) / 2.0, 0.0)
-    return m
+    # QMatrix4x4 构造参数为行主序
+    return QMatrix4x4(a, 0.0, 0.0, b,
+                      0.0, c, 0.0, d,
+                      0.0, 0.0, 1.0, 0.0,
+                      0.0, 0.0, 0.0, 1.0)

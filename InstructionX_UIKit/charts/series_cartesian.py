@@ -19,6 +19,7 @@ heatmap / parallel / themeRiver。
 """
 
 import math
+import numbers
 import weakref
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
@@ -536,6 +537,73 @@ class PictorialBarSeriesRenderer(BarSeriesRenderer):
 # line 折线（完整版，覆盖 core 自检版）
 # ---------------------------------------------------------------------------
 
+def _can_gpu_vertices(data) -> bool:
+    """数据是否为可直传 GPU 的数值序列（抽样判别，覆盖首尾）。
+
+    含字典项 / 嵌套列表 / 非数值的序列不能用「下标作 x、值作 y」的简单形式
+    表达，交由采样路径处理。
+    """
+    if isinstance(data, NumericBuffer):
+        return True
+    if _np is not None and isinstance(data, _np.ndarray):
+        return data.ndim == 1
+    if not isinstance(data, (list, tuple)):
+        return False
+    n = len(data)
+    if n == 0:
+        return False
+    idxs = set(range(min(24, n)))
+    step = max(1, n // 16)
+    idxs.update(range(0, n, step))
+    idxs.update(range(max(0, n - 24), n))
+    for i in sorted(idxs):
+        v = data[i]
+        if v is None:
+            continue
+        if isinstance(v, numbers.Real) and not isinstance(v, bool):
+            continue
+        return False
+    return True
+
+
+def _to_data_vertices(data):
+    """数值序列 → ``float32 [n,2]`` 数据坐标顶点（x 为下标）。
+
+    含 ``None``（缺值）的序列返回 ``None``：直绘路径不做断点处理，
+    交由采样路径按段绘制。
+    """
+    if _np is None:
+        return None
+    n = len(data)
+    if n < 2:
+        return None
+    try:
+        raw = data.raw if isinstance(data, NumericBuffer) else data
+        ys = _np.asarray(raw, dtype=_np.float64)
+    except (TypeError, ValueError):
+        return None
+    if ys.ndim != 1 or ys.size != n:
+        return None
+    if bool(_np.isnan(ys).any()):
+        return None
+    out = _np.empty((n, 2), dtype=_np.float32)
+    out[:, 0] = _np.arange(n, dtype=_np.float32)
+    out[:, 1] = ys.astype(_np.float32)
+    return out
+
+
+def _has_own_x(data) -> bool:
+    """数据是否自带 x（``[x, y]`` 结构型序列）。"""
+    from .axes import _x_extent
+    return _x_extent(data) is not None
+
+
+def _own_x_extent(data):
+    """结构型数据的 x 区间；标量数据返回 ``None``。"""
+    from .axes import _x_extent
+    return _x_extent(data)
+
+
 def _pin_endpoints(entries, data, xs):
     """把数据首尾端点并入采样结果，并保持 x 升序。
 
@@ -586,6 +654,72 @@ class LineSeriesRenderer(SeriesRenderer):
         self._points = []        # [QPointF|None]
         self._prev_points = []   # 上一次布局的点（同长度时用于兜底插值）
         self._entries = []       # [(x, y)]
+        # GPU 直绘（CHART_SPEC §7.2）：开启时本系列不经 QPainter 绘制，改由
+        # GL 视口上传全分辨率顶点并用着色器变换。默认关闭——默认的采样路径
+        # 实测已达标（150 万点 5.0 ms / 198 fps），而全分辨率上传有一次性成本。
+        self._gpu_direct = bool(opt.get("gpuDirect", False))
+        self._gpu_version = None
+
+    # -- GPU 直绘（供 GL 视口调用） ----------------------------------------
+    @property
+    def gpu_direct(self) -> bool:
+        return self._gpu_direct
+
+    def gpu_vertex_data(self):
+        """返回 GPU 直绘所需的数据（无需 VBO 时返回 ``None``）。
+
+        ``None`` 的三种情形：未开启直绘、数据形态不适合（非数值序列）、
+        数据不足两点。返回 ``{"vertices": float32[n,2], "version": ...}``，
+        顶点为**数据坐标**（着色器负责变换，故缩放/平移无需重算 CPU 侧坐标）。
+
+        ``version`` 只由**数据对象身份与长度**派生，**不得**在方法内改写任何
+        状态：版本每次调用都变会让 VBO 缓存永远失效、每帧重传（本方法曾被
+        写成自增计数器，实测导致「同版本上传被跳过」的断言失败）。
+        数据对象由 ``self.opt`` 长期持有，故 ``id`` 在渲染器生命周期内稳定。
+        """
+        if not self._gpu_direct:
+            return None
+        data = self.data_view()
+        try:
+            n = len(data)
+        except TypeError:
+            return None
+        if n < 2 or not _can_gpu_vertices(data):
+            return None
+        verts = _to_data_vertices(data)
+        if verts is None:
+            return None
+        return {"vertices": verts, "version": (id(data), n)}
+
+    def gpu_transform(self, coord):
+        """GPU 直绘的坐标变换参数（数据坐标区间 → 绘图区像素）。
+
+        返回 ``(x0, x1, y0, y1, plot)``；``None`` 表示当前坐标系不支持
+        （如 polar/singleAxis 的 x 语义不同）。
+        """
+        if not self._gpu_direct or coord is None:
+            return None
+        if not isinstance(coord, GridCoord):
+            return None
+        x_axis = getattr(coord, "x_axis", None)
+        y_axis = getattr(coord, "y_axis", None)
+        if x_axis is None or y_axis is None:
+            return None
+        data = self.data_view()
+        n = len(data)
+        if n < 2:
+            return None
+        if str(getattr(x_axis, "type", "")) == "category" or not _has_own_x(data):
+            x0, x1 = 0.0, float(n - 1)
+        else:
+            xext = _own_x_extent(data)
+            if xext is None:
+                return None
+            x0, x1 = xext
+        y0, y1 = float(y_axis.vmin), float(y_axis.vmax)
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return (x0, x1, y0, y1, coord.plot)
 
     def _line_viewport_px(self, coord, rect):
         """采样阈值所用的视口像素宽（优先绘图区宽度）。

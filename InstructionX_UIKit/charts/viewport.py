@@ -180,6 +180,7 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
     def __init__(self, chart) -> None:
         super().__init__(chart)
         self._init_viewport(chart)
+        self._gpu_pipe = None      # GPU 原生系列管线（惰性创建，随上下文）
         fmt = QSurfaceFormat()
         fmt.setSamples(0)
         self.setFormat(fmt)
@@ -207,8 +208,78 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
                 chart._paint_dynamic(p)
             else:
                 chart._paint_contents(p)
+            # GPU 原生直绘：QPainter 绘制结束后、其上叠加由 VBO+GLSL 直绘的
+            # 系列。必须放在 QPainter 之后——GL 调用与 QPainter 的 GL 引擎
+            # 共用同一上下文，交错提交状态会互相干扰。
+            self._draw_gpu_series(ctx)
         finally:
             p.end()
+
+    # -- GPU 原生系列直绘（CHART_SPEC §7.2） ------------------------------
+    def _draw_gpu_series(self, ctx) -> None:
+        """把开启 ``gpuDirect`` 的系列用 VBO + GLSL 直接绘制。
+
+        仅在 GL 视口内调用；任何失败都静默退回（该系列在 QPainter 阶段已
+        按常规路径绘制，故不会缺图）。绘制顺序为「静态层 → QPainter 动态层
+        → GPU 系列」，与纯 QPainter 路径的遮挡关系一致。
+        """
+        chart = self._chart
+        series = [r for r in chart.series_renderers
+                  if getattr(r, "gpu_direct", False) and r.visible]
+        if not series:
+            return
+        pipe = self._gpu_pipe
+        if pipe is None:
+            from .gl_series import GLSeriesPipeline
+            pipe = GLSeriesPipeline()
+            if not pipe.ensure(ctx):
+                self._gpu_pipe = None
+                return
+            self._gpu_pipe = pipe
+        try:
+            dpr = float(self.devicePixelRatioF())
+        except Exception:  # noqa: BLE001
+            dpr = 1.0
+        chart._layout_all()
+        for r in series:
+            try:
+                self._draw_one_gpu_series(ctx, pipe, r, dpr)
+            except Exception:  # noqa: BLE001 - 单系列失败不影响整图
+                continue
+
+    def _draw_one_gpu_series(self, ctx, pipe, renderer, dpr) -> None:
+        """绘制单个系列：数据坐标顶点 + 数据区间 → 绘图区像素的变换。"""
+        from .gl_series import build_mvp
+        coord = self._chart.coord_for(renderer.opt)
+        info = renderer.gpu_vertex_data()
+        if info is None:
+            return
+        # 版本不变则命中 VBO 缓存（不重传）
+        pipe.set_vertices(info["vertices"], version=info["version"])
+        if pipe.vertex_count < 2:
+            return
+        tr = renderer.gpu_transform(coord)
+        if tr is None:
+            return
+        x0, x1, y0, y1, plot = tr
+        # 变换一次性算好：数据区间 → 绘图区在视口内的 NDC 子区域。
+        # 用**逻辑像素**表达 plot 与 viewport（GL 视口的 NDC 与物理像素无关），
+        # 因此不需要 devicePixelRatio。
+        mvp = build_mvp(x0, x1, y0, y1,
+                        plot=(plot.width(), plot.height(),
+                              plot.left(), plot.top()),
+                        viewport=(self.width(), self.height()))
+        if mvp is None:
+            return
+        w = self.width() * dpr
+        h = self.height() * dpr
+        if w <= 0 or h <= 0:
+            return
+        f = ctx.functions()
+        f.glViewport(0, 0, int(w), int(h))
+        color = renderer.color()
+        pipe.draw(ctx, mvp, color, mode="line_strip",
+                  width=float(renderer.opt.get("lineWidth", 2.0) or 2.0))
 
 
 def create_viewport(chart) -> QWidget:
