@@ -1022,6 +1022,43 @@ class ChartWidget(QWidget):
         self._components.append(comp)
         self.update()
 
+    def stream(self, series=0, window: int = 20000,
+               interval: float = 1.0 / 90.0, auto_scale: bool = True):
+        """把本图表接到实时数据源，返回 :class:`StreamSession`。
+
+        加法式扩展：既有 ``set_option`` / ``update_option`` 语义完全不变；
+        本方法只是把「高频数据 → 合并 → 定期 ``update_option``」这套样板
+        封装起来，并保证写侧线程安全（任意线程可调用 ``session.write``）。
+
+        典型用法::
+
+            chart.set_option({"xAxis": {"type": "category", "data": [...]},
+                              "series": [{"type": "line", "name": "信号"}]})
+            sess = chart.stream(series="信号", window=20000)
+            sess.write(value)        # 采集线程里高频调用
+
+        参数见 :class:`~InstructionX_UIKit.charts.stream.StreamSession`。
+        """
+        from .stream import StreamSession
+        sess = StreamSession(self, series=series, window=window,
+                             interval=interval, auto_scale=auto_scale)
+        # 图表销毁时自动停掉会话定时器，避免悬空定时器继续回调
+        self._streams = getattr(self, "_streams", None) or []
+        self._streams.append(sess)
+        if not getattr(self, "_stream_cleanup_hooked", False):
+            self._stream_cleanup_hooked = True
+            self.destroyed.connect(self._close_streams)
+        return sess
+
+    def _close_streams(self, *_args) -> None:
+        """关闭全部实时会话（图表销毁路径，保守清理）。"""
+        for s in list(getattr(self, "_streams", None) or []):
+            try:
+                s.close()
+            except Exception:  # noqa: BLE001 - 清理路径不得抛异常
+                pass
+        self._streams = []
+
     # ------------------------------------------------------------- 内部构建
     def _rebuild(self) -> None:
         """按当前 option 重建组件 / 坐标系 / 系列渲染器（并使布局缓存失效）。"""
