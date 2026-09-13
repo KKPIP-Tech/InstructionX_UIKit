@@ -29,6 +29,11 @@ from ..theme import T
 from ..tokens import FONT_FAMILY
 from ._utils import to_float as _utils_to_float
 
+try:  # pragma: no cover - 环境相关分支（无 numpy 时走纯 Python 逐点路径）
+    import numpy as _np
+except Exception:  # noqa: BLE001
+    _np = None
+
 __all__ = [
     "nice_ticks",
     "format_value",
@@ -194,6 +199,127 @@ def _iter_data_values(data):
                     yield float(sub)
         elif isinstance(v, (int, float)) and not isinstance(v, bool):
             yield float(v)
+
+
+#: 数据对象标识 → (min, max) 的极值缓存。
+#: 轴范围只取决于 series 数据本身（不含 dataZoom 窗口），而 ``ChartWidget._rebuild``
+#: 在**每次缩放 / 平移 / 数据更新**时都会重算——百万点逐点扫描要 400 ms 以上，
+#: 是缩放卡顿的真正来源。按数据对象身份缓存后，缩放时零成本。
+_EXTENT_CACHE: dict = {}
+_EXTENT_CACHE_LIMIT = 64
+
+
+def _numeric_extent(data):
+    """数值序列的 (min, max)；非数值序列或空序列返回 ``None``。
+
+    快路径：``NumericBuffer`` / ndarray 直接走 numpy 的 min/max（微秒级），
+    避免对百万级数据做 Python 逐点迭代。
+    """
+    n = 0
+    try:
+        n = len(data)
+    except TypeError:
+        return None
+    if n == 0:
+        return None
+    if _np is not None:
+        raw = data.raw if hasattr(data, "raw") else data
+        if isinstance(raw, _np.ndarray):
+            try:
+                arr = _np.asarray(raw, dtype=_np.float64)
+            except (TypeError, ValueError):
+                return None
+            if arr.size == 0 or not _np.isfinite(arr).any():
+                return None
+            return float(_np.nanmin(arr)), float(_np.nanmax(arr))
+    if isinstance(data, (list, tuple)):
+        lo = hi = None
+        for v in data:
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                return None
+            fv = float(v)
+            if lo is None or fv < lo:
+                lo = fv
+            if hi is None or fv > hi:
+                hi = fv
+        return (lo, hi) if lo is not None else None
+    return None
+
+
+def _series_extent(data, key):
+    """带缓存的系列极值。
+
+    ``key`` 为目标轴：``"y"`` 取 y 值，``"x"`` 取自带 x 值。**标量数据没有
+    自带 x**（渲染器按下标取值），此时 ``"x"`` 返回 ``None``，由调用方改用
+    ``[0, n-1]`` 的下标范围。
+
+    缓存键用数据对象的 ``id`` 与长度，并**同时持有该对象的强引用**——否则
+    对象被回收后 ``id`` 可能被复用，造成把别的数据的极值当成自己的。
+    """
+    ck = (id(data), len(data) if hasattr(data, "__len__") else 0, key)
+    hit = _EXTENT_CACHE.get(ck)
+    if hit is not None and hit[0] is data:
+        return hit[1]
+    if key == "y":
+        ext = _numeric_extent(data)
+    else:
+        ext = _x_extent(data)
+    if len(_EXTENT_CACHE) >= _EXTENT_CACHE_LIMIT:
+        _EXTENT_CACHE.clear()
+    _EXTENT_CACHE[ck] = (data, ext)
+    return ext
+
+
+def _x_extent(data):
+    """自带 x 值序列的 (min, max)；标量数据返回 ``None``。"""
+    n = 0
+    try:
+        n = len(data)
+    except TypeError:
+        return None
+    if n == 0:
+        return None
+    # 抽样判别：只有 [x, y] 这类结构型数据才自带 x
+    step = max(1, n // 32)
+    probe = list(range(0, min(n, 24))) + list(range(0, n, step)) \
+        + list(range(max(0, n - 24), n))
+    is_pair = False
+    for i in probe:
+        item = data[i]
+        if isinstance(item, dict):
+            v = item.get("value")
+            if isinstance(v, (list, tuple)) and len(v) >= 2:
+                is_pair = True
+                break
+            continue
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            is_pair = True
+            break
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            return None
+    if not is_pair:
+        return None
+    if _np is not None:
+        raw = data.raw if hasattr(data, "raw") else data
+        if isinstance(raw, _np.ndarray) and raw.ndim == 2:
+            try:
+                col = _np.asarray(raw[:, 0], dtype=_np.float64)
+            except (TypeError, ValueError):
+                return None
+            if col.size == 0:
+                return None
+            return float(_np.nanmin(col)), float(_np.nanmax(col))
+    xs = []
+    for item in data:
+        if isinstance(item, dict):
+            item = item.get("value")
+        if isinstance(item, (list, tuple)) and item:
+            x = item[0]
+            if isinstance(x, (int, float)) and not isinstance(x, bool):
+                xs.append(float(x))
+    if not xs:
+        return None
+    return min(xs), max(xs)
 
 
 class AxisModel:
@@ -429,20 +555,30 @@ class GridCoord(Coord):
 
     # -- 数据范围 ---------------------------------------------------------
     def set_series(self, series_opts: list) -> None:
-        ys = []
-        for s in series_opts or []:
-            if not isinstance(s, dict):
-                continue
-            if s.get("coordinateSystem") not in (None, "cartesian2d", "grid"):
-                continue
-            for item in s.get("data") or []:
-                y = _datum_y(item)
-                if y is not None:
-                    ys.append(y)
-        if ys:
-            self.y_axis.set_extent(min(ys), max(ys))
-        else:
+        grid_series = [s for s in (series_opts or [])
+                       if isinstance(s, dict)
+                       and s.get("coordinateSystem") in (None, "cartesian2d",
+                                                        "grid")]
+        # y 范围：数值序列走 numpy / 缓存快路径；结构型数据回退逐点迭代。
+        # 轴范围只取决于数据本身（与 dataZoom 窗口无关），而 _rebuild 在每次
+        # 缩放 / 平移时都会调用本方法——百万点逐点扫描要 400 ms 以上，是缩放
+        # 卡顿的真正来源，故必须缓存。
+        y_lo = y_hi = None
+        for s in grid_series:
+            ext = _series_extent(s.get("data"), "y")
+            if ext is None:
+                vals = list(_iter_data_values(s.get("data")))
+                if not vals:
+                    continue
+                ext = (min(vals), max(vals))
+            if y_lo is None or ext[0] < y_lo:
+                y_lo = ext[0]
+            if y_hi is None or ext[1] > y_hi:
+                y_hi = ext[1]
+        if y_lo is None:
             self.y_axis.set_extent(0.0, 1.0)
+        else:
+            self.y_axis.set_extent(y_lo, y_hi)
         if self.x_axis.type == "value":
             xs = []
             # 标量数据（``data: [y, ...]``）没有自带 x，各渲染器按下标取值，
@@ -451,30 +587,24 @@ class GridCoord(Coord):
             # 0..n-1 → 全部映射到坐标区之外，整幅只剩坐标轴与图例（实测
             # 百万散点完全空白）。故此处对标量序列补上下标范围。
             scalar_max = None
-            for s in series_opts or []:
-                if not isinstance(s, dict):
-                    continue
-                if s.get("coordinateSystem") not in (None, "cartesian2d",
-                                                     "grid"):
-                    continue
+            for s in grid_series:
                 data = s.get("data")
-                if not isinstance(data, (list, tuple)) and not hasattr(
-                        data, "__len__"):
+                if data is None or not hasattr(data, "__len__"):
                     continue
-                has_own_x = False
                 try:
                     n = len(data)
                 except TypeError:
                     continue
-                for item in data:
-                    x = _datum_x(item)
-                    if isinstance(x, (int, float)) and not isinstance(x, bool):
-                        xs.append(float(x))
-                        has_own_x = True
-                if not has_own_x and n > 0:
-                    hi = float(n - 1)
-                    scalar_max = hi if scalar_max is None \
-                        else max(scalar_max, hi)
+                if n == 0:
+                    continue
+                ext_x = _series_extent(data, "x")
+                if ext_x is not None:
+                    xs.append(ext_x[0])
+                    xs.append(ext_x[1])
+                    continue
+                hi = float(n - 1)
+                scalar_max = hi if scalar_max is None \
+                    else max(scalar_max, hi)
             if scalar_max is not None:
                 xs.append(0.0)
                 xs.append(scalar_max)
