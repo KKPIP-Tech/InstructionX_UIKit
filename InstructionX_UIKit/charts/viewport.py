@@ -140,6 +140,9 @@ class _RasterViewport(_ViewportMixin, QWidget):
     """软件回退视口：普通 QWidget，``paintEvent`` 走 CPU 光栅（历史行为）。
 
     行为与历史实现逐像素等价——offscreen 测试与截图回归依赖这一点。
+
+    静态层（底色/坐标轴/图例/标题）命中缓存时以位图直接贴回，跳过整段
+    轴刻度文字的重排与绘制；未命中则走 ``_paint_contents`` 全量绘制。
     """
 
     def __init__(self, chart) -> None:
@@ -149,8 +152,17 @@ class _RasterViewport(_ViewportMixin, QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         p = QPainter(self)
-        self._chart._paint_contents(p)
-        p.end()
+        try:
+            chart = self._chart
+            if chart.static_layer_valid(p):
+                if not p.testRenderHint(QPainter.Antialiasing):
+                    p.setRenderHint(QPainter.Antialiasing)
+                p.drawPixmap(0, 0, chart._static_pixmap_cache)
+                chart._paint_dynamic(p)
+            else:
+                chart._paint_contents(p)
+        finally:
+            p.end()
 
 
 class _GLViewport(_ViewportMixin, QOpenGLWidget):
@@ -162,6 +174,7 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
 
     GL 模式下不做脏矩形裁剪（QOpenGLWidget 默认整幅 FBO 重绘）。
     首帧缺陷规避：``showEvent`` 中强制一次 ``update()``。
+    静态层命中缓存时，位图作为纹理上传并由 GPU 贴回。
     """
 
     def __init__(self, chart) -> None:
@@ -186,7 +199,14 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
             return
         p = QPainter(self)
         try:
-            self._chart._paint_contents(p)
+            chart = self._chart
+            if chart.static_layer_valid(p):
+                if not p.testRenderHint(QPainter.Antialiasing):
+                    p.setRenderHint(QPainter.Antialiasing)
+                p.drawPixmap(0, 0, chart._static_pixmap_cache)
+                chart._paint_dynamic(p)
+            else:
+                chart._paint_contents(p)
         finally:
             p.end()
 

@@ -34,7 +34,14 @@ from PySide6.QtCore import (
     Qt,
     QVariantAnimation,
 )
-from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPainterPath, QPen
+from PySide6.QtGui import (
+    QColor,
+    QFontMetricsF,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import QWidget
 
 from ..theme import T, ThemeManager
@@ -665,7 +672,16 @@ class ChartWidget(QWidget):
         self.tooltip = Tooltip(self)
         self.legend.on_toggle = self.set_series_visible
         self.anim = ChartAnimation(self.update, self)
-        # 绘制视口（CHART_SPEC §7）：GL 可用时为 QOpenGLWidget（GPU 渲染），
+        # 静态层缓存（底色/坐标轴/图例/标题）：键为 option 版本 + 尺寸 + 主题，
+        # 命中时整段以位图贴回，避免悬停与动画帧重复排版绘制轴刻度文字。
+        self._static_key = None
+        self._static_pixmap_cache = None
+        self._static_dpr = 1.0
+        # 系列层缓存（同上思路，覆盖最贵的折线/柱体路径重建）。
+        self._series_key = None
+        self._series_pixmap_cache = None
+        self._series_dpr = 1.0
+        self._series_was_running = False        # 绘制视口（CHART_SPEC §7）：GL 可用时为 QOpenGLWidget（GPU 渲染），
         # 否则为普通 QWidget（软件回退，离屏测试走此路径）。本控件自身不再
         # 绘制——paintEvent 仅为 grab()/render() 路径保留。
         self._viewport = create_viewport(self)
@@ -964,8 +980,22 @@ class ChartWidget(QWidget):
         （option 版本）、resizeEvent（视口尺寸）、主题切换、dataZoom 窗口
         交互（滚轮 / 拖拽 / restore，见 interact.py）、系列显隐（堆叠基线）。
         动画进行中不缓存（每帧重算，与历史行为一致）。
+
+        静态层与系列层缓存与布局同源（option / 尺寸 / 主题 / dataZoom 窗口），
+        故一并失效——否则会出现「布局已重排、贴的却仍是旧位图」的错位。
         """
         self._layout_key = None
+        self._static_key = None
+        self._static_pixmap_cache = None
+        self._series_key = None
+        self._series_pixmap_cache = None
+
+    def _series_layer_key(self):
+        """系列层缓存键：沿用布局缓存键（option/尺寸/主题/dataZoom 窗口）。
+
+        系列几何完全由布局决定，因此键与布局缓存同构即为充分条件。
+        """
+        return self._layout_cache_key()
 
     def _layout_cache_key(self):
         """布局缓存键：option 版本 / 视口尺寸 / 主题 / dataZoom 窗口状态。
@@ -981,7 +1011,12 @@ class ChartWidget(QWidget):
         dz = tuple((getattr(c, "start", 0.0), getattr(c, "end", 100.0))
                    for c in self._components
                    if getattr(c, "option_key", "") == "dataZoom")
-        return (self._opt_version, self.width(), self.height(), theme, dz)
+        # 系列显隐必须计入：set_series_visible 不改 option 版本号，但它会改变
+        # 系列可见性（并影响堆叠基线）。静态层/系列层缓存的键都复用本函数，
+        # 漏掉该项会导致「隐藏系列后画面不变」的错位。
+        sel = tuple(sorted((str(k), bool(v))
+                           for k, v in self._series_state.items()))
+        return (self._opt_version, self.width(), self.height(), theme, dz, sel)
 
     def _layout_all(self, force: bool = False) -> None:
         """全量布局：坐标系 / 系列 / 组件几何。
@@ -1044,8 +1079,12 @@ class ChartWidget(QWidget):
 
     def _on_theme_changed(self, _mode) -> None:
         # 配色全部经 T() 实时取，重绘即生效；主题可能影响字体度量等布局
-        # 输入，保守失效布局缓存（下一次绘制全量重排一次）
+        # 输入，保守失效布局缓存与静态层缓存（下一次绘制全量重排一次）
         self._layout_key = None
+        self._static_key = None
+        self._static_pixmap_cache = None
+        self._series_key = None
+        self._series_pixmap_cache = None
         self.update()
 
     def paintEvent(self, event) -> None:
@@ -1060,26 +1099,55 @@ class ChartWidget(QWidget):
         finally:
             p.end()
 
-    def _paint_contents(self, p: QPainter, layer=None) -> None:
+    def _paint_contents(self, p: QPainter) -> None:
         """图表内容的唯一绘制体（软件与 GL 两条视口路径共用同一份代码）。
 
-        ``layer`` 预留给分层渲染（静态层 / 动态层 / 覆盖层），当前未使用。
+        绘制顺序（不可调换，画家算法）：
+
+        1. **静态前缀**：底色 → 坐标轴/网格 → 图例 → 标题。该段只依赖
+           option / 尺寸 / 主题，且位于所有系列之下，因此可整体缓存为位图
+           （见 ``_paint_static_prefix`` 与 ``static_layer_valid``）。
+        2. **动态层**：系列与组件（tooltip 例外），逐帧变化，必须重画。
+        3. **覆盖层**：tooltip 永远最后，压在一切之上。
+
+        分层依据：轴的刻度文字是每帧最贵的部分（典型图 21 次 drawText），
+        而鼠标移动、动画帧都会触发整控件重绘；缓存静态前缀后，悬停与动画
+        帧不再重复排版与绘制文字。
         """
         p.setRenderHint(QPainter.Antialiasing)
-        p.fillRect(self.rect(), QColor(T("color.bg.base")))
+        pixmap = self._static_pixmap(p)
+        if pixmap is not None:
+            p.drawPixmap(0, 0, pixmap)
+        else:
+            self._paint_static_prefix(p)
+        self._paint_dynamic(p)
+
+    def _paint_dynamic(self, p: QPainter) -> None:
+        """动态层 + 覆盖层：系列与组件 → tooltip。
+
+        绘制顺序与历史一致（画家算法不可调换）；调用方需已完成静态前缀
+        （缓存贴图或直接绘制）与抗锯齿设置。
+
+        系列层同样可缓存：其几何只随 option / 尺寸 / 主题 / dataZoom 窗口 /
+        动画进度变化，而鼠标移动、tooltip 跟随并不改变系列。命中缓存时整幅
+        系列位图直接贴回，避免逐帧重建折线路径（大数据量下这是主要开销）。
+        动画运行期间不缓存（每帧都在变）。
+        """
         self._layout_all()
         t = self.anim.t
-        for c in self._coords:
-            c.paint_axes(p)
-        for r in self._series:
-            if not r.visible:
-                continue
-            try:
-                r.paint(p, t)
-            except Exception as exc:
-                # 单系列绘制异常不影响整图，但至少可见一次
-                warn_once(f"series-paint:{r.__class__.__name__}",
-                          f"系列绘制异常（{r.name}）: {exc!r}")
+        series_pm = self._series_pixmap(p, t) if self._series_cacheable(t) else None
+        if series_pm is not None:
+            p.drawPixmap(0, 0, series_pm)
+        else:
+            for r in self._series:
+                if not r.visible:
+                    continue
+                try:
+                    r.paint(p, t)
+                except Exception as exc:
+                    # 单系列绘制异常不影响整图，但至少可见一次
+                    warn_once(f"series-paint:{r.__class__.__name__}",
+                              f"系列绘制异常（{r.name}）: {exc!r}")
         for comp in self._components:
             paint = getattr(comp, "paint", None)
             if callable(paint):
@@ -1094,10 +1162,162 @@ class ChartWidget(QWidget):
                 except Exception as exc:
                     warn_once(f"component-paint:{comp.__class__.__name__}",
                               f"组件绘制异常（{comp.__class__.__name__}）: {exc!r}")
+        # 覆盖层：tooltip 压在最上（历史绘制顺序的最后一步）
+        self.tooltip.paint(p)
+
+    def _series_cacheable(self, t) -> bool:
+        """当前帧是否允许使用系列层缓存（动画结束后才可缓存）。
+
+        动画运行期间系列几何逐帧变化，缓存会锁死画面；动画结束的那一帧
+        必须重建一次，否则会贴出动画中途的旧位图。
+        """
+        running = False
+        try:
+            running = bool(self.anim.is_running())
+        except Exception:
+            running = False
+        if running:
+            self._series_was_running = True
+            return False
+        if getattr(self, "_series_was_running", False):
+            # 动画刚结束：作废缓存并重建
+            self._series_was_running = False
+            self.invalidate_series_layer()
+        del t
+        return True
+
+    def invalidate_series_layer(self) -> None:
+        """使系列层缓存失效。"""
+        self._series_key = None
+        self._series_pixmap_cache = None
+
+    def _series_pixmap(self, p: QPainter, t):
+        """系列层位图：缓存无效时离屏重建（可能较贵，仅数据/尺寸/主题变化时发生）。"""
+        dpr = 1.0
+        try:
+            dev = p.device()
+            if dev is not None:
+                dpr = float(dev.devicePixelRatio())
+        except Exception:
+            dpr = 1.0
+        key = (self._series_layer_key(), round(t, 6))
+        if (self._series_pixmap_cache is not None and self._series_key == key
+                and abs(dpr - self._series_dpr) <= 1e-6):
+            return self._series_pixmap_cache
+        w, h = self.width(), self.height()
+        if w <= 0 or h <= 0:
+            return None
+        try:
+            pm = QPixmap(int(round(w * dpr)), int(round(h * dpr)))
+            pm.setDevicePixelRatio(dpr)
+            pm.fill(Qt.transparent)
+            p2 = QPainter(pm)
+            try:
+                p2.setRenderHint(QPainter.Antialiasing)
+                for r in self._series:
+                    if not r.visible:
+                        continue
+                    try:
+                        r.paint(p2, t)
+                    except Exception as exc:
+                        warn_once(f"series-paint:{r.__class__.__name__}",
+                                  f"系列绘制异常（{r.name}）: {exc!r}")
+            finally:
+                p2.end()
+        except Exception as exc:
+            warn_once("series-layer",
+                      f"系列层缓存构建失败，退回逐帧绘制: {exc!r}")
+            self._series_pixmap_cache = None
+            self._series_key = None
+            return None
+        self._series_pixmap_cache = pm
+        self._series_key = key
+        self._series_dpr = dpr
+        return pm
+
+    # ------------------------------------------------------------ 静态层缓存
+    def _static_layer_key(self):
+        """静态层缓存键：option 版本 / 视口尺寸 / 主题。
+
+        三者覆盖了静态前缀的全部输入（底色与文字配色经 T() 取令牌、
+        轴刻度由 option 与尺寸决定、图例条目标题亦然）。
+        """
+        try:
+            theme = ThemeManager.instance().mode
+        except Exception:
+            theme = None
+        return (self._opt_version, self.width(), self.height(), theme)
+
+    def invalidate_static_layer(self) -> None:
+        """使静态层缓存失效（option / 尺寸 / 主题变化时调用）。"""
+        self._static_key = None
+        self._static_pixmap_cache = None
+
+    def static_layer_valid(self, p: QPainter = None) -> bool:
+        """静态层缓存是否仍然有效（含目标设备像素比一致性检查）。"""
+        if self._static_pixmap_cache is None:
+            return False
+        if p is not None:
+            dpr = p.device().devicePixelRatio() if p.device() is not None else 1.0
+            if abs(dpr - self._static_dpr) > 1e-6:
+                return False
+        return self._static_key == self._static_layer_key()
+
+    def _static_pixmap(self, p: QPainter):
+        """返回静态前缀位图；缓存无效时离屏重建一次。
+
+        离屏绘制使用与目标设备相同的 devicePixelRatio，保证高 DPI 下
+        文字与线条的清晰度和直接绘制一致。
+        """
+        dpr = 1.0
+        try:
+            dev = p.device()
+            if dev is not None:
+                dpr = float(dev.devicePixelRatio())
+        except Exception:
+            dpr = 1.0
+        key = self._static_layer_key()
+        if (self._static_pixmap_cache is not None and self._static_key == key
+                and abs(dpr - self._static_dpr) <= 1e-6):
+            return self._static_pixmap_cache
+        w, h = self.width(), self.height()
+        if w <= 0 or h <= 0:
+            return None
+        try:
+            pm = QPixmap(int(round(w * dpr)), int(round(h * dpr)))
+            pm.setDevicePixelRatio(dpr)
+            p2 = QPainter(pm)
+            try:
+                self._paint_static_prefix(p2)
+            finally:
+                p2.end()
+        except Exception as exc:
+            # 缓存失败不得影响出图：退回直接绘制
+            warn_once("static-layer",
+                      f"静态层缓存构建失败，退回逐帧绘制: {exc!r}")
+            self._static_pixmap_cache = None
+            self._static_key = None
+            return None
+        self._static_pixmap_cache = pm
+        self._static_key = key
+        self._static_dpr = dpr
+        return pm
+
+    def _paint_static_prefix(self, p: QPainter) -> None:
+        """静态前缀：底色 + 坐标轴/网格 + 图例 + 标题。
+
+        调用方需已设置好抗锯齿（缓存路径在自己构造的 QPainter 上设置，
+        直接绘制路径由 ``_paint_contents`` 设置）。
+        """
+        if not p.testRenderHint(QPainter.Antialiasing):
+            p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor(T("color.bg.base")))
+        self._layout_all()
+        for c in self._coords:
+            c.paint_axes(p)
         self.legend.paint(p)
         title_rect = QRectF(0, 0, self.width(), self.title.height())
         self.title.paint(p, title_rect)
-        self.tooltip.paint(p)
 
     # -- 鼠标：legend 点击 / tooltip 跟随 / C4 组件钩子 --------------------
     def mousePressEvent(self, event) -> None:
