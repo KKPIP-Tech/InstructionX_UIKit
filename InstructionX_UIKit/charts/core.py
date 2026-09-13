@@ -48,7 +48,7 @@ from PySide6.QtWidgets import QWidget
 from ..theme import T, ThemeManager
 from ..tokens import DURATION, EASING
 from ._utils import warn_once
-from .data import NumericBuffer, to_buffer
+from .data import NumericBuffer, is_array_like as _is_array_like, to_buffer
 from .sampling import (
     bucket_count,
     sample_entries,
@@ -199,6 +199,13 @@ def _deep_merge(dst: dict, src: dict) -> dict:
     大数组特例：``src`` 中已是紧凑缓冲区的值按**引用**替换（不深拷贝），
     并在替换前尝试就地包装 ``dst`` 中同位置的旧大数组——把「每帧 deepcopy
     百万点」的成本降为零。是否包装只由长度与数值性决定，不改语义。
+
+    **list 值必须整体替换，不要逐项融合其中的 dict**。``series`` 是
+    「dict 组成的 list」，看起来很适合按项合并，但那是错的：``update_option``
+    把旧渲染器的数据视图作为 ``prev_data`` 注入新渲染器用于动画插值，而
+    ``dst`` 里的旧项是**同一个对象**——逐项融合会原地改写它，``prev_data``
+    于是变成新值（实测 gauge 的插值起点从 66 变成 30，动画直接从终点开始）。
+    整体替换 + ``copy.deepcopy`` 保证了新旧彻底分离。
     """
     for k, v in (src or {}).items():
         if isinstance(v, NumericBuffer):
@@ -207,6 +214,15 @@ def _deep_merge(dst: dict, src: dict) -> dict:
         if isinstance(v, dict) and isinstance(dst.get(k), dict):
             _deep_merge(dst[k], v)
         else:
+            if to_buffer(v) is not None:
+                # 紧凑数组（numpy 数组 / array('d')）：按引用持有。
+                # 缺了这条分支，ndarray 既不是 list/tuple/dict 也不是
+                # NumericBuffer，会落到下面的标量兜底被原样塞进 option，
+                # 下游 data_view() 判定为「数据缺失」——表现为
+                # ``update_option({"series": [{"data": ndarray}]})`` 后整条
+                # 曲线消失（流式入图曾因此一个点都不画）。
+                dst[k] = to_buffer(v)
+                continue
             if not isinstance(v, (dict, list, tuple)):
                 dst[k] = v
                 continue
@@ -359,18 +375,25 @@ class SeriesRenderer:
         d = self.opt.get("data")
         if isinstance(d, NumericBuffer):
             return d.to_list()
+        if _is_array_like(d):
+            return [float(x) for x in d]
         return d if isinstance(d, list) else []
 
     def data_view(self):
         """系列数据的**只读视图**（内部热路径专用，无拷贝）。
 
-        返回 ``NumericBuffer`` 或原本的 list。两者都支持 ``len()`` /
-        下标 / 迭代，因此渲染器无需关心底层承载形式。
+        返回 ``NumericBuffer`` / 原始 list / 紧凑数组（短于缓冲阈值时按引用
+        持有 ndarray，见 data.py 的 ``_BUFFER_MIN_LEN``）。三者都支持 ``len()``
+        / 下标 / 迭代，因此渲染器无需关心底层承载形式。
         """
         d = self.opt.get("data")
-        if isinstance(d, NumericBuffer):
+        if isinstance(d, NumericBuffer) or isinstance(d, list):
             return d
-        return d if isinstance(d, list) else []
+        if _is_array_like(d):
+            # 短数组不做缓冲包装（阈值见 data.py）：仍要作为数据视图返回，
+            # 否则 3~255 点的 ndarray 会被判成「数据缺失」而整条曲线消失。
+            return d
+        return []
 
     def sampled_entries(self, data_length: int, viewport_px):
         """按当前视口宽度对该系列做运行时降采样，返回 ``[(x, y), ...]``。

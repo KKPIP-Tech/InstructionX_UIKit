@@ -413,7 +413,21 @@ class AxisModel:
                 idx = int(value)
             else:
                 idx = self.local_index(value)
-            n = max(1, len(self.categories))
+            n = len(self.categories)
+            if n <= 0:
+                # 空类目兜底：``{"type": "category", "data": []}`` 是流式入图的
+                # 标准写法（见 docs/USAGE.md §8.3）——类目随数据增长，创建图表
+                # 时还是空的。此时不能拿 ``max(1, 0) = 1`` 当 band 数：那会把整幅
+                # 绘图区当成一个 band，每个下标都算成「第 0.5 个类目」，屏幕 x
+                # 变成 idx×(绘图区宽)，200 个点里最后一个落到 x≈165000（绘图区
+                # 右边界才 872），整幅图看起来只剩一条压在边缘的平线。
+                # 故改由 x 轴的隐式下标范围（set_series 按各系列长度推导）定
+                # band 数；轴范围不可用时退回「x 即像素值」的原行为。
+                span = float(self.vmax) - float(self.vmin)
+                if span > 1e-9:
+                    band = (end - start) / span
+                    return start + band * (self.local_index(value) + 0.5)
+                return start + self.local_index(value) - self.vmin
             band = (end - start) / n
             return start + band * (idx + 0.5)
         v = _to_float(value, self.vmin)
@@ -422,10 +436,17 @@ class AxisModel:
         return start + (end - start) * frac
 
     def band_width(self, start: float, end: float) -> float:
-        """category 轴单个 band 的像素宽度（value 轴返回 0）。"""
-        if self.type != "category" or not self.categories:
+        """category 轴单个 band 的像素宽度（value 轴返回 0）。
+
+        空类目时按 x 轴的隐式下标范围折算（理由见 :meth:`map`）；轴范围也
+        不可用时才返回 0。
+        """
+        if self.type != "category":
             return 0.0
-        return abs(end - start) / len(self.categories)
+        if self.categories:
+            return abs(end - start) / len(self.categories)
+        span = float(self.vmax) - float(self.vmin)
+        return abs(end - start) / span if span > 1e-9 else 0.0
 
     def category_index(self, value) -> int:
         """类别值（名字或序号）→ 下标（不 clamp）。
@@ -579,13 +600,22 @@ class GridCoord(Coord):
             self.y_axis.set_extent(0.0, 1.0)
         else:
             self.y_axis.set_extent(y_lo, y_hi)
-        if self.x_axis.type == "value":
+        if self.x_axis.type == "value" or not self.x_axis.categories:
+            # 需要补「隐式下标范围」的两种情形：
+            # - value 轴：标量数据（``data: [y, ...]``）没有自带 x，各渲染器按
+            #   下标取值，故坐标范围必须覆盖 [0, n-1]。历史上这里只从 [x, y]
+            #   对里取 x，标量数据在数值 x 轴下会落入 else 分支取 [0, 1]，而点
+            #   的 x 是 0..n-1 → 全部映射到坐标区之外，整幅只剩坐标轴与图例
+            #   （实测百万散点完全空白）。
+            # - **空类目的 category 轴**：``{"type": "category", "data": []}`` 是
+            #   流式入图的标准写法（见 docs/USAGE.md §8.3），类目随数据增长。
+            #   但空类目时 map() 没有 band 数可推，历史上退化成「整幅绘图区
+            #   当一个 band」，屏幕 x 变成 idx×绘图区宽（200 点里最后一个落到
+            #   x≈165000，绘图区右边界才 872），整幅图看起来只剩一条压在边缘
+            #   的平线。故此处同样以隐式下标范围作为 band 依据。
+            # 有类目的 category 轴不走这里：band 数由类目数决定，set_extent 对
+            # category 类型也是空操作。
             xs = []
-            # 标量数据（``data: [y, ...]``）没有自带 x，各渲染器按下标取值，
-            # 因此坐标范围必须覆盖 [0, n-1]。历史上这里只从 [x, y] 对里取 x，
-            # 标量数据在数值 x 轴下会落入 else 分支取 [0, 1]，而点的 x 是
-            # 0..n-1 → 全部映射到坐标区之外，整幅只剩坐标轴与图例（实测
-            # 百万散点完全空白）。故此处对标量序列补上下标范围。
             scalar_max = None
             for s in grid_series:
                 data = s.get("data")
@@ -609,8 +639,10 @@ class GridCoord(Coord):
                 xs.append(0.0)
                 xs.append(scalar_max)
             if xs:
-                self.x_axis.set_extent(min(xs), max(xs))
-            else:
+                lo_x, hi_x = min(xs), max(xs)
+                self.x_axis.set_extent(lo_x, hi_x)
+                self.x_axis.vmin, self.x_axis.vmax = lo_x, hi_x
+            elif self.x_axis.type == "value":
                 self.x_axis.set_extent(0.0, 1.0)
 
     # -- 协议 -------------------------------------------------------------

@@ -33,6 +33,7 @@ __all__ = [
     "numpy_available",
     "NumericBuffer",
     "to_buffer",
+    "is_array_like",
     "unwrap_data",
     "normalize_option_data",
 ]
@@ -125,6 +126,17 @@ def _is_array_like(obj) -> bool:
     if isinstance(obj, _array):
         return True
     return hasattr(obj, "__array_interface__")
+
+
+def is_array_like(obj) -> bool:
+    """是否已是可零拷贝持有的数组（numpy 数组或实现了缓冲协议）。
+
+    供上游判断「这个值能否直接当数值序列用」——``_deep_merge`` 曾只认
+    ``list``/``tuple``，于是 numpy 数组既不匹配 list 分支、也不是
+    ``NumericBuffer``，落到兜底的 ``dst[k] = v`` 之后被当作「数据缺失」，
+    表现为**流式入图后曲线一个点都不画**。
+    """
+    return _is_array_like(obj)
 
 
 def to_buffer(data, min_len: int = _BUFFER_MIN_LEN):
