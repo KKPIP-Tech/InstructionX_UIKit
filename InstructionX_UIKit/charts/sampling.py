@@ -45,6 +45,16 @@ _METHODS = ("minmax", "lttb", "average")
 #: 每个显示像素允许承载的最大点数（阈值 = 视口像素宽 × 该系数）
 _DEFAULT_SAFETY = 2.0
 
+#: safety 系数上限。safety 是「每像素承载点数」的放大倍数，本身已很宽裕
+#: （默认 2.0 即两倍过采样）；再往上放大只是把不可见的点重新画一遍，
+#: 没有任何可见收益，却会把绘制成本推向驱动超时阈值。
+_MAX_SAFETY = 4.0
+
+#: 是否启用「像素级分辨率下限」（见 :func:`sampling_options`）。
+#: 置 ``False`` 仅供逐列极值比对等验证脚本构造对照组使用，**不要**在
+#: 生产路径下关闭。
+_PIXEL_FLOOR = True
+
 #: 低于该点数不做任何采样判断（小数据的开销不值得引入分支）
 _MIN_CANDIDATES = 512
 
@@ -70,18 +80,28 @@ def sampling_options(series_opt: dict) -> SamplingOptions:
     """解析系列 option 的采样配置。
 
     - ``sampling``: ``"minmax"``（默认）/ ``"lttb"`` / ``"average"`` /
-      ``None``（显式关闭，帧率不作保证）/ 缺省（自动）；
-    - ``samplingSafety``: 阈值系数，默认 2.0。
+      ``None``（请求关闭）/ 缺省（自动）；
+    - ``samplingSafety``: 阈值系数，默认 2.0，上限 4.0（:data:`_MAX_SAFETY`）。
+
+    **像素级分辨率下限（不可关闭）**：``sampling: None`` 只表示「不做额外
+    降采样」，并不豁免屏幕像素这一物理下限——阈值仍取
+    ``绘图区像素宽 × samplingSafety``。
+
+    为什么必须有这条下限（早期实现允许真正关闭，已被实测推翻）：
+
+    - 绘图区只有约 1600 像素宽时，150 万点里每列有 900 多个点落在**同一个
+      像素列**上；逐桶保留极值后的**逐像素列 y 极值与全量直绘严格一致**，
+      多出来的点既看不到、也点不到（悬停命中同样按采样点位置判定）；
+    - 代价却是实打实的：QPainter 百万点级别为秒级（实测 150 万点单帧
+      2.7~3.2 秒、最坏 12 秒），而 GPU 侧把超长路径交给 GL paint engine
+      后，驱动 CPU 侧展平**超过 Windows 的 TDR 超时（默认 2 秒）**，驱动
+      复位会直接杀掉进程——表现为「切到全分辨率即卡死」；
+    - 因此 ``sampling: None`` 如今只在**小数据**上有意义（低于
+      :data:`_MIN_CANDIDATES` 本来就不做判断），大数据上自动落到像素下限。
 
     未知取值回退为默认，不抛异常（与 charts 包既有的容灾风格一致）。
     """
     opt = series_opt if isinstance(series_opt, dict) else {}
-    raw = opt.get("sampling", "minmax")
-    if raw is None or raw is False:
-        method = None
-    else:
-        name = str(raw).strip().lower()
-        method = name if name in _METHODS else "minmax"
     safety = opt.get("samplingSafety", _DEFAULT_SAFETY)
     try:
         safety = float(safety)
@@ -89,6 +109,18 @@ def sampling_options(series_opt: dict) -> SamplingOptions:
         safety = _DEFAULT_SAFETY
     if not math.isfinite(safety) or safety <= 0:
         safety = _DEFAULT_SAFETY
+    safety = min(safety, _MAX_SAFETY)
+
+    raw = opt.get("sampling", "minmax")
+    requested_off = raw is None or raw is False
+    if requested_off:
+        method = None
+    else:
+        name = str(raw).strip().lower()
+        method = name if name in _METHODS else "minmax"
+    if requested_off and _PIXEL_FLOOR:
+        # 只对「请求关闭」这一档兜底；显式给出 method 名的一律照旧生效
+        method = "minmax"
     return SamplingOptions(method, safety)
 
 

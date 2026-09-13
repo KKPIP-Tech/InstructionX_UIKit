@@ -201,6 +201,11 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
         p = QPainter(self)
         try:
             chart = self._chart
+            # 兜底护栏：单系列几何点数超上限时不绘制超长路径，改给提示文案
+            # （理由与实测数据见 ChartWidget.overload_limited）。
+            if chart.overload_limited():
+                chart._paint_overload_notice(p)
+                return
             if chart.static_layer_valid(p):
                 if not p.testRenderHint(QPainter.Antialiasing):
                     p.setRenderHint(QPainter.Antialiasing)
@@ -215,7 +220,6 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
         finally:
             p.end()
 
-    # -- GPU 原生系列直绘（CHART_SPEC §7.2） ------------------------------
     def ensure_gpu_pipeline(self):
         """确保 GPU 直绘管线可用，返回它或 ``None``（供 benchmark 调用）。
 

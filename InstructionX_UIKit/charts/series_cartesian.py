@@ -37,6 +37,7 @@ from ._utils import dist_point_segment, to_float as _to_float, with_alpha
 from .axes import CalendarCoord, GridCoord, chart_font, format_value
 from .core import SeriesRenderer, parse_data_point, register_series
 from .data import NumericBuffer
+from .gl_series import GL_MAX_POINTS
 from .sampling import (
     bucket_count,
     column_aggregate,
@@ -671,9 +672,17 @@ class LineSeriesRenderer(SeriesRenderer):
     def gpu_vertex_data(self):
         """返回 GPU 直绘所需的数据（无需 VBO 时返回 ``None``）。
 
-        ``None`` 的三种情形：未开启直绘、数据形态不适合（非数值序列）、
-        数据不足两点。返回 ``{"vertices": float32[n,2], "version": ...}``，
-        顶点为**数据坐标**（着色器负责变换，故缩放/平移无需重算 CPU 侧坐标）。
+        ``None`` 的四种情形：未开启直绘、超出 GL 安全上限（见下）、数据形态
+        不适合（非数值序列）、数据不足两点。返回
+        ``{"vertices": float32[n,2], "version": ...}``，顶点为**数据坐标**
+        （着色器负责变换，故缩放/平移无需重算 CPU 侧坐标）。
+
+        **上限必须在这里执行**：``gl_series.GL_MAX_POINTS`` 的语义是「超过则
+        拒绝直绘」，但早期实现只在 ``set_vertices`` 的缓存上限处比对，方法本身
+        直接返回全量顶点——结果是 150 万点照旧上传 VBO。此时 QPainter 侧被
+        ``overload_limited`` 护栏挡下不画，而 GL 侧却把百万顶点交给驱动，最终
+        触发 TDR 复位杀进程（实测「切到全分辨率即卡死」）。拒绝直绘后由
+        ``overload_limited`` 给出提示文案，不再有任何路径把超长几何交给驱动。
 
         ``version`` 只由**数据对象身份与长度**派生，**不得**在方法内改写任何
         状态：版本每次调用都变会让 VBO 缓存永远失效、每帧重传（本方法曾被
@@ -687,7 +696,7 @@ class LineSeriesRenderer(SeriesRenderer):
             n = len(data)
         except TypeError:
             return None
-        if n < 2 or not _can_gpu_vertices(data):
+        if n < 2 or n > GL_MAX_POINTS or not _can_gpu_vertices(data):
             return None
         verts = _to_data_vertices(data)
         if verts is None:

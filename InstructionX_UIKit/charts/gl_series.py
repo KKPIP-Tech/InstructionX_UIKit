@@ -29,6 +29,22 @@ except Exception:  # noqa: BLE001
 
 __all__ = ["GLSeriesPipeline", "gl_series_available"]
 
+#: GL 直绘允许的最大顶点数。超过则**拒绝直绘**并回退采样后的 QPainter 路径。
+#:
+#: 取值依据是实测（2026-09，本机 + Windows 11）：
+#:
+#: - 150 万顶点 VBO 直绘稳定（VBO 顶点数 == 数据点数，稳态单帧 12.1 ms）；
+#: - 300 万顶点稳定（16.2 ms）；
+#: - 500 万顶点会被 :data:`GLSeriesPipeline.MAX_CACHED_VERTICES` 挡在上传
+#:   之前（``set_vertices`` 返回 False 且不改顶点数），直绘静默失效。
+#:   因此上限取在缓存容量之下，让「超限」由本常量明确表达，而不是靠上传
+#:   阶段悄悄失败。
+#:
+#: 本上限由 :meth:`series_cartesian.LineSeriesRenderer.gpu_vertex_data` 执行
+#: （超限直接返回 ``None``，由采样路径兜底）。它**不是**性能取舍：超限后采样
+#: 路径同样满足 90 fps（150 万点实测 5~7 ms）。
+GL_MAX_POINTS = 4_000_000
+
 #: 顶点着色器：把「数据坐标」经仿射变换映射到 NDC，不做任何 CPU 侧坐标换算。
 #: 用 GLSL 1.50（OpenGL 3.2 core）以兼容性优先——实测本机为 4.6 兼容档，
 #: 3.2 core 语法在兼容档与核心档下均可编译。

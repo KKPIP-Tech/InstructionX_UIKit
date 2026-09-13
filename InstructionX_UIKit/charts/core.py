@@ -375,12 +375,14 @@ class SeriesRenderer:
     def sampled_entries(self, data_length: int, viewport_px):
         """按当前视口宽度对该系列做运行时降采样，返回 ``[(x, y), ...]``。
 
-        ``None`` 表示**未采样**（点数未超阈值、数据形态不适合采样、
-        或采样被显式关闭），调用方应继续逐点走原始数据——这正是
-        「保真承诺」的落点：可见点数不超过视口像素量级时不做任何降采样。
+        ``None`` 表示**未采样**（点数未超阈值、或数据形态不适合采样），
+        调用方应继续逐点走原始数据——这正是「保真承诺」的落点：可见点数
+        不超过视口像素量级时不做任何降采样。
 
         阈值与桶数都由 ``viewport_px``（当前坐标区像素宽）实时推导，因此
-        渲染器无需预知轴范围或控件尺寸。``sampling: None`` 可显式关闭。
+        渲染器无需预知轴范围或控件尺寸。注意 ``sampling: None`` **不再**能
+        绕过阈值（像素级分辨率下限不可关闭，理由见
+        :func:`sampling.sampling_options`）。
 
         返回的 x 是各点**原始**的 x（数值数据通常即数据下标），故
         ``value_at_index`` 与 tooltip 仍能对应到正确的原始数据项。
@@ -841,6 +843,8 @@ class ChartWidget(QWidget):
         self._series_was_running = False
         #: 数据/主题变更后置位：下一帧直接绘制、不为建缓存多渲染一帧
         self._paint_only_dirty = False
+        #: GL 后端因点数超安全上限而暂停绘制（由视口置位，见 viewport.py）
+        self._gl_overloaded = False
         # 绘制视口（CHART_SPEC §7）：GL 可用时为 QOpenGLWidget（GPU 渲染），
         # 否则为普通 QWidget（软件回退，离屏测试走此路径）。本控件自身不再
         # 绘制——paintEvent 仅为 grab()/render() 路径保留。
@@ -1360,6 +1364,9 @@ class ChartWidget(QWidget):
             "gl": False,
             "budget_ms": budget,
             "ok": False,
+            #: 是否因超出 GL 安全上限而暂停绘制。为真时 ``cpu_ms`` 只反映
+            #: 「画提示文案」的耗时，**不是**真实绘制耗时，不应据此比较。
+            "overload": self.overload_limited(),
         }
         try:
             from .viewport import gl_available
@@ -1523,12 +1530,56 @@ class ChartWidget(QWidget):
         帧不再重复排版与绘制文字。
         """
         p.setRenderHint(QPainter.Antialiasing)
+        if self.overload_limited():
+            # 兜底护栏（见 overload_limited）：放这里而不是只放视口，因为
+            # benchmark 等路径会直接调用本方法而绕过视口。
+            self._gl_overloaded = True
+            self._paint_overload_notice(p)
+            return
+        self._gl_overloaded = False
         pixmap = self._static_pixmap(p)
         if pixmap is not None:
             p.drawPixmap(0, 0, pixmap)
         else:
             self._paint_static_prefix(p)
         self._paint_dynamic(p)
+
+    def overload_limited(self) -> bool:
+        """绘制点数是否超过 GL 后端的安全上限（见 ``gl_series.GL_MAX_POINTS``）。
+
+        这是**兜底护栏**：常规路径下不会触发——采样阈值就是视口像素宽，渲染
+        点数天然停在数千量级，而像素级分辨率下限不可关闭（见
+        :func:`sampling.sampling_options`）。只有绕过采样、把数百万点直接塞进
+        单个系列的调用方才会碰到它。
+
+        触发时**不绘制超长几何**，改为给出提示文案，理由是标定过的成本：
+        同一份 150 万点数据，关闭下限后 ``layout`` 需 2.8 秒、单帧绘制 8.8 秒
+        ——事件循环在这段时间内完全不响应，Windows 会直接判定 AppHang 并把
+        程序杀掉（本机事件日志中的 AppHangB1 记录即由此而来）。
+        """
+        from .gl_series import GL_MAX_POINTS
+        for r in self._series:
+            if not r.visible:
+                continue
+            try:
+                if len(r._points) > GL_MAX_POINTS:
+                    return True
+            except (AttributeError, TypeError):
+                continue
+        return False
+
+    def _paint_overload_notice(self, p: QPainter) -> None:
+        """绘制「已暂停绘制」提示（说明原因与可行的做法）。"""
+        from .gl_series import GL_MAX_POINTS
+        p.fillRect(self.rect(), QColor(T("color.bg.base")))
+        p.setPen(QColor(T("color.text.tertiary")))
+        p.drawText(
+            self.rect().adjusted(24, 24, -24, -24),
+            Qt.AlignCenter | Qt.TextWordWrap,
+            f"已暂停绘制：单系列几何点数超过 {GL_MAX_POINTS:,}。\n"
+            f"请去掉 ``sampling: None`` 之类的设置——引擎默认按视口像素宽"
+            f"逐桶保留极值，逐像素列极值与全量直绘一致，画质不变而单帧回到"
+            f"毫秒级。")
 
     def _paint_dynamic(self, p: QPainter) -> None:
         """动态层 + 覆盖层：系列与组件 → tooltip。
@@ -1543,6 +1594,12 @@ class ChartWidget(QWidget):
         """
         self._layout_all()
         t = self.anim.t
+        if self.overload_limited():
+            # 兜底护栏：静态层命中时走的正是本方法，只守 _paint_contents
+            # 会漏掉这条路径。
+            self._gl_overloaded = True
+            self._paint_overload_notice(p)
+            return
         series_pm = self._series_pixmap(p, t) if self._series_cacheable(t) else None
         if series_pm is not None:
             p.drawPixmap(0, 0, series_pm)
