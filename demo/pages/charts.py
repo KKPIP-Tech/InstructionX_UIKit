@@ -1040,21 +1040,37 @@ _MASSIVE_DEFAULT_N = 1_500_000
 #: 点数滑块上限（数据接入本身在毫秒级，此处上限取 500 万以显示余量）
 _MASSIVE_MAX_N = 5_000_000
 
-#: 实时帧率统计的采样窗口（毫秒）与最小间隔
+#: 实时帧率统计的采样窗口（毫秒）
 _LIVE_WINDOW_MS = 600
+
+#: 实时帧率的刷新节奏（毫秒）。**不得设为 0**：那会让事件循环不停地堆积重绘
+#: 请求，在「关闭采样 + 百万点」这种单帧长达数秒的配置下会直接把进程拖垮
+#: （实测崩溃）。约 60 Hz 已足够反映真实帧率。
+_LIVE_INTERVAL_MS = 16
+
+#: 单帧超过该耗时（毫秒）时暂停实时帧率：此时测到的是「几秒一帧」，
+#: 既无参考价值，又会把界面拖住。读数条会说明原因。
+_LIVE_MAX_FRAME_MS = 120.0
 
 
 def _massive_signal(n: int, seed: int = 2026):
-    """生成巨量传感器风格信号（多个正弦叠加 + 噪声 + 少量尖峰）。
+    """生成巨量传感器风格信号（低频趋势 + 平滑高频细节 + 少量尖峰）。
+
+    频率选择是**为了可读性**：若含高频成分（如 ``sin(i * 0.1)``），150 万点
+    在每个像素列内会有数十个振荡，画出来只是一团噪声、y 轴刻度也会叠在一起，
+    反而看不出渲染质量。这里让主导成分的周期远大于像素列跨度。
 
     纯数值向量，直接交给 `set_option`：数值序列会按**引用**持有并零拷贝摄入。
     """
     idx = np.arange(n, dtype=np.float64)
     rnd = np.random.default_rng(seed)
-    ys = (np.sin(idx * 0.00035) * 30.0 + np.sin(idx * 0.0071) * 8.0
-          + np.sin(idx * 0.11) * 2.0 + rnd.uniform(-0.8, 0.8, n))
+    # 主导低频段（约 40 万个点一个周期，全宽约 4 个周期，舒展可读）
+    # + 一条缓变的中频段（约 5000 个点一个周期）+ 噪声
+    ys = (np.sin(idx * 0.000016) * 45.0
+          + np.sin(idx * 0.00125) * 5.0
+          + rnd.normal(0.0, 0.6, n))
     for s in np.random.default_rng(seed + 1).integers(0, n, 24):
-        ys[s] += rnd.uniform(40.0, 90.0)
+        ys[s] += rnd.uniform(60.0, 120.0)
     return ys
 
 
@@ -1089,12 +1105,15 @@ class MassiveDataDemo(QWidget):
 
     演示要点：
 
-    - **点数滑块实时重建**：从 5 万到 500 万，观察「每帧成本与数据总量解耦」；
-    - **采样开关**：关闭后直接绘制全分辨率点（QPainter 路径会明显变慢）；
+    - **点数滑块实时重建**：从 5 万到 500 万，观察「每帧成本与数据总量解耦」
+      ——因为绘制点数由视口像素宽决定，与数据总量无关；
     - **GPU 原生直绘**：开启后折线顶点经 VBO + GLSL 走显卡，绕过 QPainter
       的路径构造（耗时读数会出现数量级差异）；
     - **实时帧率**：连续重绘并统计真实帧间隔；
     - **后台线程生成**：点数较大时在 QThread 中准备数据，界面不卡。
+
+    本演示**不提供**「关闭采样」档位：采样阈值就是屏幕像素宽，超过它的点
+    既看不到也点不到，关掉只会让单帧从毫秒级涨到秒级并令窗口失去响应。
     """
 
     def __init__(self, parent=None):
@@ -1105,6 +1124,7 @@ class MassiveDataDemo(QWidget):
         self._fps_frames = 0
         self._fps_t0 = 0.0
         self._peak_fps = 0.0
+        self._live_halted = False
         self._busy = False
 
         lay = QVBoxLayout(self)
@@ -1116,10 +1136,13 @@ class MassiveDataDemo(QWidget):
         self.readout.setTextInteractionFlags(Qt.TextSelectableByMouse)
         lay.addWidget(self.readout)
         lay.addWidget(hint_label(
-            "对比方法：把「采样」切到「关闭（全分辨率）」，再切换「GPU 原生直绘」。"
-            "关闭采样后 QPainter 需逐点构造路径（百万点量级为秒级），而 GPU 直绘"
-            "把顶点一次性提交显卡、变换在着色器内完成，单帧仍在亚毫秒级——"
-            "这正是本区块要展示的 OpenGL 渲染能力。数据在后台线程生成，界面不卡。",
+            "「采样」不是可选项而是物理下限：绘图区只有 1000 多像素宽，150 万点里"
+            "每列有上千个点落在同一个像素列上，多出来的点既看不到也点不到。"
+            "引擎按「视口像素宽 × 2」设阈值并逐桶保留极值，"
+            "逐像素列极值与全量直绘严格一致——所以本演示里没有「关闭采样」这一档，"
+            "关掉只会白烧 CPU（单帧从毫秒级涨到秒级，界面随即失去响应）。"
+            "两条路径对比的是**同一条采样后曲线**：QPainter 逐点构造路径 vs "
+            "「GPU 原生直绘」把顶点交给 VBO + GLSL。数据在后台线程生成，界面不卡。",
             role="tertiary"))
 
         # -- 图表 ----------------------------------------------------------
@@ -1136,18 +1159,16 @@ class MassiveDataDemo(QWidget):
                      key="points", step=50_000)
         form.add_bool("GPU 原生直绘", _gl_ready(), self._on_gpu,
                       key="gpuDirect")
-        form.add_choice("采样", [("自动（minmax）", "minmax"),
-                               ("关闭（全分辨率）", "off")],
-                        "minmax", self._on_sampling, key="sampling")
         form.add_bool("实时帧率", False, self._on_live, key="live")
         form.add_bool("后台线程生成", False, self._on_threaded, key="threaded")
         lay.addWidget(panel)
         self.panel = panel
         self.form = form
 
-        # 帧率计时器：按最小间隔连续重绘，统计真实帧间隔
+        # 帧率计时器：按固定节奏请求重绘，统计真实帧间隔。
+        # 间隔取 _LIVE_INTERVAL_MS（不能是 0，见该常量说明）。
         self._fps_timer = QTimer(self)
-        self._fps_timer.setInterval(0)      # 只要事件循环空闲就重绘
+        self._fps_timer.setInterval(_LIVE_INTERVAL_MS)
         self._fps_timer.timeout.connect(self._on_fps_tick)
 
         self._rebuild()
@@ -1160,14 +1181,12 @@ class MassiveDataDemo(QWidget):
     def _on_gpu(self, enabled) -> None:
         self._rebuild()
 
-    def _on_sampling(self, value) -> None:
-        self._rebuild()
-
     def _on_live(self, enabled) -> None:
         if enabled:
             self._fps_frames = 0
             self._fps_t0 = time.perf_counter()
             self._peak_fps = 0.0
+            self._live_halted = False
             self._fps_timer.start()
         else:
             self._fps_timer.stop()
@@ -1189,13 +1208,6 @@ class MassiveDataDemo(QWidget):
             return bool(ctrl.isChecked())
         except Exception:  # noqa: BLE001
             return False
-
-    def _sampling_value(self):
-        ctrl = self.form.controls.get("sampling")
-        try:
-            return ctrl.currentData()
-        except Exception:  # noqa: BLE001
-            return "minmax"
 
     # -- 构建 --------------------------------------------------------------
     def _rebuild(self) -> None:
@@ -1229,15 +1241,17 @@ class MassiveDataDemo(QWidget):
             "lineStyle": {"width": 1.2},
             "showSymbol": False,
         }
-        sampling = self._sampling_value()
-        if sampling == "off":
-            series["sampling"] = None
+        # 采样配置一律走引擎默认（视口像素宽 × 2 的 minmax 下限）：本演示不再
+        # 提供「关闭采样」档位——百万点全分辨率既无可分辨的视觉收益，实测还会
+        # 让单帧从毫秒级涨到秒级并令事件循环失去响应（Windows 判定 AppHang）。
         if self._gpu_enabled():
             series["gpuDirect"] = True
         option = {
             "title": {"text": f"巨量数据 · {n:,} 点"},
+            # 单系列无需图例：去掉它可为绘图区腾出高度（长信号图更需要纵向空间）
+            "legend": {"show": False},
             "tooltip": {"trigger": "axis"},
-            "grid": {"left": 64, "right": 24, "top": 44, "bottom": 34},
+            "grid": {"left": 72, "right": 28, "top": 48, "bottom": 38},
             "xAxis": {"type": "value"},
             "yAxis": {"type": "value"},
             "series": [series],
@@ -1276,22 +1290,31 @@ class MassiveDataDemo(QWidget):
                          + ("（后台线程）" if getattr(self, "_threaded_used",
                                                       False) else ""))
         parts.append(f"set_option {getattr(self, '_last_set_ms', 0):.0f} ms")
+        if res.get("overload"):
+            # 护栏生效：此时 cpu_ms 只反映「画提示文案」，不能作为性能对比依据
+            from InstructionX_UIKit.charts.gl_series import GL_MAX_POINTS
+            parts.append(f"已暂停绘制（点数超过 GL 安全上限 "
+                         f"{GL_MAX_POINTS:,}，请调小点数）")
+            self.readout.setText(" ｜ ".join(parts))
+            return
         cpu = res["cpu_ms"]
         parts.append(f"QPainter 单帧 {cpu:.2f} ms" if cpu is not None else
                      "QPainter 单帧 —")
         if res["gpu_ms"] is not None:
             parts.append(f"GPU 直绘 {res['gpu_ms']:.3f} ms")
         elif res["gpu_active"]:
-            parts.append("GPU 直绘 不可用（需 GL 后端）")
+            parts.append("GPU 直绘 未生效（数据超直绘上限或需 GL 后端）")
         budget = res["budget_ms"]
         flag = "达标" if res["ok"] else "未达标"
         parts.append(f"90 fps 预算 {budget:.1f} ms → {flag}")
         # GPU 相对 QPainter 的倍数：这是本区块要展示的核心结论。
-        # 采样关闭时会达到数千倍（QPainter 在百万点全分辨率下是秒级）。
+        # 两条路径画的是同一条采样后曲线，倍数即「路径构造成本」的差距。
         if cpu and res["gpu_ms"]:
             parts.append(f"GPU 快 {cpu / res['gpu_ms']:.0f} 倍")
         if self._peak_fps:
             parts.append(f"实测峰值 {self._peak_fps:.0f} fps")
+        elif getattr(self, "_live_halted", False):
+            parts.append("实时帧率已暂停（单帧耗时过长）")
         parts.append("GL 后端 " + ("已启用" if res["gl"] else "软件回退"))
         self.readout.setText(" ｜ ".join(parts))
 
@@ -1300,8 +1323,20 @@ class MassiveDataDemo(QWidget):
 
     # -- 实时帧率 ----------------------------------------------------------
     def _on_fps_tick(self) -> None:
-        """连续重绘并累计帧数；每统计窗口更新一次读数。"""
+        """按固定节奏请求重绘并统计真实帧率。
+
+        安全阀：若已知单帧耗时过大（例如关闭采样后的百万点），直接停表——
+        此时继续连发重绘只会把界面拖死，而「几秒一帧」的读数也没有意义。
+        """
         if self._busy:
+            return
+        res = getattr(self, "_res", None)
+        if res is not None and res.get("cpu_ms") \
+                and res["cpu_ms"] > _LIVE_MAX_FRAME_MS \
+                and not res.get("gpu_ms"):
+            self._fps_timer.stop()
+            self._live_halted = True
+            self._update_readout()
             return
         self._busy = True
         try:
@@ -1314,9 +1349,6 @@ class MassiveDataDemo(QWidget):
                 self._peak_fps = max(self._peak_fps, fps)
                 self._fps_frames = 0
                 self._fps_t0 = now
-                res = getattr(self, "_res", None)
-                if res is not None:
-                    res = dict(res)
                 self._update_readout()
         finally:
             self._busy = False
