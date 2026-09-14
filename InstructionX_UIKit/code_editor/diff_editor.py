@@ -468,7 +468,11 @@ class DiffEditor(QWidget):
         self._title_right = QLabel()
         self._badge_left = QLabel()
         self._badge_right = QLabel()
-        self._side_page = QWidget()
+        # **必须带 parent**：不带 parent 的 QWidget 是顶层窗口，``QStackedLayout.
+        # addWidget`` 显示它时会先以顶层窗口身份创建并上屏一帧，随后才被重新挂到
+        # 父级下——多屏（尤其混合 DPI）下窗口管理器会把这一帧显出来，表现为
+        # 「进入该页时闪出一个窗口又关掉」。实测该窗口 640x480、标题为空（默认）。
+        self._side_page = QWidget(self)
         side_lay = QHBoxLayout(self._side_page)
         side_lay.setContentsMargins(0, 0, 0, 0)
         side_lay.setSpacing(1)
@@ -498,7 +502,7 @@ class DiffEditor(QWidget):
         ta = self._ed_inline.text_area()
         self._prefix_overlay = _InlinePrefixOverlay(ta, self)
         ta.setViewportMargins(self._prefix_overlay.prefix_width(), 0, 0, 0)
-        self._inline_page = QWidget()
+        self._inline_page = QWidget(self)      # 同上：不带 parent 会先以顶层窗口上屏
         inline_lay = QVBoxLayout(self._inline_page)
         inline_lay.setContentsMargins(0, 0, 0, 0)
         inline_lay.setSpacing(0)
