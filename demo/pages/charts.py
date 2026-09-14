@@ -1043,17 +1043,27 @@ _MASSIVE_MAX_N = 5_000_000
 #: 实时滚动流的生产者节奏：每 ``_LIVE_SAMPLE_INTERVAL_MS`` 毫秒推一批
 #: ``_LIVE_BATCH`` 个点，合计约 ``_LIVE_RATE`` 点/秒（高速传感器量级）。
 #:
-#: **速率为什么不能只取 50 点/秒**：定长窗口（默认 2 万点）在 50 点/秒下要
-#: 约 7 分钟才写满，演示里既看不到曲线左移、也看不到窗口丢弃最旧点——等于没
-#: 演示出「滚动流」这个形态。取千点量级后窗口在一分钟内写满，滚动与丢弃都
-#: 立刻可见；读数里同时给出实测与目标，口径是透明的。
-_LIVE_SAMPLE_INTERVAL_MS = 30
-_LIVE_BATCH = 30
+#: **批小频高**，不要反过来：图表只在有新数据到达时才入图，故**发射频率就是
+#: 帧率上限**。曾用「30 ms × 30 点」= 33 次/秒，于是无论绘制多快，帧率都被
+#: 压在 33 Hz（实测 paintGL 仅 3.57 ms，能力 280 Hz）。现取 4 ms × 4 点 =
+#: 250 次/秒，让帧率由图表能力与显示器刷新节奏决定，而不是被数据节奏限制。
+_LIVE_SAMPLE_INTERVAL_MS = 4
+_LIVE_BATCH = 4
 _LIVE_RATE = int(_LIVE_BATCH * 1000 / _LIVE_SAMPLE_INTERVAL_MS)
 
-#: 实时滚动流的读数刷新节奏（毫秒）。**不得设为 0**：那会让事件循环不停地
-#: 堆积重绘请求，在单帧长达数秒的极端配置下会把进程拖垮。
-_LIVE_INTERVAL_MS = 16
+#: 实时滚动流的**入图节奏**（毫秒）：会话按它把环形缓冲里的新数据写进图表。
+#: **不得设为 0**：那会让事件循环不停地堆积重绘请求，在单帧长达数秒的极端
+#: 配置下会把进程拖垮。
+#:
+#: 取 8 ms（125 Hz）而不是 16 ms：这个定时器本身就是帧率上限，而 90 fps
+#: 需要 11.1 ms 的节奏，16 ms 只能给到 62.5 Hz——**那会把图表的余量藏起来**。
+#: 放开到 8 ms 后，帧率由绘制能力与显示器刷新节奏决定。
+_LIVE_INTERVAL_MS = 8
+
+#: 读数条刷新节奏（毫秒）。**与入图节奏是两件事**，不要合并：读数条改文字会
+#: 触发 QLabel 的高度重算与父级布局，实测同一份 2 万点流下 16 ms 刷新会把
+#: 帧率从约 32 Hz 压到 17 Hz。人眼读数字 100~250 ms 一次足够。
+_LIVE_READOUT_MS = 100
 
 #: 实时滚动流默认保留的窗口点数（写入环形缓冲的容量上界）。
 #:
@@ -1204,6 +1214,7 @@ class MassiveDataDemo(QWidget):
         self._live_samples = 0
         self._live_target = 0
         self._live_apply_ms = 0.0
+        self._live_frame_ms = 0.0
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -1212,6 +1223,15 @@ class MassiveDataDemo(QWidget):
         # -- 读数条 --------------------------------------------------------
         self.readout = hint_label("准备中…", role="secondary")
         self.readout.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        # **读数条不得参与布局重算**：``hint_label`` 默认开自动换行，而
+        # ``QLabel`` 的 heightForWidth 会在文字变化时让父级重算几何——实时
+        # 滚动每秒改 60 次文字，整窗布局就跟着每秒重算 60 次。实测同一份
+        # 2 万点流：读数条 16 ms 刷新 → 17.2 Hz，改成 300 ms → 31.9 Hz，
+        # 1000 ms 只再多 1 Hz（说明帧率被这条标签吃掉了，与渲染无关）。
+        # 故关掉换行、固定高度，让文字变化只触发自身重绘。
+        self.readout.setWordWrap(False)
+        self.readout.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                   QSizePolicy.Policy.Fixed)
         lay.addWidget(self.readout)
         lay.addWidget(hint_label(
             "「采样」不是可选项而是物理下限：绘图区只有 1000 多像素宽，150 万点里"
@@ -1255,9 +1275,9 @@ class MassiveDataDemo(QWidget):
         self.form = form
 
         # 读数刷新计时器：只负责按节奏刷新读数条（不驱动重绘——重绘由流式
-        # 会话在有新数据时发起）。间隔取 _LIVE_INTERVAL_MS，不能是 0。
+        # 会话在有新数据时发起）。间隔取 _LIVE_READOUT_MS，不能是 0。
         self._fps_timer = QTimer(self)
-        self._fps_timer.setInterval(_LIVE_INTERVAL_MS)
+        self._fps_timer.setInterval(_LIVE_READOUT_MS)
         self._fps_timer.timeout.connect(self._on_fps_tick)
 
         self._rebuild()
@@ -1431,11 +1451,27 @@ class MassiveDataDemo(QWidget):
             return
         parts = [f"滚动窗口 {sess.ring.capacity:,} 点",
                  f"已入图 {len(sess.ring):,}"]
-        gaps = self._live_gaps[-60:]
-        if gaps:
-            mean_ms = sum(gaps) / len(gaps)
-            parts.append(f"实测入图 {1000.0 / max(mean_ms, 1e-6):.1f} Hz"
-                         f"（间隔 {mean_ms:.1f} ms）")
+        # 入图频率取**会话记录的入图间隔滑动平均**，不要用读数定时器的间隔、
+        # 也不要用瞬时值：前者是读数条刷新节奏（与图表无关，曾把 30 Hz 报成
+        # 9 Hz），后者在成批到达时会被压到极小（曾报出 432 Hz 的假读数）。
+        mean_interval = 0.0
+        try:
+            mean_interval = sess.mean_apply_interval()
+        except AttributeError:            # 兼容旧版 Kit
+            mean_interval = sess.last_apply_interval
+        interval_ms = mean_interval * 1000.0
+        if interval_ms > 0:
+            parts.append(f"实测入图 {1000.0 / interval_ms:.1f} Hz"
+                         f"（间隔 {interval_ms:.1f} ms）")
+        # 单帧绘制耗时与 90 fps 预算判定：端到端帧率受显示器垂直同步约束
+        # （本机 60 Hz 屏，读数约 60 Hz 就是屏幕的上限），而**能不能跑 90 fps
+        # 要看单帧耗时**是否落在 1000/90 = 11.11 ms 预算内。两者一起给，
+        # 才不会把「屏幕限制」误读成「图表能力不足」。
+        frame_ms = self._live_frame_ms
+        if frame_ms:
+            parts.append(f"单帧绘制 {frame_ms:.2f} ms")
+            parts.append(f"90 fps 预算 11.1 ms → "
+                         f"{'达标' if frame_ms <= 1000.0 / 90.0 else '未达标'}")
         if self._live_target:
             rate = self._live_samples / max(self._live_elapsed(), 0.1)
             parts.append(f"采样 {rate:.0f} 点/秒（目标 {self._live_target}）")
@@ -1566,6 +1602,14 @@ class MassiveDataDemo(QWidget):
                 return
             self._live_samples = self._sess.ring.total_written
             self._live_apply_ms = self._sess.last_apply_seconds * 1000.0
+            # 单帧绘制耗时：取视口最近若干帧的滑动平均（口径见 viewport.py），
+            # 用它判定 90 fps 预算，避免用端到端帧率（受垂直同步约束）。
+            paint_mean = 0.0
+            try:
+                paint_mean = self.chart._viewport.mean_paint_ms()
+            except AttributeError:
+                paint_mean = 0.0
+            self._live_frame_ms = paint_mean
             now = time.perf_counter()
             if self._live_last:
                 self._live_gaps.append((now - self._live_last) * 1000.0)
