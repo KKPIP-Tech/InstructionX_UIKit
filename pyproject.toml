@@ -8,6 +8,9 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "matplotlib>=3.11.1",
+    # numpy：图表引擎大规模数据管线（紧凑存储、向量化降采样与坐标映射、
+    # 分层采样金字塔）。用户批准新增（见 AGENTS.md 依赖清单例外）。
+    "numpy>=2.0",
     "pyside6>=6.11.1",
     "qrcode[pil]>=7.4",
 ]
