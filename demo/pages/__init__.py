@@ -17,6 +17,7 @@ from . import (
     basic_widgets,
     blueprint,
     charts,
+    code_editor,
     display,
     feedback,
     inputs,
@@ -95,6 +96,8 @@ USAGE = {
     # -- 动画 --------------------------------------------------------------
     "anim_property": 'from InstructionX_UIKit.anim import fade_in  # fade_in(widget, duration=...)',
     "anim_painted": 'from InstructionX_UIKit.anim import SpinnerArc  # 自绘动画控件，直接实例化',
+    # -- 代码编辑器 --------------------------------------------------------
+    "code_editor": 'from InstructionX_UIKit.code_editor import CodeEditor, DiffEditor  # 纯 PySide6 仿 VS Code',
 }
 
 
@@ -141,6 +144,9 @@ NAV = [
     ])),
     ("blueprint", "蓝图", _register([
         ("blueprint", "蓝图（节点图）", blueprint.create_page),
+    ])),
+    ("code_editor", "代码编辑器", _register([
+        ("code_editor", "代码编辑器（编辑器 / Diff 对比）", code_editor.create_page),
     ])),
 ]
 
