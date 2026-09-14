@@ -292,6 +292,8 @@ class StreamSession:
         self.auto_scale = bool(auto_scale)
         self._series_key = series
         self._alive = True
+        #: 上一次入图的实际计算耗时（秒），见 :meth:`_on_tick`
+        self.last_apply_seconds = 0.0
         self._timer = QTimer(chart)
         self._timer.setInterval(max(1, int(interval * 1000)))
         self._timer.timeout.connect(self._on_tick)
@@ -315,33 +317,45 @@ class StreamSession:
         data = self.ring.read()
         if data is None:
             return
+        t0 = time.perf_counter()
         try:
             self._apply(data)
         except Exception as exc:  # noqa: BLE001 - 单次入图失败不应终止会话
             from ._utils import warn_once
             warn_once("stream-apply", f"实时入图失败: {exc!r}")
+        finally:
+            #: 上一次入图的实际计算耗时（秒）。它是**纯计算**：不含窗口合成与
+            #: 帧缓冲交换的等待，因此与调用方测到的「入图间隔」之差就是合成
+            #: 阻塞——实测 2 万点窗口前者约 6 ms、后者约 40 ms，这个差额是
+            #: 判断「瓶颈在算法还是在合成」的关键依据，故在此暴露出来。
+            self.last_apply_seconds = time.perf_counter() - t0
 
     def _apply(self, data) -> None:
         """把缓冲内容写入系列并请求重绘（保持既有调用语义）。
 
-        ``vals`` 直接透传 ``RingBuffer.read`` 的返回值（ndarray，零拷贝切片）。
-        ``_deep_merge`` 会把 ndarray 包成 ``NumericBuffer``（按引用持有），并在
-        ``series`` 列表项内逐项融合，因此不必先转成 list——转 list 等于主动放弃
-        零拷贝与渲染器的矢量映射快路径（实测 2 万点窗口：采样耗时 2.53 ms vs
-        转 list 后的 9.31 ms，入图频率 62 Hz vs 17 Hz）。
+        ``vals`` 直接透传 ``RingBuffer.read`` 的返回值（ndarray，零拷贝切片）：
+        ``_deep_merge`` 会把 ndarray 按引用包成 ``NumericBuffer``，省掉每帧把
+        整个窗口转成 list 的成本（实测 2 万点窗口：``update_option`` 由
+        8.75 ms 降到 6.14 ms），同时保住渲染器的矢量映射快路径。
+
+        **补丁必须带上该系列的完整 option**（渲染器当前的 ``opt`` 加新 data），
+        而不是只给 ``{"data": ...}``：``update_option`` 的契约是 **list 值整体
+        替换**（见 core._deep_merge），只给 ``data`` 会把 ``type`` / ``name`` /
+        ``lineStyle`` / ``gpuDirect`` 等一并抹掉——实测表现为开启 ``gpuDirect``
+        的流式系列从第二帧起丢失直绘标记（``gpu_vertex_data()`` 返回 None、
+        VBO 顶点数 0），于是每帧白做一次 CPU 光栅化。
         """
         vals = data
         chart = self.chart
         idx = self._resolve_series_index()
         if idx < 0:
             return
-        patch = {"series": []}
-        for i in range(len(chart.series_renderers)):
-            if i == idx:
-                patch["series"].append({"data": vals})
-            else:
-                patch["series"].append({})
-        if self.auto_scale and vals:
+        renderers = chart.series_renderers
+        item = dict(renderers[idx].opt) if idx < len(renderers) else {}
+        item["data"] = vals
+        patch = {"series": [item if i == idx else {}
+                            for i in range(len(renderers))]}
+        if self.auto_scale and len(vals):
             lo = min(vals)
             hi = max(vals)
             pad = (hi - lo) * 0.05 or 1.0

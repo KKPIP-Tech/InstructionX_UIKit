@@ -204,8 +204,15 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
             # 兜底护栏：单系列几何点数超上限时不绘制超长路径，改给提示文案
             # （理由与实测数据见 ChartWidget.overload_limited）。
             if chart.overload_limited():
+                chart.set_gpu_owner(None)
                 chart._paint_overload_notice(p)
                 return
+            # GPU 接管的系列**先认领再绘制**：认领后 QPainter 就不再画它们
+            # （见 ChartWidget.gpu_claims），避免同一条曲线画两遍。实测
+            # 1400x500 / DPR 1.5（物理 2100x750）/ 采样后 2656 点：光栅化一次
+            # 要 24 ms，而 GPU 直绘整条 2 万点曲线 0.3 ms——叠加画两遍是纯浪费。
+            chart.prefer_raster_series = True
+            chart.set_gpu_owner(self._claim_gpu_series(ctx))
             if chart.static_layer_valid(p):
                 if not p.testRenderHint(QPainter.Antialiasing):
                     p.setRenderHint(QPainter.Antialiasing)
@@ -217,8 +224,45 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
             # 系列。必须放在 QPainter 之后——GL 调用与 QPainter 的 GL 引擎
             # 共用同一上下文，交错提交状态会互相干扰。
             self._draw_gpu_series(ctx)
+            chart.set_gpu_owner(None)
         finally:
             p.end()
+
+    def _claim_gpu_series(self, ctx):
+        """本帧**确实能**用 GPU 直绘的系列（上传失败/坐标不支持的不认领）。
+
+        只认领「管线就绪 + 顶点已上传（``vertex_count >= 2``）+ 变换可用」的
+        系列；任一条不满足就返回不含它，该系列仍由 QPainter 绘制，因此**不会
+        出现两条路径都不画的情况**。
+
+        **不在这里 makeCurrent**：本方法只在 ``paintGL`` 内调用，那里上下文
+        已经是 current 的；再调一次 ``makeCurrent`` 会崩（实测首次绘制即
+        访问违例 ``0xC0000005``）。需要在 ``paintGL`` 之外测量时请用
+        ``ensure_gpu_pipeline`` + ``with viewport``（见其 docstring）。
+        """
+        chart = self._chart
+        cands = [r for r in chart.series_renderers
+                 if getattr(r, "gpu_direct", False) and r.visible]
+        if not cands:
+            return None
+        pipe = self.ensure_gpu_pipeline()
+        if pipe is None:
+            return None
+        claimed = []
+        for r in cands:
+            try:
+                info = r.gpu_vertex_data()
+                if info is None:
+                    continue
+                pipe.set_vertices(info["vertices"], version=info["version"])
+                if pipe.vertex_count < 2:
+                    continue
+                if r.gpu_transform(chart.coord_for(r.opt)) is None:
+                    continue
+                claimed.append(r)
+            except Exception:  # noqa: BLE001 - 单个系列失败不影响其他
+                continue
+        return claimed or None
 
     def ensure_gpu_pipeline(self):
         """确保 GPU 直绘管线可用，返回它或 ``None``（供 benchmark 调用）。

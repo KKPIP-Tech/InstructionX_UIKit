@@ -150,10 +150,16 @@ class Coord:
     #: 供 ChartWidget.coord_for 按 series.coordinateSystem 匹配。
     kind = ""
 
+    #: 轴范围重算计数（``set_series`` 每次执行自增）。
+    #: 静态层（坐标轴/网格/刻度文字）的缓存键用它判断「轴相关的东西是否变了」：
+    #: 若沿用 option 版本号，纯数据更新也会让整幅静态位图重建（实测 8.15 ms/帧）。
+    data_extent_version = 0
+
     def __init__(self, chart=None, option: dict = None):
         self.chart = chart
         self.option = dict(option or {})
         self.rect = QRectF()
+        self.data_extent_version = 0
 
     # -- 协议 ------------------------------------------------------------
     def layout(self, rect: QRectF) -> None:
@@ -175,6 +181,7 @@ class Coord:
     # -- 可选 ------------------------------------------------------------
     def set_series(self, series_opts: list) -> None:
         """接收原始系列 option 列表（布局前调用，用于数值范围统计）。"""
+        self.data_extent_version += 1
 
     def invert_x(self, pos: QPointF):
         """像素 → 主轴数据值（默认不支持，返回 None）。"""
@@ -576,6 +583,7 @@ class GridCoord(Coord):
 
     # -- 数据范围 ---------------------------------------------------------
     def set_series(self, series_opts: list) -> None:
+        super().set_series(series_opts)      # 递增 data_extent_version
         grid_series = [s for s in (series_opts or [])
                        if isinstance(s, dict)
                        and s.get("coordinateSystem") in (None, "cartesian2d",
@@ -790,6 +798,7 @@ class PolarCoord(Coord):
         self.radius = 1.0
 
     def set_series(self, series_opts: list) -> None:
+        super().set_series(series_opts)      # 递增 data_extent_version
         rs = []
         for s in series_opts or []:
             if not isinstance(s, dict) or s.get("coordinateSystem") != "polar":
@@ -930,6 +939,7 @@ class SingleAxisCoord(Coord):
         self.plot = QRectF()
 
     def set_series(self, series_opts: list) -> None:
+        super().set_series(series_opts)      # 递增 data_extent_version
         vs = []
         for s in series_opts or []:
             if not isinstance(s, dict) or s.get("coordinateSystem") != "singleAxis":
