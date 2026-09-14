@@ -2,7 +2,7 @@
 """Demo 主窗口：顶部条 + 左侧导航树 + 右侧 QStackedWidget。
 
 - 顶部条：标题「InstructionX_UIKit」+ 亮 / 暗主题切换 SegmentedControl + 版本标签（取自包级 __version__）；
-- 左侧：QTreeWidget 导航（10 个分类，含蓝图，懒加载子页）；
+- 左侧：QTreeWidget 导航（11 个分类，含蓝图与代码编辑器，懒加载子页）；
 - 右侧：QStackedWidget 切换演示页；
 - 顶部条与版本标签为自绘元素，随 theme_changed 实时换肤，无需重启。
 """
@@ -101,6 +101,10 @@ class MainWindow(QMainWindow):
         # 才加入窗口树，Qt 会重建顶层原生窗口句柄（表现为窗口短暂关闭重开）。
         # 在 show() 之前的构造阶段创建蓝图页即可规避（USAGE.md §8.6）。
         self._prewarm_blueprint()
+        # 同理预热图表页：图表绘制视口在 GL 可用时也是 QOpenGLWidget
+        # （charts/viewport.py），首个图表控件若在窗口可见后才创建同样会
+        # 触发句柄重建。全页 27 个 ChartWidget 会一次性建好（惰性页缓存）。
+        self._prewarm_page("charts")
 
         # 默认选中第一页
         first = self._first_leaf()
@@ -109,14 +113,23 @@ class MainWindow(QMainWindow):
 
     def _prewarm_blueprint(self) -> None:
         """在窗口显示前预创建蓝图演示页（不改变当前选中页）。"""
+        self._prewarm_page("blueprint")
+
+    def _prewarm_page(self, page_key: str) -> bool:
+        """在窗口显示前预创建指定导航页（不改变当前选中页）。
+
+        用于含 QOpenGLWidget 的页面：GL 视口必须在顶层窗口可见之前进入
+        窗口树，否则 Qt 会重建原生窗口句柄（窗口短暂关闭重开）。
+        """
         for i in range(self._tree.topLevelItemCount()):
             cat = self._tree.topLevelItem(i)
             for j in range(cat.childCount()):
                 child = cat.child(j)
                 data = child.data(0, Qt.UserRole)
-                if data is not None and data[0] == "blueprint":
+                if data is not None and data[0] == page_key:
                     self.show_page(data[0], data[1])
-                    return
+                    return True
+        return False
 
     # -- 顶部条 -----------------------------------------------------------
     def _build_topbar(self) -> QWidget:
