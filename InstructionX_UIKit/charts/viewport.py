@@ -32,6 +32,7 @@ CPU 侧展平/三角化。因此本模块只解决“绘制设备换为 GPU”�
 
 import logging
 import os
+import time
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QGuiApplication, QPainter, QSurfaceFormat
@@ -181,9 +182,23 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
         super().__init__(chart)
         self._init_viewport(chart)
         self._gpu_pipe = None      # GPU 原生系列管线（惰性创建，随上下文）
+        #: 最近若干帧的绘制耗时（秒），供调用方判定帧率预算。见 mean_paint_ms。
+        self._paint_ms_window = []
         fmt = QSurfaceFormat()
         fmt.setSamples(0)
         self.setFormat(fmt)
+
+    def mean_paint_ms(self, window: int = 60) -> float:
+        """最近 ``window`` 帧 ``paintGL`` 的平均耗时（毫秒）；无样本返回 0。
+
+        **为什么需要它**：端到端帧率受显示器垂直同步约束（60 Hz 屏上读数就是
+        约 60），因此不能用它判断「图表能不能跑 90 fps」。单帧绘制耗时才是能力
+        口径——1000/90 = 11.11 ms 是预算，实测本仓库流式场景为 1.3~3.3 ms。
+        """
+        samples = self._paint_ms_window[-window:]
+        if not samples:
+            return 0.0
+        return sum(samples) / len(samples) * 1000.0
 
     def showEvent(self, event) -> None:  # noqa: N802
         """首次显示后强制一次重绘，规避首帧合成缺陷。"""
@@ -191,6 +206,7 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
         self.update()
 
     def paintGL(self) -> None:
+        t_start = time.perf_counter()
         ctx = self.context()
         if ctx is None or not ctx.isValid():
             # 防御：上下文不可用时只铺主题底色，绝不留黑屏/花屏
@@ -227,6 +243,9 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
             chart.set_gpu_owner(None)
         finally:
             p.end()
+            # 记录本帧绘制耗时（供 mean_paint_ms 判定 90 fps 预算）
+            self._paint_ms_window.append(time.perf_counter() - t_start)
+            del self._paint_ms_window[:-120]
 
     def _claim_gpu_series(self, ctx):
         """本帧**确实能**用 GPU 直绘的系列（上传失败/坐标不支持的不认领）。

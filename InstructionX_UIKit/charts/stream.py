@@ -294,6 +294,11 @@ class StreamSession:
         self._alive = True
         #: 上一次入图的实际计算耗时（秒），见 :meth:`_on_tick`
         self.last_apply_seconds = 0.0
+        #: 相邻两次真正入图的间隔（秒），见 :meth:`_on_tick`
+        self.last_apply_interval = 0.0
+        self._last_apply_at = 0.0
+        self._apply_intervals = []
+        self._INTERVAL_WINDOW = 60
         self._timer = QTimer(chart)
         self._timer.setInterval(max(1, int(interval * 1000)))
         self._timer.timeout.connect(self._on_tick)
@@ -324,11 +329,32 @@ class StreamSession:
             from ._utils import warn_once
             warn_once("stream-apply", f"实时入图失败: {exc!r}")
         finally:
+            now = time.perf_counter()
             #: 上一次入图的实际计算耗时（秒）。它是**纯计算**：不含窗口合成与
-            #: 帧缓冲交换的等待，因此与调用方测到的「入图间隔」之差就是合成
-            #: 阻塞——实测 2 万点窗口前者约 6 ms、后者约 40 ms，这个差额是
-            #: 判断「瓶颈在算法还是在合成」的关键依据，故在此暴露出来。
-            self.last_apply_seconds = time.perf_counter() - t0
+            #: 帧缓冲交换的等待，因此与「入图间隔」之差就是合成阻塞——这个
+            #: 差额是判断「瓶颈在算法还是在合成」的关键依据。
+            self.last_apply_seconds = now - t0
+            #: 相邻两次**真正入图**的间隔（秒）；由会话自己记录，因为调用方的
+            #: 计时器节奏未必等于入图节奏。瞬时值抖动大（生产者成批到达时
+            #: 相邻两次可能只差一两毫秒），故同时维护最近 ``_INTERVAL_WINDOW``
+            #: 次的样本，读数应使用 :meth:`mean_apply_interval`。
+            if self._last_apply_at:
+                dt = now - self._last_apply_at
+                self.last_apply_interval = dt
+                self._apply_intervals.append(dt)
+                del self._apply_intervals[:-self._INTERVAL_WINDOW]
+            self._last_apply_at = now
+
+    def mean_apply_interval(self) -> float:
+        """最近若干次入图间隔的平均值（秒）；样本不足时回退瞬时值。
+
+        读数应使用本方法而不是 ``last_apply_interval``：后者是瞬时值，在
+        「生产者成批到达」时会被压到极小（实测报出过 432 Hz 的假读数），
+        平均后才是屏幕每秒真正前进多少次。
+        """
+        if not self._apply_intervals:
+            return self.last_apply_interval
+        return sum(self._apply_intervals) / len(self._apply_intervals)
 
     def _apply(self, data) -> None:
         """把缓冲内容写入系列并请求重绘（保持既有调用语义）。
@@ -349,6 +375,31 @@ class StreamSession:
         chart = self.chart
         idx = self._resolve_series_index()
         if idx < 0:
+            return
+        # 优先走流式专用入口：只换数据、不重建 option / 渲染器。实测 2 万点
+        # 窗口每帧可省掉 ``_rebuild`` 6.83 ms 与两次多余重排（合计十余毫秒），
+        # 这是 90 fps 预算内的关键一步。入口不可用时（旧版 Kit / 自定义图表）
+        # 自动退回 update_option 全量路径。
+        setter = getattr(chart, "set_stream_data", None)
+        if callable(setter):
+            if self.auto_scale and len(vals):
+                lo, hi = min(vals), max(vals)
+                pad = (hi - lo) * 0.05 or 1.0
+                renderers = chart.series_renderers
+                base = dict(renderers[idx].opt) if idx < len(renderers) else {}
+                base["data"] = vals
+                patch = {"yAxis": {"min": lo - pad, "max": hi + pad},
+                         "series": [base if i == idx else {}
+                                    for i in range(len(renderers))]}
+                prev_anim = chart.anim
+                chart.update_option(patch)
+                try:
+                    chart.anim.stop()
+                    chart.anim.set_progress(1.0)
+                except Exception:  # noqa: BLE001
+                    del prev_anim
+                return
+            setter(vals, series=idx)
             return
         renderers = chart.series_renderers
         item = dict(renderers[idx].opt) if idx < len(renderers) else {}

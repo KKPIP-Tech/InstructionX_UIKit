@@ -849,6 +849,8 @@ class ChartWidget(QWidget):
         self._series_state = {}  # name -> bool（legend 显隐状态）
         self._opt_version = 0    # option 版本号（set_option/update_option 递增）
         self._layout_key = None  # 布局缓存键（脏标记，见 invalidate_layout）
+        #: 流式入口记录的各系列数据长度（仅在长度变化时重算轴范围）
+        self._stream_len = {}
         self.title = Title()
         self.legend = Legend(self)
         self.tooltip = Tooltip(self)
@@ -1278,6 +1280,87 @@ class ChartWidget(QWidget):
         sel = tuple(sorted((str(k), bool(v))
                            for k, v in self._series_state.items()))
         return (self._opt_version, self.width(), self.height(), theme, dz, sel)
+
+    def set_stream_data(self, values, series=0) -> bool:
+        """**流式数据专用入口**：只把新数据交给某个系列并请求重绘。
+
+        与 ``update_option({"series": [{"data": ...}]})`` 的区别在于**不做
+        option 级的重建**：``set_option`` 要深拷贝 option、``update_option``
+        要合并再 ``_rebuild()`` 重建全部渲染器与坐标系。实时流每帧都在换数据，
+        那套开销是纯浪费——实测 1400x500 / DPR 1.5 / 2 万点：每帧 ``_rebuild``
+        6.83 ms + layout 11.40 ms（3 次，其中 1 次强制），而其中只有「把新数据
+        交给渲染器」是必须的。
+
+        本方法的行为：
+
+        - 数据按引用持有（``NumericBuffer``，零拷贝），与 ``set_option`` 一致；
+        - 只失效**布局缓存**（数据变了要重新采样映射），不动静态层缓存
+          ——坐标轴范围未变时静态层照旧命中；
+        - 不启动入场动画（动画会让新点延迟可见，且会禁用布局缓存）；
+        - 不重建渲染器实例，故调用方持有的 ``opt`` 增量（如 ``gpuDirect``）
+          与 VBO 版本身份都保持稳定。
+
+        返回是否成功写入（系列序号越界 / 数据不可用时为 ``False``）。
+        """
+        renderers = self._series
+        try:
+            idx = int(series)
+        except (TypeError, ValueError):
+            idx = 0
+        if idx < 0 or idx >= len(renderers):
+            return False
+        if values is None:
+            return False
+        buf = to_buffer(values)
+        arr = buf if buf is not None else values
+        renderers[idx].opt["data"] = arr
+        # 轴范围必须跟着数据长度走（**不是可省的开销**）：空类目的 category 轴
+        # 没有类目可推，band 数完全依赖「隐式下标范围」（见 axes.GridCoord.
+        # set_series）。跳过这一步时 vmin/vmax 会停在初始的 0/1，band 宽度算成
+        # 0.0005 像素，屏幕 x 飞到 200 万（实测 x 606~2095126，绘图区才
+        # 72~1139），图上只剩一条压在边缘的线。
+        #
+        # 只在**长度变化**时重算：窗口写满后长度恒定，无需每帧扫一遍数据；
+        # 长度变化的那几帧本来就要跟随新范围（轴范围未固定的情形），
+        # 而固定了 ``yAxis.min/max`` 的调用方不受影响。
+        try:
+            n = len(arr)
+        except TypeError:
+            n = 0
+        if self._stream_len.get(idx) != n:
+            self._stream_len[idx] = n
+            # 同步到内部 option：轴范围推导（各坐标系 set_series）与
+            # ``option()`` 快照都读 ``_option``，只改渲染器的 opt 会让两处
+            # 数据不一致——范围仍按旧数据算，映射随即跑飞。
+            try:
+                self._option["series"][idx]["data"] = arr
+            except (KeyError, IndexError, TypeError):
+                pass
+            self._refresh_axes_extent()
+        # 数据变了 → 布局必须重算（采样与映射依赖它），但静态层与 option
+        # 版本都不动：轴范围未变时坐标轴无需重建。
+        self._layout_key = None
+        self._paint_only_dirty = True
+        self.update()
+        return True
+
+    def _refresh_axes_extent(self) -> None:
+        """让各坐标系按当前 option 重算轴范围（流式入口在数据长度变化时调用）。
+
+        复用 ``set_series`` 的既有实现，避免两处范围推导逻辑分叉；坐标系
+        各自已对数据形态做容灾，异常只记录不抛出（与布局路径一致）。
+        """
+        opts = [s for s in (self._option.get("series") or [])
+                if isinstance(s, dict)]
+        for c in self._coords:
+            fn = getattr(c, "set_series", None)
+            if not callable(fn):
+                continue
+            try:
+                fn(opts)
+            except Exception as exc:  # noqa: BLE001
+                warn_once(f"stream-extent:{c.__class__.__name__}",
+                          f"流式轴范围重算异常（{c.__class__.__name__}）: {exc!r}")
 
     def _layout_all(self, force: bool = False) -> None:
         """全量布局：坐标系 / 系列 / 组件几何。
