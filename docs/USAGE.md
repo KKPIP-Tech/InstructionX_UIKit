@@ -1,6 +1,6 @@
 # USAGE — InstructionX_UIKit 使用方法
 
-> 本文档覆盖安装、快速开始、主题系统、全部 58 个组件、13 个布局、52 个动画预设、图表引擎与蓝图（节点图）组件的最小可运行示例。
+> 本文档覆盖安装、快速开始、主题系统、全部 58 个组件、13 个布局、52 个动画预设、图表引擎、蓝图（节点图）组件与代码编辑器的最小可运行示例。
 > 所有示例均与仓库真实 API 一致；离屏验证一律使用 `QT_QPA_PLATFORM=offscreen`。
 
 ## 目录
@@ -16,7 +16,8 @@
 - [6. 动画用法](#6-动画用法)
 - [7. 图表用法（InstructionX_UIKit.charts 原生引擎）](#7-图表用法instructionx_uikitcharts-原生引擎)
 - [8. 蓝图模式（InstructionX_UIKit.blueprint 节点图）](#8-蓝图模式instructionx_uikitblueprint-节点图)
-- [9. 常见问题](#9-常见问题)
+- [9. 代码编辑器（InstructionX_UIKit.code_editor，仿 VS Code）](#9-代码编辑器instructionx_uikitcode_editor仿-vs-code)
+- [10. 常见问题](#10-常见问题)
 
 ## 1. 安装
 
@@ -1246,7 +1247,183 @@ graph.to_dict()              # 仅数据层：{"nodes": [...], "edges": [...]}
 
 节点图天然适合「可视化拼装 + 数据流」类工具：**PyTorch 模块拼装**（把 Conv / Attention / 融合等模块注册为节点类型，properties 承载超参数，图结构导出为构建脚本）、**着色器 / 材质流水线**（纹理输入、滤镜、混合节点，引脚类型映射数据格式）、**AI 流水线编排**（加载→预处理→推理→后处理→落盘，如 Demo 预置图），以及规则引擎、音视频转码链、ETL 流程等。库只负责编辑与状态展示，真正的执行调度由应用层按图拓扑自行实现。
 
-## 9. 常见问题
+## 9. 代码编辑器（InstructionX_UIKit.code_editor，仿 VS Code）
+
+纯 PySide6 实现（无 WebView / JavaScript），对齐 VS Code 编辑区体验。契约见 `private_docs/CE_SPEC.md`。
+
+### 9.1 快速上手（6 行）
+
+```python
+from InstructionX_UIKit.code_editor import CodeEditor
+
+editor = CodeEditor()
+editor.set_language("python")          # 内置语言名，见 9.2
+editor.set_text("def main():\n    print('hello')\n")
+editor.cursor_position_changed.connect(lambda ln, col: print(f"行 {ln} 列 {col}"))
+editor.text_edited.connect(lambda: print("内容已修改"))
+```
+
+内置语言：`python` / `cpp` / `js` / `ts` / `json` / `html` / `css` / `markdown` / `qss` / `plain`。
+
+### 9.2 视图选项
+
+```python
+editor.set_font_family("Cascadia Code")   # 多字体族，回退到 MONO_FAMILY
+editor.set_font_size(13)                  # 像素字号，8-32
+editor.set_tab_size(4)                    # 缩进宽度（按字体度量换算 tab stop）
+editor.set_word_wrap(True)                # 自动换行
+editor.set_minimap_visible(True)          # 右侧小地图（字符级缩略 + 视口框拖动 / 点击跳转）
+editor.set_line_numbers("relative")       # "on" | "off" | "relative"（相对行号，VS Code 同款）
+editor.set_indent_guides(True)            # 缩进参考线
+editor.set_bracket_colorization(True)     # 嵌套括号层级着色
+editor.set_whitespace_visible(True)       # 行尾空白可见
+editor.set_readonly(True)                 # 只读（Diff 视图复用）
+```
+
+### 9.3 光标、选择与导航
+
+```python
+editor.goto_line(42, column=5)
+line, col = editor.cursor_position()      # 1-based
+
+editor.cursor_position_changed.connect(lambda ln, col: ...)
+editor.selection_changed.connect(lambda text: ...)
+editor.text_edited.connect(lambda: ...)
+editor.language_changed.connect(lambda name: ...)
+```
+
+快捷键（可用 `shortcut()` / `set_shortcut()` 读写，`slug` 见 `_DEFAULT_SHORTCUTS`）：
+`find`(Ctrl+F) / `replace`(Ctrl+H) / `goto_line`(Ctrl+G) / `select_next_occurrence`(Ctrl+D) /
+`trigger_completion`(Ctrl+Space) / `redo`(Ctrl+Y)。
+
+> 多光标取舍：`QPlainTextEdit` 仅支持单一 `QTextCursor`，无法渲染多选区，故以 VS Code
+> 核心多选手势 `Ctrl+D`（选中当前词 → 逐个追加下一个匹配为多选区 → 批量编辑）替代 Alt+Click。
+> `multi_selections()` 可读取当前多选区。
+
+```python
+editor.set_shortcuts_enabled(False)       # 整组禁用（宿主自行接管按键时）
+editor.set_shortcut("trigger_completion", "Ctrl+J")
+editor.shortcuts()                        # {"find": "Ctrl+F", ...} 当前全表
+```
+
+### 9.4 查找替换
+
+```python
+editor.open_find_bar(replace=False)   # 顶部右侧浮条：区分大小写 / 全字 / 正则 / 上下一个 / 替换 / 全部替换
+editor.find_count()                   # (当前第几个, 命中总数)
+editor.find_next(); editor.find_prev()
+editor.replace_current(); editor.replace_all()
+editor.close_find_bar()
+```
+
+搜索命中全部高亮（当前命中强化）+ 小地图标记；区域优先级：诊断 > 搜索当前命中 > 搜索命中 > 选中词 > 括号匹配 > 自定义层 > 语法。
+
+### 9.5 诊断、断点与折叠
+
+```python
+editor.set_diagnostics([
+    {"line": 47, "column": 5, "length": 14, "severity": "error",
+     "message": "discount 未做边界检查"},
+    {"line": 68, "column": 9, "length": 8, "severity": "warning", "message": "缺省值可能为 None"},
+])
+editor.diagnostics()                  # 读回列表
+editor.diagnostic_lines()             # {line: 最高严重级}
+
+editor.toggle_breakpoint(5)           # 点行号槽左侧同样可切换
+editor.breakpoints()                  # {5, ...}
+editor.breakpoint_toggled.connect(lambda line, on: ...)
+
+editor.fold_all(); editor.unfold_all()
+editor.fold(12); editor.unfold(12)    # 折叠基于缩进的默认折叠器
+editor.fold_points(); editor.folded_lines()
+```
+
+严重级取 `SEVERITY_COLORS` 的键：`error` / `warning` / `info`。宿主可挂任意区域高亮层：
+
+```python
+editor.set_region_highlight("blame", [(3, 8)], "#8A6D3B")   # 自定义 layer 名 + 十六进制色
+```
+
+### 9.6 补全与悬停 provider
+
+两者默认都不自动弹，完全由宿主驱动：
+
+```python
+def complete(prefix: str, line: int, col: int):
+    # 返回 [{"label": str, "kind": str, "detail": str, "insert": str}, ...]
+    return [it for it in MY_ITEMS if it["label"].startswith(prefix)]
+
+editor.set_completion_provider(complete)
+editor.set_completion_auto_trigger(True)   # 输入即弹（弹窗不抢焦点）
+
+def hover(line: int, col: int):
+    return "<b>calculate_total</b>(items, discount=0.0) -> float"   # 富文本；None 表示不弹
+
+editor.set_hover_provider(hover)           # 延迟约 300ms
+```
+
+### 9.7 语言注册表与语法色板
+
+```python
+from InstructionX_UIKit.code_editor import (
+    register_language, language_for_file, registered_languages,
+    SYNTAX_LIGHT, SYNTAX_DARK, syntax_palette, create_engine,
+)
+
+language_for_file("app/main.py")     # 'python'（按扩展名）
+registered_languages()               # ['cpp', 'css', ...]
+
+def my_engine(document):             # 自定义语言的 QSyntaxHighlighter 工厂
+    return MyEngine(document)
+
+register_language("mylang", my_engine, [".my", ".myl"])
+```
+
+语法色板走 tokens 派生的亮/暗两套（`SYNTAX_LIGHT` / `SYNTAX_DARK`，`syntax_palette(mode)` 取当前），
+`theme_changed` 时自动重刷，无需手动重启。
+
+### 9.8 DiffEditor（并排 / 内联 / 自动）
+
+```python
+from InstructionX_UIKit.code_editor import DiffEditor
+
+diff = DiffEditor()
+diff.set_documents(old_text, new_text, language="python",
+                   old_title="原始", new_title="修改后")
+
+diff.set_view_mode("auto")        # "side-by-side" | "inline" | "auto"
+diff.view_mode()                  # auto 下返回实际生效模式
+diff.set_auto_breakpoint(900)     # 容器宽 < 900px 时 auto 自动切内联
+
+diff.hunk_count(); diff.current_hunk()
+diff.next_hunk(); diff.prev_hunk()
+diff.hunk_changed.connect(lambda index, total: ...)
+
+diff.set_char_diff_enabled(True)          # 行内字符级差异高亮
+diff.set_overview_ruler_visible(True)     # 右侧变更概览标尺
+diff.set_revert_enabled(True)             # 显示「还原此块」按钮
+diff.revert_hunk(0); diff.hunk_reverted.connect(lambda index: ...)
+```
+
+并排模式左右两侧共用一条滚动位置（同步滚动），删除行左侧 danger 底、插入行右侧 success 底、
+替换行两侧 emphasis 底；内联模式删除行前缀 `-`、插入行前缀 `+`，前缀列自绘。
+
+### 9.9 扩展绘制钩子
+
+```python
+editor.set_paint_hook(lambda painter, text_area: ...)        # 文本区叠加绘制
+editor.set_line_label_provider(lambda line: "覆盖 12x")       # gutter 附加标签
+editor.set_line_marker_provider(lambda line: "coverage")     # gutter 标记图标
+```
+
+### 9.10 主题与嵌入
+
+`CodeEditor` / `DiffEditor` 全部颜色经 `T()` 令牌读取并连接 `theme_changed`，
+`ThemeManager.instance().set_mode("dark")` 后自动换肤；控件背景透明防全局 QSS 污染，
+可直接放进任意布局 / `SplitPanel` / `Tabs`。子控件访问器：
+`text_area()` / `gutter()` / `minimap()` / `find_bar()` / `completion_popup()` / `hover_bubble()` / `highlight_engine()`。
+
+## 10. 常见问题
 
 **Q1：设置了 `size="sm"` 但样式不生效？**
 `size` 是 QWidget 内置 `Q_PROPERTY`，`setProperty("size", "sm")` 会失败且不会成为动态属性。务必使用：

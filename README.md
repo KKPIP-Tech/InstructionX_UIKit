@@ -1,6 +1,6 @@
 # InstructionX_UIKit
 
-基于 PySide6（Qt for Python）的纯桌面 UI 组件库：设计令牌 + 亮/暗双主题、58 个组件、13 个响应式布局预设、52 个动画预设、原生图表引擎与蓝图节点图编辑器。
+基于 PySide6（Qt for Python）的纯桌面 UI 组件库：设计令牌 + 亮/暗双主题、58 个组件、13 个响应式布局预设、52 个动画预设、原生图表引擎、蓝图节点图编辑器与仿 VS Code 代码编辑器。
 
 ![Python](https://img.shields.io/badge/Python-3.14%2B-3776AB?logo=python&logoColor=white)
 ![PySide6](https://img.shields.io/badge/PySide6-6.11.1%2B-41CD52?logo=qt&logoColor=white)
@@ -15,7 +15,8 @@
 - **52 个动画预设**：28 个属性动画（快照覆盖层方案，规避 Qt6 + QSS + 高 DPI 下 QGraphicsEffect 失效问题）+ 24 个 QTimer 自绘动画组件。
 - **原生图表引擎**：纯 QPainter 实现的 ECharts 风格图表，不依赖 WebView / JavaScript；`set_option` 数据驱动，20+ 系列类型，主题感知实时换肤。
 - **蓝图节点图**：类 UE5 Blueprint / ComfyUI 的节点图编辑器，支持右键建节点、引脚拖线、类型校验、序列化与执行状态模拟。
-- **职责分离**：`InstructionX_UIKit/` 为纯 Kit 包（零假数据、零 Demo 逻辑，一切内容由调用方 API 传入）；`demo/` 为独立演示程序（77 演示页，每页顶部附「用法」代码示例）。
+- **代码编辑器**：纯 PySide6（无 WebView）对齐 VS Code 编辑区体验——语法高亮（9 种内置语言 + 注册表扩展）、小地图、查找替换、诊断 / 断点 / 折叠、补全与悬停 provider、Ctrl+D 多选批量编辑，另含并排 / 内联 / 自动断点的 Diff 对比编辑器。
+- **职责分离**：`InstructionX_UIKit/` 为纯 Kit 包（零假数据、零 Demo 逻辑，一切内容由调用方 API 传入）；`demo/` 为独立演示程序（78 演示页，每页顶部附「用法」代码示例）。
 
 ## 界面预览
 
@@ -105,8 +106,9 @@ python main.py
 │   ├── layouts/                 # 13 个响应式布局预设（API 驱动）
 │   ├── anim/                    # 28 属性动画 + 24 自绘动画
 │   ├── charts/                  # 原生图表引擎（ECharts 风格）
-│   └── blueprint/               # 蓝图节点图（模型 / 画布 / 连线 / 菜单 / 执行模拟）
-├── demo/                        # 独立 Demo 程序（77 演示页）
+│   ├── blueprint/               # 蓝图节点图（模型 / 画布 / 连线 / 菜单 / 执行模拟）
+│   └── code_editor/             # 仿 VS Code 代码编辑器（高亮 / 小地图 / Diff）
+├── demo/                        # 独立 Demo 程序（78 演示页）
 ├── docs/                        # Design.md（设计规范）/ USAGE.md（使用手册）/ screenshots/
 ├── main.py                      # Demo 启动入口
 └── requirements.txt
