@@ -1068,10 +1068,18 @@ _LIVE_MAX_FRAME_MS = 120.0
 
 
 class _LiveSensor(QThread):
-    """模拟高速传感器：按固定周期产出一批采样点（独立线程）。
+    """模拟高速传感器：按固定节奏产出一批采样点（独立线程）。
 
     线程只做「造数 + 发信号」，信号在 GUI 线程被投进流式会话的环形缓冲，
     因此这里不触碰任何界面对象。信号用队列连接，天然跨线程安全。
+
+    **节拍用「绝对截止时间 + 最多睡 2 ms」而不是 ``msleep(整拍)``**：
+    Windows 线程休眠粒度约 15.6 ms（未调用 ``timeBeginPeriod`` 时），请求
+    睡 30 ms 实测要 47~53 ms——生产者只跑到约 19 批/秒、采样吞吐掉到约
+    768 点/秒（目标 1000）。而**图表只在新数据到达时才入图**，于是读数里
+    的「实测入图 19 Hz」其实是生产者节拍，不是渲染能力：绘图区一帧只要
+    约 8.6 ms（_apply 6.1 + paintGL 2.5），占 4 秒里的 15%。按截止时间对齐
+    后节拍误差降到毫秒级，读数才反映图表的真实能力。
     """
 
     #: 一批采样点（长度 ``_LIVE_BATCH`` 的 ndarray）
@@ -1080,14 +1088,15 @@ class _LiveSensor(QThread):
     def __init__(self, interval_ms: int = _LIVE_SAMPLE_INTERVAL_MS,
                  batch: int = _LIVE_BATCH, parent=None) -> None:
         super().__init__(parent)
-        self._step = max(1, int(interval_ms)) / 1000.0
+        self._interval = max(1, int(interval_ms)) / 1000.0
         self._batch = max(1, int(batch))
         self._phase = 0.0
-        self._rate = self._batch / self._step        # 采样率（点/秒）
+        self._rate = self._batch / self._interval     # 采样率（点/秒）
 
     def run(self) -> None:  # noqa: N802 - Qt 覆写
         rnd = np.random.default_rng(7)
         step = 1.0 / self._rate                      # 相邻采样点的时间间隔
+        next_due = time.perf_counter()
         while not self.isInterruptionRequested():
             # 与 _massive_signal 同族（低频趋势 + 中频细节 + 噪声），但相位
             # 连续，故滚动窗口内是一条连续前进的曲线而非重复片段。
@@ -1096,7 +1105,17 @@ class _LiveSensor(QThread):
             self.batch.emit(np.sin(t * 0.9) * 45.0
                             + np.sin(t * 11.0) * 5.0
                             + rnd.normal(0.0, 0.6, self._batch))
-            self.msleep(max(1, int(self._step * 1000)))
+            next_due += self._interval
+            while not self.isInterruptionRequested():
+                remaining = next_due - time.perf_counter()
+                if remaining <= 0:
+                    break
+                # 单次最多睡 2 ms：把系统休眠粒度的影响从「整拍」压到「余数」
+                self.msleep(min(2, max(1, int(remaining * 1000))))
+            if self.isInterruptionRequested():
+                break
+            if next_due < time.perf_counter() - self._interval:
+                next_due = time.perf_counter()       # 落后逾一拍则重新对齐
 
     def stop(self) -> None:
         """请求停止并等待线程退出（最长约一个采样周期）。"""
@@ -1184,6 +1203,7 @@ class MassiveDataDemo(QWidget):
         self._live_gaps = []
         self._live_samples = 0
         self._live_target = 0
+        self._live_apply_ms = 0.0
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -1202,8 +1222,11 @@ class MassiveDataDemo(QWidget):
             "两条路径对比的是**同一条采样后曲线**：QPainter 逐点构造路径 vs "
             "「GPU 原生直绘」把顶点交给 VBO + GLSL。数据在后台线程生成，界面不卡。"
             "打开「实时滚动流」后改为持续流：独立线程按约 1000 点/秒写入无锁环形"
-            "缓冲，图表只保留最近「窗口」个点、写满丢最旧——读数报的是实测入图"
-            "频率与采样吞吐，不是重绘请求数。",
+            "缓冲，图表只保留最近「窗口」个点、写满丢最旧。读数报的是实测入图"
+            "频率、采样吞吐与入图耗时（后者是 update_option + 重排的真实计算量，"
+            "与入图间隔的差额就是每帧走窗口合成/交换的等待——那部分由显示器"
+            "刷新节奏决定，不是图表能算多快）。系列在 GL 视口下由 GPU 直绘接管，"
+            "QPainter 不再重复画一遍。",
             role="tertiary"))
 
         # -- 图表 ----------------------------------------------------------
@@ -1417,6 +1440,8 @@ class MassiveDataDemo(QWidget):
             rate = self._live_samples / max(self._live_elapsed(), 0.1)
             parts.append(f"采样 {rate:.0f} 点/秒（目标 {self._live_target}）")
         parts.append(f"丢弃旧点 {sess.ring.dropped:,}")
+        if self._live_apply_ms:
+            parts.append(f"入图耗时 {self._live_apply_ms:.1f} ms")
         if self._live_halted:
             parts.append("实时滚动已暂停（单帧耗时过长）")
         gl = "已启用" if _gl_ready() else "软件回退"
@@ -1450,7 +1475,14 @@ class MassiveDataDemo(QWidget):
             # ±5 叠加 + 噪声），留一点余量。
             "yAxis": {"type": "value", "min": -58, "max": 58},
             "series": [{"type": "line", "name": "传感器信号", "data": [],
-                        "showSymbol": False, "lineStyle": {"width": 1.2}}],
+                        "showSymbol": False, "lineStyle": {"width": 1.2},
+                        # GPU 直绘：GL 视口下 QPainter 的光栅化是实时滚动的主要
+                        # 成本（实测 1400x500 / DPR 1.5、采样后 2656 点：GL paint
+                        # engine 要 22 ms、先光栅化再贴回 14 ms），而 GPU 直绘整条
+                        # 2 万点曲线只要 0.42 ms。视口会在绘制前「认领」该系列，
+                        # QPainter 随即跳过它（见 ChartWidget.gpu_claims），因此
+                        # 不会画两遍；无 GL / 上传失败时自动回到 QPainter 绘制。
+                        "gpuDirect": True}],
         })
         self.chart.anim.stop()
         self.chart.anim.set_progress(1.0)
@@ -1463,6 +1495,7 @@ class MassiveDataDemo(QWidget):
         self._live_target = _LIVE_RATE
         self._live_t0 = time.perf_counter()
         self._live_halted = False
+        self._live_apply_ms = 0.0
         # 清掉离线配置的读数：流运行期间不再做离屏测量（实测入图本身仅
         # 0.01~0.05 ms，而 benchmark 首次调用要 220 ms 重建缓存，会把刷新
         # 节奏和读数一起带偏），故只保留流的实测值。
@@ -1504,15 +1537,18 @@ class MassiveDataDemo(QWidget):
             return
 
     def _on_fps_tick(self) -> None:
-        """刷新实时滚动读数：实测入图间隔、采样吞吐、单帧耗时。
+        """刷新实时滚动读数：实测入图间隔、采样吞吐、入图耗时、单帧耗时。
 
         **不再把重绘请求数当帧率**：那样量到的是定时器节奏（约 1000/16 ≈ 62
-        「fps」），而它与下面画的是 6 ms 的 QPainter 还是 0.29 ms 的 GPU 无关，
-        两条路径读数永远一样。这里改为量两个真实量：
+        「fps」），与下面画的是 6 ms 的 QPainter 还是 0.29 ms 的 GPU 无关，
+        两条路径读数永远一样。这里改为量三个真实量：
 
-        - **入图间隔**：会话每次真正把新数据写进图表的时间差——只有在有新数据
-          时才刷新，故它反映的是「屏幕上的曲线多久前进一步」；
-        - **采样吞吐**：生产者累计写入点数 / 运行时长（与 UI 节奏无关）。
+        - **入图间隔**：会话每次真正把新数据写进图表的时间差——只有有新数据时
+          才刷新，故它反映「屏幕上的曲线多久前进一步」；
+        - **采样吞吐**：生产者累计写入点数 / 运行时长（与 UI 节奏无关）；
+        - **入图耗时**：``update_option`` + 重排的实际计算时间。它与入图间隔的
+          差额就是走窗口合成/交换的等待——实测 2 万点窗口：计算约 6 ms、间隔
+          约 40 ms，其余是每帧的合成阻塞，不是图表算法。
 
         安全阀：单帧耗时过大时停表并说明原因，避免界面被拖住。
         """
@@ -1529,6 +1565,7 @@ class MassiveDataDemo(QWidget):
                 self._update_readout()
                 return
             self._live_samples = self._sess.ring.total_written
+            self._live_apply_ms = self._sess.last_apply_seconds * 1000.0
             now = time.perf_counter()
             if self._live_last:
                 self._live_gaps.append((now - self._live_last) * 1000.0)
