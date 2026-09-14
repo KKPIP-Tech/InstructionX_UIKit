@@ -174,8 +174,9 @@ class _TextArea(QPlainTextEdit):
     def keyPressEvent(self, event):  # noqa: N802 - Qt 命名
         ed = self._editor
         key = event.key()
-        # 补全弹窗优先
-        if ed._completion.isVisible() and ed._completion.handle_key(key):
+        # 补全弹窗优先（延迟创建：None 表示从未弹过，直接跳过）
+        if ed._completion is not None and ed._completion.isVisible() \
+                and ed._completion.handle_key(key):
             return
         # Esc：退出多选 / 关闭查找栏
         if key == Qt.Key_Escape:
@@ -229,7 +230,9 @@ class _TextArea(QPlainTextEdit):
     def mouseMoveEvent(self, event):  # noqa: N802 - Qt 命名
         self._hover_pos = event.position().toPoint()
         self._hover_timer.start()
-        self._editor._hover_bubble.hide()
+        # 延迟创建：None 表示从未显示过气泡，无需隐藏
+        if self._editor._hover_bubble is not None:
+            self._editor._hover_bubble.hide()
         super().mouseMoveEvent(event)
 
     def _fire_hover(self):
@@ -237,7 +240,8 @@ class _TextArea(QPlainTextEdit):
 
     def leaveEvent(self, event):  # noqa: N802 - Qt 命名
         self._hover_timer.stop()
-        self._editor._hover_bubble.hide()
+        if self._editor._hover_bubble is not None:
+            self._editor._hover_bubble.hide()
         super().leaveEvent(event)
 
 
@@ -294,10 +298,15 @@ class CodeEditor(QWidget):
         self._regions = RegionManager(self._text)
         self._find_bar = FindReplaceBar(self, parent=self)
         self._find_bar.hide()
-        self._completion = CompletionPopup(self, parent=self)
-        self._completion.hide()
-        self._hover_bubble = HoverBubble(self, parent=self)
-        self._hover_bubble.hide()
+        # 补全弹窗与悬停气泡**延迟创建**（见 _ensure_completion/
+        # _ensure_hover_bubble）。
+        # 它们带 ``Qt.ToolTip`` 标志，即使有父级也会各自占一个原生窗口：一行
+        # 编辑器 3 个、代码编辑器演示页 10 个。这些窗口在**顶层窗口已可见**时被
+        # 创建，Windows 上会被窗口系统闪现一帧——用户看到的就是「突然闪出一个
+        # 小面板又关掉」（多屏下尤其明显）。改为首次真正需要时才建，构造期不再
+        # 产生任何窗口级控件。
+        self._completion = None
+        self._hover_bubble = None
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -325,7 +334,6 @@ class CodeEditor(QWidget):
         self._gutter.breakpoint_clicked.connect(self.toggle_breakpoint)
         self._gutter.fold_clicked.connect(self._toggle_fold_at)
         self._find_bar.close_requested.connect(self.close_find_bar)
-        self._completion.item_chosen.connect(self._apply_completion)
         ThemeManager.instance().theme_changed.connect(self._on_theme_changed)
 
         # 折叠重算去抖
@@ -935,7 +943,8 @@ class CodeEditor(QWidget):
     def _trigger_completion(self) -> None:
         """触发补全（输入触发或 Ctrl+Space）。"""
         if self._completion_provider is None:
-            self._completion.hide()
+            if self._completion is not None:
+                self._completion.hide()
             return
         prefix, _start = self._current_prefix()
         self._completion_prefix = prefix
@@ -945,12 +954,14 @@ class CodeEditor(QWidget):
         except Exception:
             items = []
         if not items:
-            self._completion.hide()
+            if self._completion is not None:
+                self._completion.hide()
             return
-        self._completion.set_items(items)
+        popup = self._ensure_completion()
+        popup.set_items(items)
         rect = self._text.cursorRect()
         pos = self._text.viewport().mapToGlobal(rect.bottomLeft())
-        self._completion.popup_at(pos)
+        popup.popup_at(pos)
 
     def _apply_completion(self, insert_text: str) -> None:
         """确认补全：替换当前前缀为插入文本。"""
@@ -960,7 +971,8 @@ class CodeEditor(QWidget):
         cur.setPosition(cur.position() + len(prefix), QTextCursor.KeepAnchor)
         cur.insertText(insert_text)
         self._text.setTextCursor(cur)
-        self._completion.hide()
+        if self._completion is not None:
+            self._completion.hide()
 
     # ------------------------------------------------------------------
     # 悬停
@@ -980,7 +992,7 @@ class CodeEditor(QWidget):
             return
         global_pos = self._text.viewport().mapToGlobal(
             QPoint(pos.x() + 12, pos.y() + 18))
-        self._hover_bubble.show_at(global_pos, html)
+        self._ensure_hover_bubble().show_at(global_pos, html)
 
     # ------------------------------------------------------------------
     # 折叠（基于缩进）
@@ -1253,9 +1265,24 @@ class CodeEditor(QWidget):
         return self._find_bar
 
     def completion_popup(self) -> CompletionPopup:
-        return self._completion
+        return self._ensure_completion()
 
     def hover_bubble(self) -> HoverBubble:
+        return self._ensure_hover_bubble()
+
+    def _ensure_completion(self) -> CompletionPopup:
+        """补全弹窗（首次调用时创建，见 __init__ 中的延迟创建说明）。"""
+        if self._completion is None:
+            self._completion = CompletionPopup(self, parent=self)
+            self._completion.item_chosen.connect(self._apply_completion)
+            self._completion.hide()
+        return self._completion
+
+    def _ensure_hover_bubble(self) -> HoverBubble:
+        """悬停气泡（首次调用时创建，见 __init__ 中的延迟创建说明）。"""
+        if self._hover_bubble is None:
+            self._hover_bubble = HoverBubble(self, parent=self)
+            self._hover_bubble.hide()
         return self._hover_bubble
 
     def highlight_engine(self):
