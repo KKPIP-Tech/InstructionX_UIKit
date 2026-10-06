@@ -43,6 +43,7 @@ USAGE = {
     "spin_box": 'SpinBox(minimum=0, maximum=99, value=1)  # DoubleSpinBox 同理',
     "combo_box": 'ComboBox(items=["选项一", "选项二"], searchable=True)',
     "slider": 'Slider(minimum=0, maximum=100, value=30)',
+    "budget_slider": 'from InstructionX_UIKit.components.budget_slider import BudgetSliderGroup, BudgetSpec  # BudgetSliderGroup(specs=[BudgetSpec("甲", maximum=40, value=22)], cap=120)',
     "date_picker": 'DatePicker()  # 弹出自定义中文日历',
     "time_picker": 'TimePicker()  # 时 / 分 / 秒调节',
     "rating": 'Rating(count=5, value=3.5)',

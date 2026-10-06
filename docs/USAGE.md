@@ -261,6 +261,21 @@ sl.set_tip_enabled(True)                        # 拖动时显示当前值
 sl.valueChanged.connect(print)
 ```
 
+**BudgetSliderGroup**（`budget_slider.py`）—— 多滑块总和上限约束，预算墙夹取与超额再分配。
+
+```python
+from InstructionX_UIKit.components.budget_slider import BudgetSliderGroup, BudgetSpec
+group = BudgetSliderGroup(title="预算分配", cap=120, specs=[
+    BudgetSpec("甲", maximum=40, value=22, suffix=" 万"),
+    BudgetSpec("乙", maximum=40, value=18, suffix=" 万"),
+])
+group.set_specs([BudgetSpec("丙", maximum=50, value=30)])   # 重建全部行
+group.set_cap(120)                            # 收紧合计上限；None 回到 Σmax
+group.valueChanged.connect(lambda index, value: print(index, value))
+group.budgetChanged.connect(lambda total, cap, remaining: print(total, cap, remaining))
+print(group.values(), group.total, group.remaining)
+```
+
 **DatePicker**（`date_picker.py`）—— 日期选择（自定义日历弹层）。
 
 ```python
