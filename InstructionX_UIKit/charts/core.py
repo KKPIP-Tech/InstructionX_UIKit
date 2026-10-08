@@ -1232,6 +1232,22 @@ class ChartWidget(QWidget):
                                   lw, content.height())
                     content.setRight(content.right() - lw)
             self.legend.layout(band)
+        # 组件让位：visualMap 等组件要在内容区边上占一条带子，若不让出，
+        # 色带会直接压在绘图区上（heatmap 最右一列被盖住）。
+        for comp in self._components:
+            reserve = getattr(comp, "content_reserve", None)
+            if not callable(reserve):
+                continue
+            try:
+                r, b = reserve(content)
+            except Exception as exc:
+                warn_once(f"component-reserve:{comp.__class__.__name__}",
+                          f"组件让位计算异常（{comp.__class__.__name__}）: {exc!r}")
+                continue
+            if r:
+                content.setRight(content.right() - max(0.0, r))
+            if b:
+                content.setBottom(content.bottom() - max(0.0, b))
         return content
 
     def invalidate_layout(self) -> None:

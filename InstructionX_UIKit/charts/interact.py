@@ -38,7 +38,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QFileDialog
 
 from ..theme import T
-from ._utils import clamp as _clamp, to_float as _to_float
+from ._utils import clamp as _clamp, draw_arc, to_float as _to_float
 from .axes import GridCoord, chart_font, format_value, nice_ticks
 from .core import parse_data_point, register_component
 
@@ -546,6 +546,16 @@ class BrushComponent(QObject):
 # visualMap
 # ---------------------------------------------------------------------------
 
+#: 色带本体宽度（px）
+_VM_BAR_W = 12.0
+#: 色带与两端数值标签之间的净距（px）
+_VM_GAP = 4.0
+#: vertical 时数值标签的留白宽（px），两端数字右对齐画在色带右侧
+_VM_LABEL_W = 26.0
+#: horizontal 时数值标签的留白高（px），画在色带上方
+_VM_LABEL_H = 14.0
+
+
 class VisualMapComponent:
     """连续视觉映射：值 → 颜色，右下 / 底部渐变条 + 两端数值标签。
 
@@ -606,15 +616,28 @@ class VisualMapComponent:
         )
 
     # -- 布局 / 绘制 ---------------------------------------------------------
+    def content_reserve(self, content: QRectF):
+        """从内容区让出的边长：vertical 让右侧、horizontal 让底部。
+
+        不让出的话色带会直接压在绘图区上 —— heatmap 最右一列被色带盖住
+        （实测「18时」整列压在渐变条下面）。返回 ``(right, bottom)``。
+        """
+        if self.orient == "vertical":
+            return (_VM_BAR_W + _VM_GAP + _VM_LABEL_W, 0.0)
+        return (0.0, _VM_BAR_W + _VM_GAP + _VM_LABEL_H)
+
     def layout(self, rect: QRectF) -> None:
         if self.orient == "vertical":
-            w, h = 12.0, min(120.0, max(40.0, rect.height() * 0.4))
-            x = rect.right() - w - 34
-            y = rect.bottom() - h - 12
+            w = _VM_BAR_W
+            h = min(120.0, max(40.0, rect.height() * 0.45))
+            # 贴在让出带内：内容区已为此从右边缩进，色带整体落在绘图区之外
+            x = rect.right() - w - _VM_GAP - _VM_LABEL_W
+            y = rect.bottom() - h
         else:
-            w, h = min(140.0, max(60.0, rect.width() * 0.35)), 12.0
+            w = min(140.0, max(60.0, rect.width() * 0.35))
+            h = _VM_BAR_W
             x = rect.center().x() - w / 2
-            y = rect.bottom() - h - 18
+            y = rect.bottom() - h
         self._bar = QRectF(x, y, w, h)
 
     def paint(self, p: QPainter, anim_t: float = 1.0) -> None:
@@ -641,18 +664,20 @@ class VisualMapComponent:
         p.setPen(QColor(T("color.text.secondary")))
         hi, lo = format_value(self.max), format_value(self.min)
         if self.orient == "vertical":
-            p.drawText(QRectF(self._bar.right() + 4, self._bar.top() - fm.height() / 2,
-                              34, fm.height()),
+            p.drawText(QRectF(self._bar.right() + _VM_GAP,
+                              self._bar.top() - fm.height() / 2,
+                              _VM_LABEL_W, fm.height()),
                        Qt.AlignLeft | Qt.AlignVCenter, hi)
-            p.drawText(QRectF(self._bar.right() + 4, self._bar.bottom() - fm.height() / 2,
-                              34, fm.height()),
+            p.drawText(QRectF(self._bar.right() + _VM_GAP,
+                              self._bar.bottom() - fm.height() / 2,
+                              _VM_LABEL_W, fm.height()),
                        Qt.AlignLeft | Qt.AlignVCenter, lo)
         else:
-            p.drawText(QRectF(self._bar.left() - 38, self._bar.top() - 2,
-                              34, fm.height() + 4),
+            p.drawText(QRectF(self._bar.left() - 38, self._bar.top() - _VM_LABEL_H,
+                              34, _VM_LABEL_H),
                        Qt.AlignRight | Qt.AlignVCenter, lo)
-            p.drawText(QRectF(self._bar.right() + 4, self._bar.top() - 2,
-                              34, fm.height() + 4),
+            p.drawText(QRectF(self._bar.right() + 4, self._bar.top() - _VM_LABEL_H,
+                              34, _VM_LABEL_H),
                        Qt.AlignLeft | Qt.AlignVCenter, hi)
         p.restore()
 
@@ -985,7 +1010,7 @@ class ToolboxComponent:
     def _icon_restore(p: QPainter, cx: float, cy: float) -> None:
         # 圆弧 + 箭头
         rect = QRectF(cx - 6, cy - 6, 12, 12)
-        p.drawArc(rect, 40 * 16, 290 * 16)
+        draw_arc(p, rect, 40, 290)
         p.drawLine(QPointF(cx + 6.2, cy - 2.5), QPointF(cx + 6.2, cy - 6.5))
         p.drawLine(QPointF(cx + 6.2, cy - 6.5), QPointF(cx + 2.2, cy - 6.5))
 

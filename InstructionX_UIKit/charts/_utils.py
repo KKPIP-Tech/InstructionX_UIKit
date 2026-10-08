@@ -20,7 +20,8 @@ interact）的数值与几何小工具，语义以「过滤 NaN/Inf」版为准�
 import math
 import sys
 
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QPainterPath, QPen
+from PySide6.QtCore import QPointF, QRectF
 
 __all__ = [
     "to_float",
@@ -29,6 +30,9 @@ __all__ = [
     "dist_point_segment",
     "warn_once",
     "ON_FILL_WHITE",
+    "arc_points",
+    "draw_arc",
+    "annular_sector",
 ]
 
 # ---------------------------------------------------------------------------
@@ -107,3 +111,8 @@ def warn_once(key: str, message: str) -> None:
 #: 与主题无关的「on-fill」前景色（与 qrcode 模块的白底黑字处理同理），
 #: 集中于此常量以便审计，不读 T() 令牌。
 ON_FILL_WHITE = "#ffffff"
+
+
+#: 圆弧绘制转出到包级 ``_draw``（components / anim / mermaid / icons 同样要用，
+#: 不能让这些下层模块反向 import charts）。
+from .._draw import annular_sector, arc_points, draw_arc  # noqa: E402,F401

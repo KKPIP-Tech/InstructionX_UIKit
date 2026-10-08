@@ -33,8 +33,8 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QApplication
 
 from ..theme import T
-from ._utils import ON_FILL_WHITE, clamp as _clamp, dist_point_segment, \
-    to_float as _to_float, with_alpha
+from ._utils import ON_FILL_WHITE, annular_sector, clamp as _clamp, \
+    dist_point_segment, draw_arc, to_float as _to_float, with_alpha
 from .axes import chart_font, format_value
 from .core import SeriesRenderer, register_series
 
@@ -202,26 +202,20 @@ class PieSeriesRenderer(SeriesRenderer):
         span = (a1 - a0) * anim_t
         r1 = sec["r1"]
         r0 = min(sec["r0"], r1)
-        path = QPainterPath()
         if span <= 0:
-            return path
+            return QPainterPath()
         rect_out = QRectF(self._center.x() - r1, self._center.y() - r1,
                           2 * r1, 2 * r1)
-        # Qt 角度：0° 于 3 点方向，逆时针为正（1/16 度单位）
+        # Qt 角度：0° 于 3 点方向，逆时针为正
         qt_start = 90.0 - a0
         qt_span = -span
+        # 用按点连线的 annular_sector 而不是 arcMoveTo/arcTo：Qt 的圆弧图元
+        # 在离屏光栅下会丢段（请求 108° 只画出 89°），扇区边缘会出现缺口。
         if r0 > 0.5:
             rect_in = QRectF(self._center.x() - r0, self._center.y() - r0,
                              2 * r0, 2 * r0)
-            path.arcMoveTo(rect_out, qt_start)
-            path.arcTo(rect_out, qt_start, qt_span)
-            path.arcTo(rect_in, qt_start + qt_span, -qt_span)
-            path.closeSubpath()
-        else:
-            path.moveTo(self._center)
-            path.arcTo(rect_out, qt_start, qt_span)
-            path.closeSubpath()
-        return path
+            return annular_sector(rect_out, rect_in, qt_start, qt_span)
+        return annular_sector(rect_out, None, qt_start, qt_span)
 
     def _animated_sectors(self, anim_t):
         """update_option 旧→新数值插值（等长时重建角度），否则返回原扇区。"""
@@ -610,9 +604,10 @@ class GaugeSeriesRenderer(SeriesRenderer):
         rect = QRectF(self._center.x() - r, self._center.y() - r, 2 * r, 2 * r)
         pen = QPen(color, width)
         pen.setCapStyle(Qt.FlatCap)
-        p.setPen(pen)
         p.setBrush(Qt.NoBrush)
-        p.drawArc(rect, int(-a_lo * 16), int((a_lo - a_hi) * 16))
+        # draw_arc 走折线：Qt 的 drawArc 在离屏光栅下会丢段，
+        # 仪表盘的长弧会缺一截（见 _utils.draw_arc 注释）
+        draw_arc(p, rect, -a_lo, a_lo - a_hi, pen)
 
     def paint(self, p: QPainter, anim_t: float) -> None:
         p.save()
@@ -1023,14 +1018,8 @@ class SunburstSeriesRenderer(SeriesRenderer):
                              2 * r0, 2 * r0)
             qt_start = 90.0 - node.a0
             qt_span = -span
-            path = QPainterPath()
-            path.arcMoveTo(rect_out, qt_start)
-            path.arcTo(rect_out, qt_start, qt_span)
-            if r0 > 0.5:
-                path.arcTo(rect_in, qt_start + qt_span, -qt_span)
-            else:
-                path.lineTo(self._center)
-            path.closeSubpath()
+            path = annular_sector(rect_out, rect_in if r0 > 0.5 else None,
+                                  qt_start, qt_span)
             p.setPen(QPen(border, 1.0))
             p.setBrush(node.color)
             p.drawPath(path)

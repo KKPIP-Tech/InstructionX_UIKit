@@ -1249,7 +1249,9 @@ class ScatterSeriesRenderer(SeriesRenderer):
         if coord is None:
             return
         single = getattr(coord, "kind", "") == "singleAxis"
-        fixed = _to_float(self.opt.get("symbolSize"), None)
+        # symbolSize 允许标量（固定点径）或 [min, max]（第三维映射区间）
+        _sz = self.opt.get("symbolSize")
+        fixed = _to_float(_sz, None) if not isinstance(_sz, (list, tuple)) else _sz
         # large 模式：百万级散点逐点绘制既不可行也无意义（远超屏幕可分辨
         # 能力），改为按像素桶聚合，每桶一个图元。阈值与折线同源：可见点数
         # 未超视口像素量级时不聚合。
@@ -1271,7 +1273,15 @@ class ScatterSeriesRenderer(SeriesRenderer):
                 pt = coord.map_point(y) if single else coord.map_point(x, y)
             except Exception:
                 continue
-            if fixed is not None:
+            if isinstance(fixed, (list, tuple)) and len(fixed) >= 2:
+                # symbolSize: [min, max] —— 第三维映射到该区间（ECharts 语义）。
+                # 此前只接受标量，导致「点径」控件在开启第三维映射时完全失效。
+                lo_r = max(1.0, (_to_float(fixed[0], 6.0) or 6.0) / 2)
+                hi_r = max(lo_r, (_to_float(fixed[1], 24.0) or 24.0) / 2)
+                span = zmax - zmin
+                f = 0.5 if span == 0 else (thirds[i] - zmin) / span if thirds[i] is not None else 0.5
+                r = _lerp(lo_r, hi_r, f)
+            elif fixed is not None:
                 r = max(1.0, fixed / 2)
             elif thirds[i] is not None:
                 span = zmax - zmin
