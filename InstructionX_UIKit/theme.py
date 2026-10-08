@@ -324,11 +324,12 @@ def _stroke(painter: QPainter, color: str, width: float = 1.6) -> None:
     painter.setBrush(Qt.NoBrush)
 
 
-def _save_asset(name: str, draw, size: int = 12) -> str:
-    """绘制 ``size`` x ``size`` 透明 PNG 并缓存，返回 QSS 可用的 url 路径；失败返回空串。
+def _save_asset(name: str, draw, size=12) -> str:
+    """绘制透明 PNG 并缓存，返回 QSS 可用的 url 路径；失败返回空串。
 
-    文件名嵌入绘制色值，天然按颜色区分；写入先落临时文件再原子替换，
-    避免中断写入留下损坏 PNG。
+    ``size`` 为 int 时绘制正方形，也可传 ``(宽, 高)`` 元组（如工具栏把手的
+    竖向点阵）。文件名嵌入绘制色值，天然按颜色区分；写入先落临时文件再
+    原子替换，避免中断写入留下损坏 PNG。
     """
     if QGuiApplication.instance() is None:
         return ""
@@ -339,7 +340,8 @@ def _save_asset(name: str, draw, size: int = 12) -> str:
     _cleanup_stale_assets()
     path = _ASSET_DIR / name
     if not path.exists():
-        pm = QPixmap(size, size)
+        w, h = (size, size) if isinstance(size, int) else size
+        pm = QPixmap(w, h)
         pm.fill(Qt.transparent)
         painter = QPainter(pm)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -391,6 +393,25 @@ def _draw_chevron(color: str, direction: str):
     return fn
 
 
+def _draw_grip(color: str, horizontal: bool = False):
+    """工具栏拖拽把手：经典 2 列 × 3 行点阵，画布 8x14。
+
+    ``horizontal=True`` 时转置为 3 列 × 2 行（画布 14x8），用于吸附左右
+    侧边后的竖向工具栏——此时把手在工具栏顶部，呈横向。
+    """
+
+    def fn(p: QPainter) -> None:
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(color))
+        if horizontal:
+            pts = [(x, y) for y in (2.5, 5.5) for x in (2.0, 7.0, 12.0)]
+        else:
+            pts = [(x, y) for x in (2.5, 5.5) for y in (2.0, 7.0, 12.0)]
+        for x, y in pts:
+            p.drawEllipse(QPointF(x, y), 1.2, 1.2)
+    return fn
+
+
 def _build_assets(tokens: dict) -> dict:
     """按令牌色生成全部小图标，返回 {名称: 路径}。"""
     c = lambda k: tokens[f"color.{k}"]  # noqa: E731
@@ -406,6 +427,10 @@ def _build_assets(tokens: dict) -> dict:
         "chev_right": _save_asset(f"chev_right_{key}.png", _draw_chevron(c("text.secondary"), "right")),
         "chev_up_dis": _save_asset(f"chev_up_{dis}.png", _draw_chevron(c("text.disabled"), "up")),
         "chev_down_dis": _save_asset(f"chev_down_{dis}.png", _draw_chevron(c("text.disabled"), "down")),
+        "grip": _save_asset(f"grip_{dis}.png", _draw_grip(c("text.disabled")), (8, 14)),
+        "grip_h": _save_asset(f"grip_h_{dis}.png", _draw_grip(c("text.disabled"), True), (14, 8)),
+        "grip_hov": _save_asset(f"grip_hov_{key}.png", _draw_grip(c("text.secondary")), (8, 14)),
+        "grip_h_hov": _save_asset(f"grip_h_hov_{key}.png", _draw_grip(c("text.secondary"), True), (14, 8)),
     }
 
 
@@ -591,8 +616,14 @@ QToolBar::separator:vertical {{
     height: 1px; background-color: {c('border')}; margin: 6px 4px;
 }}
 QToolBar QToolButton {{ padding: 4px; }}
-/* 隐藏工具栏拖拽把手：同样是原生风格残留，与扁平化不搭 */
-QToolBar::handle, QToolBar QToolBar::handle {{ image: none; width: 0; }}
+/* 工具栏拖拽把手：把手是 QMainWindow 里拖动工具栏的唯一抓取区——width: 0 会
+   让工具栏无法拖拽，全透明则看不见抓哪儿。横向工具栏把手在左侧（竖点阵，定宽度）；
+   吸附左右侧边后工具栏转竖向，把手在顶部（横点阵，定高度），两个方向都要有可见图标。
+   把手与首个按钮之间留 space.1 空隙。 */
+QToolBar::handle:horizontal, QToolBar QToolBar::handle:horizontal {{ width: 8px; margin-right: {t['space.1']}px; {img('grip')} image-position: center; background: transparent; }}
+QToolBar::handle:vertical, QToolBar QToolBar::handle:vertical {{ height: 8px; margin-bottom: {t['space.1']}px; {img('grip_h')} image-position: center; background: transparent; }}
+QToolBar::handle:horizontal:hover {{ {img('grip_hov')} image-position: center; background-color: {c('bg.muted')}; }}
+QToolBar::handle:vertical:hover {{ {img('grip_h_hov')} image-position: center; background-color: {c('bg.muted')}; }}
 QToolBar::tool-button-area {{ border: none; }}
 
 QStatusBar {{
