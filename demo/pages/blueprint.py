@@ -49,9 +49,9 @@ from InstructionX_UIKit.components import Button
 from InstructionX_UIKit.components.combo_box import ComboBox
 from InstructionX_UIKit.components.slider import Slider
 from InstructionX_UIKit.components.spin_box import SpinBox
-from InstructionX_UIKit.theme import set_property
+from InstructionX_UIKit.theme import set_font, set_property
 
-from .common import code_label, hint_label
+from .common import CodeBlock, code_label, hint_label
 from .playground import ParamForm
 
 __all__ = ["create_page", "register_demo_node_types", "PROPERTY_SCHEMAS"]
@@ -438,22 +438,29 @@ class BlueprintDemoPage(QWidget):
         self.canvas = BlueprintCanvas(self.graph, self, owner=DEMO_OWNER)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(20, 18, 20, 16)
-        root.setSpacing(8)
+        root.setContentsMargins(24, 24, 24, 24)
+        root.setSpacing(16)
+
+        # 页头：与 make_page 同构（title.lg / 说明 / 代码块），保持全站层级一致
+        head = QWidget()
+        set_property(head, "role", "plain")
+        head_lay = QVBoxLayout(head)
+        head_lay.setContentsMargins(0, 0, 0, 0)
+        head_lay.setSpacing(6)
 
         title = QLabel("蓝图（节点图）")
-        font = title.font()
-        font.setPixelSize(18)
-        font.setBold(True)
-        title.setFont(font)
-        root.addWidget(title)
-        root.addWidget(hint_label(
+        set_font(title, "font.title.lg", "bold")
+        head_lay.addWidget(title)
+        desc = hint_label(
             "类 UE5 Blueprint / ComfyUI 节点图编辑器。右键空白创建节点、"
             "引脚拖出连线、Delete 删除选中。「运行 / 单步」为纯 UI 模拟："
-            "仅驱动 ExecutionController 状态指示，不含任何业务逻辑。"))
-        root.addWidget(code_label(
-            'register_node_type("resize", ..., owner="uikit-demo"); '
+            "仅驱动 ExecutionController 状态指示，不含任何业务逻辑。",
+            max_w=880)
+        head_lay.addWidget(desc)
+        head_lay.addWidget(CodeBlock(
+            'register_node_type("resize", ..., owner="uikit-demo")\n'
             'canvas = BlueprintCanvas(graph, owner="uikit-demo")'))
+        root.addWidget(head)
 
         root.addLayout(self._build_toolbar())
 
@@ -527,15 +534,14 @@ class BlueprintDemoPage(QWidget):
         （输出 ``mat``/tensor，与本页画布的 ``img``/image 版本不同）。
         """
         frame = QFrame()
-        frame.setFrameShape(QFrame.Shape.StyledPanel)
+        set_property(frame, "role", "card")
         lay = QVBoxLayout(frame)
-        lay.setContentsMargins(12, 10, 12, 10)
-        lay.setSpacing(6)
+        lay.setContentsMargins(16, 14, 16, 16)
+        lay.setSpacing(10)
 
         head = QLabel("命名空间隔离（owner）")
-        head_font = head.font()
-        head_font.setBold(True)
-        head.setFont(head_font)
+        set_font(head, "font.title.sm", "semibold")
+        set_property(head, "role", "primary")
         lay.addWidget(head)
 
         lay.addWidget(hint_label(
@@ -543,10 +549,9 @@ class BlueprintDemoPage(QWidget):
             "各自带上 owner 注册即可共存；画布 / 创建菜单 / 节点体在指定 "
             "owner 时按「该 owner + 全局」范围解析，互不干扰；不传 owner "
             "的旧调用行为完全不变。"))
-        lay.addWidget(code_label(
+        lay.addWidget(CodeBlock(
             'register_node_type("load_image", ..., owner="uikit-demo")'
-            "    # 输出 img(image)"))
-        lay.addWidget(code_label(
+            "    # 输出 img(image)\n"
             'register_node_type("load_image", ..., owner="other-plugin")'
             "    # 输出 mat(tensor)，同名不冲突"))
 

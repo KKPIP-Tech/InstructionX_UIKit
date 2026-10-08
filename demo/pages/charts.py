@@ -258,8 +258,10 @@ def _build_scatter(o):
         aqi = rnd.randint(20, 180)                   # 第三维：AQI
         data.append([temp, hum, aqi] if o["zmap"] else [temp, hum])
     series = {"type": "scatter", "name": "城市天气样本", "data": data}
-    if not o["zmap"]:
-        series["symbolSize"] = o["size"]
+    # 关闭第三维映射 = 固定点径；开启时把 AQI 映射到 [6, 点径]。
+    # 此前只在关闭时才写 symbolSize，导致「点径」控件在默认状态（zmap 开）
+    # 下是个死控件。
+    series["symbolSize"] = o["size"] if not o["zmap"] else [6, o["size"]]
     return {
         "tooltip": {"trigger": "item"},
         "grid": {"left": 44, "right": 16, "top": 30, "bottom": 34},
@@ -846,8 +848,8 @@ _CARTESIAN_CARDS = [
     ("scatter 散点图 · 气温×湿度", _build_scatter,
      [("int", "n", "样本数", 40, 8, 120),
       ("bool", "zmap", "第三维映射大小", True),
-      ("int", "size", "固定点径", 12, 4, 24)],
-     "symbolSize 固定值或按第三维（AQI）6~24px 映射"),
+      ("int", "size", "点径", 24, 6, 24)],
+     "symbolSize：关第三维映射时为固定点径，开时把 AQI 映射到 6~点径"),
     ("effectScatter 涟漪散点 · 热门签到城市", _build_effect_scatter,
      [("float", "period", "涟漪周期(秒)", 3.0, 1.0, 6.0, {"step": 0.5}),
       ("float", "scale", "扩散倍数", 2.6, 1.5, 4.0, {"step": 0.1}),
