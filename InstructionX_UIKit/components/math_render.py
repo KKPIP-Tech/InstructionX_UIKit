@@ -18,6 +18,13 @@
 
 线程与退出：worker 以 daemon 线程运行，``shutdown`` 以哨兵退出并 join
 （实例创建时自动连接 ``aboutToQuit``）；退出期 emit 失败会被兜底捕获。
+
+字形覆盖（本次修订）：mathtext 默认字体集 ``dejavusans`` **不含 CJK 字形**，
+中文公式（``\\mathrm{速度}`` / ``\\text{...}``）会被替换成方框符号
+（matplotlib 打印 ``Font 'rm' does not have a glyph for '速'``）。这里把
+``mathtext.rm`` 指向「主题正文字族（令牌）→ DejaVu Sans」的回退链：
+中文与西文都用 UI 同一套字形，数学符号仍由 DejaVu 承担
+（``it`` / ``bf`` / ``cal`` 不动），因此不影响常见纯数学公式的观感。
 """
 
 import io
@@ -31,9 +38,11 @@ import matplotlib
 
 from matplotlib import mathtext
 from matplotlib.figure import Figure
-from matplotlib.font_manager import FontProperties
+from matplotlib.font_manager import FontProperties, findfont
 from PySide6.QtCore import QCoreApplication, QObject, Signal
 from PySide6.QtGui import QImage
+
+from ..tokens import FONT_FAMILY
 
 __all__ = ["MathRenderHub"]
 
@@ -52,6 +61,68 @@ _FAILED = object()
 #: 后端惰性设置状态（线程安全，仅设置一次）
 _backend_state = {"ready": False}
 _backend_lock = threading.Lock()
+
+#: 公式正文字族回退链（线程安全，仅计算一次）
+_math_font_state = {"ready": False, "chain": None}
+_math_font_lock = threading.Lock()
+
+#: CSS generic 族：matplotlib 的 findfont 认不出，必须剔除
+_GENERIC_FAMILIES = {"sans-serif", "serif", "monospace", "cursive", "fantasy"}
+
+
+def _families(qss_family: str):
+    """把 QSS ``font-family`` 字符串拆成字族列表（剔除 generic 族）。
+
+    与 ``theme.py`` / ``markdown_view.py`` 的同名实现保持一致：整串直接
+    传给 ``FontProperties(family=...)`` 会被当作**单一**字族名而匹配失败，
+    必须拆成列表。
+    """
+    result = []
+    for item in str(qss_family).split(","):
+        name = item.strip().strip('"').strip("'")
+        if name and name.lower() not in _GENERIC_FAMILIES:
+            result.append(name)
+    return result
+
+
+def _ensure_math_font() -> None:
+    """把 mathtext 正文字族指向「主题字族 → DejaVu Sans」回退链。
+
+    只改 ``rm`` / ``default``：数学符号由 ``it`` / ``bf`` / ``cal``
+    （默认 DejaVu）承担，不动它们即可保证纯数学公式的观感不变。
+    主题字族一个都解析不到时保持 matplotlib 默认配置（静默降级）。
+    """
+    if _math_font_state["ready"]:
+        return
+    with _math_font_lock:
+        if _math_font_state["ready"]:
+            return
+        _math_font_state["ready"] = True
+        usable = []
+        for name in _families(FONT_FAMILY):
+            try:
+                findfont(FontProperties(family=name), fallback_to_default=False)
+            except Exception:
+                continue  # 本机没装这个字族
+            usable.append(name)
+        if not usable:
+            return
+        chain = ", ".join(usable + ["DejaVu Sans"])
+        try:
+            # custom 字体集下 matplotlib 的默认项是 'italic' / 'bold' /
+            # 'cursive' 这类通用名，每次渲染都会打 findfont 告警；一并钉死
+            # 到 DejaVu 系列，让字体解析完全确定、stderr 干净。
+            matplotlib.rcParams["mathtext.fontset"] = "custom"
+            matplotlib.rcParams["mathtext.default"] = "regular"
+            matplotlib.rcParams["mathtext.rm"] = chain
+            matplotlib.rcParams["mathtext.cal"] = "DejaVu Sans"
+            matplotlib.rcParams["mathtext.sf"] = "DejaVu Sans"
+            matplotlib.rcParams["mathtext.tt"] = "DejaVu Sans Mono"
+            matplotlib.rcParams["mathtext.it"] = "DejaVu Sans:italic"
+            matplotlib.rcParams["mathtext.bf"] = "DejaVu Sans:bold"
+        except Exception as exc:  # pragma: no cover - matplotlib 版本差异
+            print(f"[MathRenderHub] mathtext 字族配置失败（沿用默认字体集）: {exc!r}",
+                  file=sys.stderr)
 
 
 def _ensure_agg_backend() -> None:
@@ -84,17 +155,25 @@ def _render_png_bytes(latex: str, color_hex: str, pt: float) -> bytes:
     字号按逻辑 pt 传入（不加超采样倍率），清晰度由 savefig 的
     2x dpi 与 QImage 的 devicePixelRatio 承担，避免双重计入
     导致公式显示为预期的 2 倍大小。
+
+    Figure 用完立即释放：流式场景下公式数量无上限，每条都新建一个
+    Figure 而不清理，长会话会持续占用内存（matplotlib 的 Figure 不走
+    pyplot 管理器，不会自动回收）。
     """
     _ensure_agg_backend()
+    _ensure_math_font()
     src = f"${latex}$"
     prop = FontProperties(size=pt)
     parser = mathtext.MathTextParser("path")
     width, height, depth, _, _ = parser.parse(src, dpi=72, prop=prop)
     fig = Figure(figsize=(width / 72.0, height / 72.0))
-    fig.text(0, depth / height, src, fontproperties=prop, color=color_hex)
-    buf = io.BytesIO()
-    fig.savefig(buf, dpi=96 * _SS, format="png", transparent=True)
-    return buf.getvalue()
+    try:
+        fig.text(0, depth / height, src, fontproperties=prop, color=color_hex)
+        buf = io.BytesIO()
+        fig.savefig(buf, dpi=96 * _SS, format="png", transparent=True)
+        return buf.getvalue()
+    finally:
+        fig.clear()
 
 
 class MathRenderHub(QObject):

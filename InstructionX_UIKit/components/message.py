@@ -3,6 +3,9 @@
 
 顶部居中的轻提示：FramelessWindowHint + Tool 顶层 QWidget，
 相对父窗口定位，自动淡出消失。
+
+度量全部引用 ``.alert`` 的提示族共享常量（``ICON_D`` / ``ICON_GAP``）
+与 ``layout.*`` 令牌，保证与 Alert / Notification 的图标—文字关系一致。
 """
 
 from PySide6.QtCore import (
@@ -18,7 +21,7 @@ from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
 from ..theme import T, ThemeManager
-from .alert import _type_icon
+from .alert import ICON_D, ICON_GAP, _type_icon
 from shiboken6 import isValid as _shiboken_is_valid
 
 
@@ -38,13 +41,15 @@ def _connect_theme(widget, slot) -> None:
 
 __all__ = ["Message"]
 
-_HEIGHT = 36
-_PAD_X = 14
-_PAD_Y = 8
-_ICON_W = 20
-_ICON_GAP = 8
-_GAP = 10
-_TOP = 20
+#: 气泡内边距（左 / 右同值，上下同值，与 Alert 保持一致）
+_PAD_X = T("layout.card.pad_x")
+_PAD_Y = T("space.2")
+#: 距锚点顶部的偏移
+_TOP = T("space.5")
+#: 同屏多条气泡之间的堆叠间距
+_GAP = T("space.2")
+#: 气泡最小高度（内容自然高度一般高于它，这里只作下限）
+_MIN_H = T("space.7")
 #: 气泡最大宽度（含内边距），文本超出后换行并增高
 _MAX_WIDTH = 480
 
@@ -77,6 +82,10 @@ class Message(QWidget):
         super().__init__(None, Qt.FramelessWindowHint | Qt.Tool
                          | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        # 与 Popover 同理：只给 WA_TranslucentBackground 不够，Qt 仍会用
+        # 窗口的系统背景刷子把整个窗口矩形填成不透明色（真机上表现为
+        # 一圈矩形色块）。本组件只由 paintEvent 绘制，明确交回背景控制权。
+        self.setAttribute(Qt.WA_NoSystemBackground)
         self.setAutoFillBackground(False)
         # 覆盖全局基座 QSS「QWidget { background: bg.base }」，避免提示
         # 窗口整个矩形被涂上不透明底色（暗色下呈黑色方框）；胶囊卡体
@@ -172,27 +181,35 @@ class Message(QWidget):
                 "warning": T("color.warning"),
                 "error": T("color.danger")}[self._type]
 
+    def _text_max_w(self) -> int:
+        """文本可用宽度（与 :meth:`_text_metrics` / ``paintEvent`` 同源）。"""
+        return _MAX_WIDTH - 2 * _PAD_X - ICON_D - ICON_GAP
+
+    def _text_metrics(self):
+        """返回 ``(文本宽, 文本高, 是否折行)``。
+
+        单行时必须用 ``horizontalAdvance``（含尾部空白的布局宽度）而非
+        ``boundingRect`` 的墨迹宽度，否则绘制端按同一可用宽度换行时会
+        与尺寸计算不一致。
+        """
+        fm = QFontMetrics(self.font())
+        max_w = self._text_max_w()
+        advance = fm.horizontalAdvance(self._text)
+        if advance <= max_w:
+            return advance, fm.height(), False
+        br = fm.boundingRect(QRect(0, 0, max_w, 0), Qt.TextWordWrap, self._text)
+        return max_w, br.height(), True
+
     def sizeHint(self) -> QSize:
         """按文本内容自适应尺寸。
 
-        宽度 = 内边距 + 图标槽 + 间距 + 文本宽，上限 ``_MAX_WIDTH``；
+        宽度 = 内边距 + 图标 + 图标间距 + 文本宽，上限 ``_MAX_WIDTH``；
         文本超出可用宽度时按 ``_MAX_WIDTH`` 换行，高度随行数增加，
-        最小高度保持 ``_HEIGHT``。单行时必须用 ``horizontalAdvance``
-        （含尾部空白的布局宽度）而非 ``boundingRect`` 的墨迹宽度，
-        否则绘制端按同一可用宽度换行会与尺寸计算不一致。
+        最小高度保持 ``_MIN_H``。
         """
-        fm = QFontMetrics(self.font())
-        text_max_w = _MAX_WIDTH - 2 * _PAD_X - _ICON_W - _ICON_GAP
-        advance = fm.horizontalAdvance(self._text)
-        if advance <= text_max_w:
-            text_w, text_h = advance, fm.height()
-        else:
-            br = fm.boundingRect(QRect(0, 0, text_max_w, 0),
-                                 Qt.TextWordWrap, self._text)
-            # 换行气泡占满上限宽度，保证绘制端换行结果与这里一致
-            text_w, text_h = text_max_w, br.height()
-        w = 2 * _PAD_X + _ICON_W + _ICON_GAP + max(1, text_w)
-        h = max(_HEIGHT, text_h + 2 * _PAD_Y)
+        text_w, text_h, _wrapped = self._text_metrics()
+        w = 2 * _PAD_X + ICON_D + ICON_GAP + max(1, text_w)
+        h = max(_MIN_H, text_h + 2 * _PAD_Y)
         return QSize(min(w, _MAX_WIDTH), h)
 
     def _siblings(self):
@@ -206,7 +223,7 @@ class Message(QWidget):
         base = self._anchor.mapToGlobal(QPoint(0, 0))
         x = base.x() + (self._anchor.width() - self.width()) // 2
         y = base.y() + _TOP
-        # 逐条累加前方气泡的实际高度（多行气泡可能高于 _HEIGHT）
+        # 逐条累加前方气泡的实际高度（多行气泡可能高于 _MIN_H）
         for m in self._siblings():
             if m is self:
                 break
@@ -216,7 +233,7 @@ class Message(QWidget):
     def _place(self, entrance: bool) -> None:
         target = self._target_pos()
         if entrance:
-            self.move(target + QPoint(0, -10))
+            self.move(target + QPoint(0, -_GAP - 2))
             self.setWindowOpacity(0.0)
             self._slide.setStartValue(self.pos())
             self._slide.setEndValue(target)
@@ -279,16 +296,21 @@ class Message(QWidget):
         pen.setWidthF(1.0)
         painter.setPen(pen)
         painter.drawPath(path)
-        pm = _type_icon(self._type, self._main_color())
-        y = (self.height() - 18) // 2
-        painter.drawPixmap(_PAD_X, y, pm)
+
+        _text_w, _text_h, wrapped = self._text_metrics()
+        # 图标与文字的基线关系与 Alert 保持一致：单行时图标几何中心与
+        # 单行文字中心同线；多行（文本折行）时改为顶部对齐，避免图标
+        # 悬在几行文字的中间。
+        icon_y = _PAD_Y if wrapped else (self.height() - ICON_D) // 2
+        painter.drawPixmap(_PAD_X, icon_y, _type_icon(self._type,
+                                                      self._main_color()))
         painter.setFont(self.font())
         painter.setPen(QColor(c("text.primary")))
         # 文本区基于完整控件矩形计算（不能用上面为边框内缩 1px 的 rect），
         # 保证可用宽度与 sizeHint() 的布局宽度一致，避免单行文本被
         # TextWordWrap 差 1px 而意外换行。
-        text_rect = self.rect().adjusted(
-            _PAD_X + _ICON_W + _ICON_GAP, 0, -_PAD_X, 0)
+        text_x = _PAD_X + ICON_D + ICON_GAP
+        text_rect = self.rect().adjusted(text_x, 0, -_PAD_X, 0)
         painter.drawText(text_rect,
                          Qt.AlignVCenter | Qt.AlignLeft | Qt.TextWordWrap,
                          self._text)

@@ -3,14 +3,23 @@
 
 ``RadioButton`` 基于 QRadioButton（指示器样式由全局 QSS 提供）；
 ``RadioGroup`` 为 QButtonGroup 的便捷封装，提供按 id 管理与文案查询。
+
+**尺寸口径**：全局 QSS 已为单选框备好 ``[uiksize=sm|lg]`` 的指示器
+选择器（md 走基础规则），但组件从不设置 ``size`` 动态属性，
+那几条规则始终是死代码。本类补上 ``size`` 参数并把控件高度锁到
+契约 §1 的密度刻度，单选框行因此能与同行的输入框严格等高。
 """
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QButtonGroup, QRadioButton
+
+from ..theme import _INPUT_HEIGHTS
+from ._mixin import SizeMixin
 
 __all__ = ["RadioButton", "RadioGroup"]
 
 
-class RadioButton(QRadioButton):
+class RadioButton(SizeMixin, QRadioButton):
     """单选框。
 
     用途:
@@ -19,19 +28,42 @@ class RadioButton(QRadioButton):
     参数:
         text: 选项文案。
         checked: 初始选中状态。
+        size: ``sm`` / ``md`` / ``lg``，高度 22 / 28 / 34。
         parent: 父控件。
 
     示例::
 
         a = RadioButton("方案一", checked=True)
-        b = RadioButton("方案二")
+        b = RadioButton("方案二", size="sm")
         c = RadioButton("方案三")
+
+    备注:
+        指示器边长由全局 QSS 的 ``[uiksize]`` 规则按档切换，本类只负责
+        设置属性并把控件高度对齐密度刻度。
     """
 
-    def __init__(self, text: str = "", checked: bool = False, parent=None):
+    #: 合法尺寸档（SizeMixin 校验用）
+    _SIZES = ("sm", "md", "lg")
+    _size_label = "单选框"
+
+    def __init__(self, text: str = "", checked: bool = False,
+                 size: str = "md", parent=None):
         super().__init__(text, parent)
         if checked:
             self.setChecked(True)
+        self.set_size(size)
+
+    # ------------------------------------------------------------------
+    # 尺寸
+    # ------------------------------------------------------------------
+
+    def _apply_size(self, size: str) -> None:
+        """SizeMixin 钩子：锁定高度（指示器边长走全局 QSS 的尺寸选择器）。"""
+        height = _INPUT_HEIGHTS[size]
+        qss = (f"QRadioButton {{ min-height: {height}px; "
+               f"max-height: {height}px; }}")
+        if self.styleSheet() != qss:
+            self.setStyleSheet(qss)
 
 
 class RadioGroup(QButtonGroup):
@@ -63,12 +95,14 @@ class RadioGroup(QButtonGroup):
     # 按钮管理
     # ------------------------------------------------------------------
 
-    def add_button(self, button, id: int = None):
+    def add_button(self, button, id: int = None, size: str = "md"):
         """添加按钮；传入字符串时自动创建 ``RadioButton``。
 
         参数:
             button: ``RadioButton`` 实例或选项文案。
             id: 业务 id（整数），缺省时自增分配；非整数抛 ``ValueError``。
+            size: 仅在按文案创建按钮时生效的尺寸档（sm / md / lg），
+                默认 ``md``，与 ``RadioButton`` 的默认值一致。
 
         返回:
             添加的按钮实例。
@@ -80,7 +114,7 @@ class RadioGroup(QButtonGroup):
         if id is not None and not isinstance(id, int):
             raise ValueError(f"非法单选按钮 id: {id!r}，应为整数")
         if isinstance(button, str):
-            button = RadioButton(button)
+            button = RadioButton(button, size=size)
             self._owned_buttons.append(button)
         if id is None:
             self._auto_id += 1

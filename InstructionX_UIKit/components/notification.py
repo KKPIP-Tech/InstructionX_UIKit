@@ -3,6 +3,9 @@
 
 管理器 + 单条卡片：以 FramelessWindowHint + Tool 顶层 QWidget 实现，
 相对父窗口右上角堆叠弹出，自动消失并淡出，底部带剩余时间进度条。
+
+度量引用 ``.alert`` 的提示族共享常量（``ICON_D`` / ``ICON_GAP``），
+与 Alert / Message 的图标—文字基线关系保持一致。
 """
 
 from PySide6.QtCore import (
@@ -18,7 +21,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, Q
 from PySide6.QtWidgets import QWidget
 
 from ..theme import T, ThemeManager
-from .alert import _close_icon, _type_icon
+from .alert import ICON_D, ICON_GAP, _close_icon, _type_icon
 from shiboken6 import isValid as _shiboken_is_valid
 
 
@@ -38,11 +41,22 @@ def _connect_theme(widget, slot) -> None:
 
 __all__ = ["Notification"]
 
+#: 卡片宽度（固定宽度 + 自行折行，契约 §7：不依赖 wordWrap 的压缩行为）
 _WIDTH = 320
-_PAD = 14
-_GAP = 12
-_MARGIN = 16
-_PROGRESS_H = 3
+#: 卡片内边距（四边同值，内部文本上下对称）
+_PAD = T("space.3")
+#: 同屏多条通知的堆叠间距
+_GAP = T("space.3")
+#: 卡片距窗口右 / 上边缘的距离
+_MARGIN = T("space.4")
+#: 标题与正文之间的行间距
+_TITLE_GAP = T("space.1")
+#: 剩余时间进度条厚度（2px 基网格的半档，扁平细线）
+_PROGRESS_H = T("space.05")
+#: 关闭按钮边长
+_CLOSE_D = T("space.3")
+#: 正文右边界到关闭按钮的让位距离
+_CLOSE_GUTTER = T("space.3")
 
 
 class Notification(QWidget):
@@ -74,6 +88,10 @@ class Notification(QWidget):
         super().__init__(None, Qt.FramelessWindowHint | Qt.Tool
                          | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        # 与 Popover 同理：只给 WA_TranslucentBackground 不够，Qt 仍会用
+        # 窗口的系统背景刷子把整个窗口矩形填成不透明色（真机上表现为
+        # 一圈矩形色块）。本组件只由 paintEvent 绘制，明确交回背景控制权。
+        self.setAttribute(Qt.WA_NoSystemBackground)
         self.setAutoFillBackground(False)
         # 覆盖全局基座 QSS「QWidget { background: bg.base }」，避免通知
         # 窗口整个矩形被涂上不透明底色（暗色下呈黑色方框）；圆角卡体、
@@ -105,14 +123,21 @@ class Notification(QWidget):
         msg_font.setPixelSize(T("font.sm"))
         self._msg_font = msg_font
 
-        text_w = _WIDTH - _PAD * 2 - 28
-        title_h = QFontMetrics(title_font).height()
-        msg_h = (QFontMetrics(msg_font).boundingRect(
-            QRect(0, 0, text_w, 1000), Qt.TextWordWrap, message).height()
-            if message else 0)
-        height = _PAD + title_h + (6 + msg_h if msg_h else 0) + _PAD \
-            + _PROGRESS_H
-        self.setFixedSize(_WIDTH, height)
+        # 文本区几何在构造时一次算清并存下：paintEvent 直接复用，
+        # 不再拿「剩余高度」反推，避免正文被压缩（契约 §7）
+        self._text_x = _PAD + ICON_D + ICON_GAP
+        self._text_w = _WIDTH - self._text_x - _PAD - _CLOSE_GUTTER
+        self._title_h = QFontMetrics(title_font).height()
+        self._title_y = _PAD
+        self._msg_y = _PAD + self._title_h + _TITLE_GAP
+        self._msg_h = (QFontMetrics(msg_font).boundingRect(
+            QRect(0, 0, self._text_w, 1000),
+            Qt.TextWordWrap, message).height() if message else 0)
+        # 图标顶边与标题首行光学中心对齐（而非与卡片顶边齐平）
+        self._icon_y = _PAD + (self._title_h - ICON_D) // 2
+        body_h = _PAD + self._title_h + self._msg_h \
+            + (_TITLE_GAP if self._msg_h else 0) + _PAD
+        self.setFixedSize(_WIDTH, body_h + _PROGRESS_H)
 
         self._elapsed = QElapsedTimer()
         self._timer = QTimer(self)
@@ -143,22 +168,26 @@ class Notification(QWidget):
         return n
 
     @staticmethod
-    def info(anchor, title, message, duration: int = 4000) -> "Notification":
+    def info(anchor: QWidget, title: str, message: str,
+             duration: int = 4000) -> "Notification":
         """弹出 info 通知。"""
         return Notification.notify(anchor, title, message, "info", duration)
 
     @staticmethod
-    def success(anchor, title, message, duration: int = 4000) -> "Notification":
+    def success(anchor: QWidget, title: str, message: str,
+                duration: int = 4000) -> "Notification":
         """弹出 success 通知。"""
         return Notification.notify(anchor, title, message, "success", duration)
 
     @staticmethod
-    def warning(anchor, title, message, duration: int = 4000) -> "Notification":
+    def warning(anchor: QWidget, title: str, message: str,
+                duration: int = 4000) -> "Notification":
         """弹出 warning 通知。"""
         return Notification.notify(anchor, title, message, "warning", duration)
 
     @staticmethod
-    def error(anchor, title, message, duration: int = 4000) -> "Notification":
+    def error(anchor: QWidget, title: str, message: str,
+              duration: int = 4000) -> "Notification":
         """弹出 error 通知。"""
         return Notification.notify(anchor, title, message, "error", duration)
 
@@ -212,7 +241,7 @@ class Notification(QWidget):
     def _move_to_stack(self, animate: bool, entrance: bool = False) -> None:
         target = self._target_pos()
         if entrance:
-            self.move(target + QPoint(36, 0))
+            self.move(target + QPoint(_WIDTH // 4, 0))
             self.setWindowOpacity(0.0)
             self._slide.stop()
             self._slide.setStartValue(self.pos())
@@ -291,7 +320,9 @@ class Notification(QWidget):
         super().mouseReleaseEvent(event)
 
     def _close_rect(self) -> QRect:
-        return QRect(self.width() - _PAD - 16, _PAD - 2, 16, 16)
+        """关闭按钮热区：与标题首行光学中心同线，不与卡片顶边齐平。"""
+        return QRect(self.width() - _PAD - _CLOSE_D, self._icon_y, _CLOSE_D,
+                     _CLOSE_D)
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -309,32 +340,34 @@ class Notification(QWidget):
         pen.setWidthF(1.0)
         painter.setPen(pen)
         painter.drawPath(path)
-        # 图标
+        # 图标：顶边与标题首行中心对齐（标题恒为单行，故不存在多行歧义）
         pm = _type_icon(self._type, self._main_color())
-        painter.drawPixmap(_PAD, _PAD + 1, pm)
+        painter.drawPixmap(_PAD, self._icon_y, pm)
         # 标题 / 正文
-        text_x = _PAD + 28
-        text_w = self.width() - text_x - _PAD - 18
         painter.setFont(self._title_font)
         painter.setPen(QColor(c("text.primary")))
-        title_h = QFontMetrics(self._title_font).height()
-        painter.drawText(QRect(text_x, _PAD, text_w, title_h),
+        painter.drawText(QRect(self._text_x, self._title_y, self._text_w,
+                               self._title_h),
                          Qt.AlignLeft | Qt.AlignVCenter, self._title)
-        if self._message:
+        if self._msg_h:
             painter.setFont(self._msg_font)
             painter.setPen(QColor(c("text.secondary")))
-            painter.drawText(
-                QRect(text_x, _PAD + title_h + 6, text_w,
-                      self.height() - _PAD * 2 - title_h - 6 - _PROGRESS_H),
-                Qt.TextWordWrap, self._message)
+            painter.drawText(QRect(self._text_x, self._msg_y, self._text_w,
+                                   self._msg_h),
+                             Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap,
+                             self._message)
         # 关闭按钮
-        icon = _close_icon().pixmap(12, 12)
+        icon = _close_icon(int(T("space.2"))).pixmap(int(T("space.2")),
+                                                     int(T("space.2")))
         rect = self._close_rect()
         if self._close_hover:
             painter.setBrush(QColor(c("bg.muted")))
             painter.setPen(Qt.NoPen)
-            painter.drawEllipse(rect.center(), 9, 9)
-        painter.drawPixmap(rect.x() + 2, rect.y() + 2, icon)
+            painter.drawEllipse(rect.center(), rect.width() / 2,
+                                rect.height() / 2)
+        painter.drawPixmap(rect.x() + (rect.width() - icon.width()) // 2,
+                           rect.y() + (rect.height() - icon.height()) // 2,
+                           icon)
         # 剩余时间进度条
         if self._duration > 0 and self._elapsed.isValid():
             ratio = max(0.0, 1.0 - self._elapsed.elapsed() / self._duration)

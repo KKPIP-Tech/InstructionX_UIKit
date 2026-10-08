@@ -17,15 +17,28 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QWidget
 
-from ..theme import T, ThemeManager
+from ..theme import T, ThemeManager, _INPUT_HEIGHTS, set_font
 from ..tokens import DURATION, EASING, TokenState
 from ._mixin import SizeMixin
 
 __all__ = ["SegmentedControl"]
 
-_HEIGHT = {"sm": 24, "md": 32, "lg": 40}
-_PAD = 2.0        # 底槽内边距
-_ITEM_HP = 16.0   # 分段文字左右留白
+#: 高度直接引用 theme._INPUT_HEIGHTS（契约 §1 的唯一刻度来源），
+#: 不再维护私有副本——私有表与全局 QSS / 其他控件迟早会漂移。
+_HEIGHT = dict(_INPUT_HEIGHTS)
+
+#: 底槽内边距（指示块与槽壁的间隙）取 2px 半档（space.05）
+_PAD = float(T("space.05"))
+#: 分段文字左右留白（icon ↔ 文字同源，取 layout.icon.gap 的两倍，
+#: 保证「图标 + 文字」组合的观感一致）
+_ITEM_HP = float(T("layout.icon.gap")) * 2
+#: 槽 / 指示块圆角：导航项按 radius.md（契约 §4），三档同值——
+#: 原实现按 h<=24 切成 11 / 6 两档，是拍脑袋的分档。
+_RADIUS = float(T("radius.md"))
+#: 指示块内圆角（小徽标档，radius.sm）
+_THUMB_RADIUS = float(T("radius.sm"))
+#: 尺寸档 → 字阶（契约 §6 的字阶表），与按钮 / 输入框同源
+_FONT_SCALE = {"sm": "sm", "md": "md", "lg": "lg"}
 
 
 class SegmentedControl(SizeMixin, QWidget):
@@ -38,7 +51,7 @@ class SegmentedControl(SizeMixin, QWidget):
     参数:
         items: 分段文案列表。
         current: 初始选中下标。
-        size: ``sm`` / ``md`` / ``lg``，高度 24 / 32 / 40。
+        size: ``sm`` / ``md`` / ``lg``，高度 22 / 28 / 34。
         parent: 父控件。
 
     示例::
@@ -181,9 +194,16 @@ class SegmentedControl(SizeMixin, QWidget):
             self.currentChanged.emit(index)
 
     def _apply_size(self, size: str) -> None:
-        """SizeMixin 钩子：同步内部尺寸档并固定高度。"""
+        """SizeMixin 钩子：同步内部尺寸档、固定高度并按档切换字号。
+
+        字号必须跟着尺寸档走（契约 §6）：自绘 QWidget 不受全局 QSS 的
+        ``[uiksize]`` 字号规则约束，不显式设的话三档文案都是 13px，
+        尺寸递进只体现在高度上。``set_font`` 走实例级 QSS，能压过全局
+        ``QWidget { font-size }`` 基座规则。
+        """
         self._size_name = size
         self.setFixedHeight(_HEIGHT[size])
+        set_font(self, _FONT_SCALE[size])
         self.updateGeometry()
 
     def size_name(self) -> str:
@@ -212,7 +232,9 @@ class SegmentedControl(SizeMixin, QWidget):
         return rect.x(), rect.width()
 
     def sizeHint(self) -> QSize:
-        w = sum(self._item_widths()) + _PAD * 2 if self._items else 120
+        # 空组占位宽取 space.12（48px）令牌，不用孤立的 120px 字面量
+        w = sum(self._item_widths()) + _PAD * 2 if self._items \
+            else int(T("space.12"))
         return QSize(int(w), _HEIGHT[self._size_name])
 
     def minimumSizeHint(self) -> QSize:
@@ -239,22 +261,22 @@ class SegmentedControl(SizeMixin, QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
-        radius = h / 2.0 if h <= 24 else 6.0
         # 底槽
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(T("color.bg.muted")))
-        p.drawRoundedRect(0, 0, w, h, radius, radius)
-        # 指示块
+        p.drawRoundedRect(0, 0, w, h, _RADIUS, _RADIUS)
+        # 指示块：底色 + 1px 常规边框（契约 §4：常规元素用 border，
+        # 不拿 border.strong 当装饰）。亮色下 elevated 与 muted 仅差
+        # 1.1:1，靠这一圈描边拉开层次；暗色下同样依赖它界定边缘。
         if 0 <= self._current < len(self._items) and self._thumb_w > 0:
             thumb = QRectF(self._thumb_x, _PAD, self._thumb_w, h - _PAD * 2)
+            p.setPen(Qt.NoPen)
             p.setBrush(QColor(T("color.bg.elevated")))
-            p.drawRoundedRect(thumb, 4.0, 4.0)
-            p.setPen(QColor(T("color.border.strong")))
+            p.drawRoundedRect(thumb, _THUMB_RADIUS, _THUMB_RADIUS)
+            p.setPen(QColor(T("color.border")))
             p.setBrush(Qt.NoBrush)
-            p.drawRoundedRect(thumb, 4.0, 4.0)
+            p.drawRoundedRect(thumb, _THUMB_RADIUS, _THUMB_RADIUS)
         # 文案
-        font = p.font()
-        p.setFont(font)
         for i, rect in enumerate(self._item_rects()):
             if not self.isEnabled() or not self._enabled[i]:
                 color = QColor(T("color.text.disabled"))

@@ -4,11 +4,21 @@
 可包裹任意子控件并在其右上角叠加数字 / 红点角标，也可独立使用；
 超过最大值显示 ``99+``；自绘实现，亮 / 暗主题实时感知。
 
-实现要点：角标是 Badge 的**独立子控件**（``_Pill``），创建顺序在被
-包裹控件之后并在几何变化时 ``raise_()``，保证绘制层级始终高于被
-包裹控件（修复角标被遮挡的 z-order 缺陷）；角标宽度由绘制字体的
-真实文本宽度加水平内边距决定（最小为高度，形成 pill 圆角），保证
-``99+`` 等宽文本完整显示。
+实现要点：
+
+1. **角标是 Badge 的独立子控件**（``_Pill``），创建顺序在被包裹控件之后
+   并在几何变化时 ``raise_()``，保证绘制层级始终高于被包裹控件（否则角标
+   会被子控件盖住——z-order 缺陷）。
+2. **包裹模式下 Badge 的高度与宿主一致**（只向右让出角标外溢的一半）。
+   若按「角标上下左右各外扩一半」去撑大包裹盒，Badge 就会比宿主高，同一
+   行里宿主控件会被顶偏，与相邻控件的中心线 / 基线对不上（实测按钮会下沉
+   半个角标高）；角标因此锚在「宿主右缘 - ``space.05``」这条竖线上，
+   右半探出包裹盒（包裹盒右侧已预留），纵向落在宿主的 padding 区。
+3. **圆角**：数字角标是 pill（半径 = 高度 / 2），红点是整圆。这类计数徽标
+   的圆角要跟着自身高度走，用固定 ``radius.sm`` 会在高度变化后出现
+   「胶囊两端不平」或「圆角大于半高」；``radius.sm`` 只用于矩形型小标签。
+4. 角标宽度由绘制字体的真实文本宽度加水平内边距决定（最小为高度，形成
+   pill 圆角），保证 ``99+`` 等宽文本完整显示。
 """
 
 from PySide6.QtCore import QSize, Qt
@@ -27,9 +37,16 @@ _COLOR_KEYS = {
     "warning": "color.warning",
 }
 
-_PILL_H = 18  # 数字角标高度
-_DOT_D = 8    # 红点直径
-_PAD_X = 6    # 数字角标单侧水平内边距（保证文本不顶边）
+#: 数字角标高度 = 2 × space.2（16px）。必须取偶数倍令牌：一半就是
+#: space.2，正好是令牌值——早前用 18px 时 ``_PILL_H // 2`` 得到 9px，
+#: 直接把非令牌内边距写进了布局。
+_PILL_H = T("space.2") * 2
+#: 红点直径
+_DOT_D = T("space.2")
+#: 数字角标单侧水平内边距（保证文本不顶边）
+_PAD_X = T("space.1")
+#: 角标距包裹盒右缘 / 顶缘的内缩（不压宿主按钮的圆角描边）
+_CORNER_INSET = T("space.05")
 
 
 class _Pill(QWidget):
@@ -54,7 +71,8 @@ class _Pill(QWidget):
         painter.setPen(Qt.NoPen)
         painter.setBrush(color)
         h = rect.height()
-        painter.drawRoundedRect(rect, h / 2, h / 2)  # pill 半径 = 高度一半
+        # pill 半径 = 高度一半：计数徽标的圆角随自身高度，不取固定档位
+        painter.drawRoundedRect(rect, h / 2, h / 2)
         if not badge._dot:
             painter.setPen(QColor(T("color.on.primary")))
             painter.setFont(badge._text_font())
@@ -92,7 +110,9 @@ class Badge(QWidget):
         self.set_color(color)
         self._child = None
         self._layout = QVBoxLayout(self)
-        self._layout.setContentsMargins(0, _PILL_H // 2, self._overhang_x(), 0)
+        # 包裹盒只在右侧为角标留出外溢空间（_layout_margins），高度照宿主，
+        # 因此行内垂直居中仍然成立（见模块文档第 2 条）。
+        self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(0)
         if widget is not None:
             self.set_widget(widget)
@@ -103,7 +123,7 @@ class Badge(QWidget):
 
     # ------------------------------------------------------------------ 配置
     def set_widget(self, widget: QWidget) -> None:
-        """设置被包裹的子控件（角标叠加在其右上角）。"""
+        """设置被包裹的子控件（角标锚在其右上角，右半探出宿主右缘）。"""
         if self._child is not None:
             self._layout.removeWidget(self._child)
             self._child.setParent(None)
@@ -178,18 +198,44 @@ class Badge(QWidget):
         fm = QFontMetrics(self._text_font())
         return max(_PILL_H, fm.horizontalAdvance(self._text()) + 2 * _PAD_X)
 
+    def _breathing(self) -> int:
+        """独立模式下的等边呼吸留白（令牌值，不用裸数字）。"""
+        return T("space.1")
+
     def _overhang_x(self) -> int:
-        """角标相对子控件右缘的外溢宽度（布局右侧预留，向上取整）。"""
-        return -(-max(_PILL_H, self._pill_width()) // 2)
+        """包裹盒右侧为角标预留的外溢宽度 = 半个角标，向上取到 2px 基网格。
+
+        必须按角标的**实际宽度**算。早先取 ``max(_PILL_H, _pill_width())``：
+        红点宽 8px 却按 ``_PILL_H``=16 预留，右边多让出 4px，圆心被推到
+        宿主右缘**外侧** 2px；而数字角标又因向上取整落在**内侧** 1~2px。
+        数字、红点于是各站各的位置，一眼看就是错位。
+        """
+        half = self._pill_width() / 2.0
+        return int(-(-half // 2) * 2)
+
+    def _layout_margins(self):
+        """包裹盒的外扩边距：右（上）各留半个角标，让角标有一半探出宿主。
+
+        **只向外扩右侧**、高度保持与宿主一致——若上下也扩，包裹盒就比宿主
+        高，同一行里宿主控件会被顶偏，与相邻控件的中心线对不上（这正是
+        本组件此前的问题）。
+        """
+        if self._child is None:
+            return (0, 0, 0, 0)
+        overhang = self._overhang_x()
+        return (0, 0, overhang, 0)
 
     def sizeHint(self) -> QSize:
         if self._child is not None:
+            # 高度照宿主，宽度只加右侧外溢：行内垂直居中由宿主决定
             base = self._child.sizeHint()
-            return QSize(base.width() + self._overhang_x(),
-                         base.height() + _PILL_H // 2)
+            return QSize(base.width() + self._overhang_x(), base.height())
         if self._dot:
-            return QSize(_DOT_D, _DOT_D)
-        return QSize(self._pill_width() + 4, _PILL_H + 4)
+            d = self._breathing()
+            return QSize(_DOT_D + d * 2, _DOT_D + d * 2)
+        w, h = self._pill_width(), _PILL_H
+        d = self._breathing()
+        return QSize(w + d * 2, h + d * 2)
 
     def minimumSizeHint(self) -> QSize:
         return self.sizeHint()
@@ -199,23 +245,31 @@ class Badge(QWidget):
         """按当前状态刷新角标几何 / 可见性，并保持绘制顶层。"""
         if self._pill is None:
             return
+        want = self._layout_margins()
+        cur = self._layout.contentsMargins()
+        if (cur.left(), cur.top(), cur.right(), cur.bottom()) != tuple(want):
+            self._layout.setContentsMargins(*want)
         if not self._visible():
             self._pill.hide()
             return
         w = self._pill_width()
         h = _DOT_D if self._dot else _PILL_H
         if self._child is not None:
-            # 右侧预留外溢宽度，锚定子控件右上角（角标完整落在控件边界内）
-            overhang = self._overhang_x()
-            margins = self._layout.contentsMargins()
-            if margins.right() != overhang:
-                self._layout.setContentsMargins(0, _PILL_H // 2, overhang, 0)
-            cx = self.width() - overhang
-            cy = _PILL_H // 2
+            # 铁律：角标圆心精确落在宿主右缘上，左右各探出一半。
+            # 这里直接用宿主实际几何算，不再拿「包裹盒宽 - 内缩 - 宽度」凑
+            # —— 那条式子里的 _CORNER_INSET 会把锚点整体推开，与 2px 网格
+            # 取整叠加后产生 ±2px 的漂移。
+            ch_right = self._child.x() + self._child.width()
+            max_h = self.height() - _CORNER_INSET * 2
+            if max_h > 0:
+                h = min(h, max_h)
+            w = min(w, self.width())
+            x = ch_right - w / 2.0
+            y = _CORNER_INSET
         else:
-            cx = self.width() / 2
-            cy = self.height() / 2
-        self._pill.setGeometry(round(cx - w / 2), round(cy - h / 2), w, h)
+            x = (self.width() - w) / 2
+            y = (self.height() - h) / 2
+        self._pill.setGeometry(round(x), round(y), w, h)
         self._pill.show()
         self._pill.raise_()  # 保持顶层：不被被包裹控件遮挡
         self._pill.update()

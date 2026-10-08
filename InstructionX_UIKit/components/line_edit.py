@@ -18,6 +18,13 @@
   提供点击与宽度预留），并在 paintEvent 前把可见侧槽按钮按
   [后缀][清除 ×][眼睛] 的顺序紧凑重排，``textMargins`` 为超宽文本预留
   额外空间，各槽位墨迹互不相交。
+
+本轮（轨道 2）改动：
+
+- 槽位相关的几处裸数字（垂直补偿 / 槽位间隙 / 手工绘制内缩 / Qt 私有
+  槽宽常数）改由 ``T("space.*") / T("layout.icon.gap")`` 驱动，
+  其中 ``_SLOT_INSET`` 由 3px 修正为 4px（2px 基网格），三档同步。
+- 文档中的高度刻度由旧的 24 / 32 / 40 更正为契约的 22 / 28 / 34。
 """
 
 import math
@@ -44,12 +51,16 @@ __all__ = ["LineEdit"]
 #: 各尺寸档的槽位图标边长（取间距令牌，避免魔法数）
 _ICON_TOKEN = {"sm": "space.3", "md": "space.4", "lg": "space.5"}
 
-#: textMargins 底部补偿：行高盒墨迹偏下 1px，+2 上移 1px 精确居中
-_VCENTER_BOTTOM = 2
+#: textMargins 底部补偿：行高盒墨迹偏下 1px，+2 上移 1px 精确居中。
+#: 属于**光学补偿**（契约 §3 允许，但必须写注释说明），取 2px 半档令牌。
+_VCENTER_BOTTOM = int(T("space.05"))
 #: 手工绘制槽位文本与正文 / 槽位按钮之间的最小间隔
-_SLOT_GAP = 2
-#: 手工绘制文本距槽位按钮边缘的内缩
-_SLOT_INSET = 3
+_SLOT_GAP = int(T("space.05"))
+#: 手工绘制文本距槽位按钮边缘的内缩（2px 基网格，不取奇数）
+_SLOT_INSET = int(T("space.1"))
+#: Qt 私有实现里侧槽按钮宽度 = iconSize + 6（QLineEditPrivate），
+#: 这里的 6 必须与 Qt 保持一致，故取同值的间距令牌并注明来源。
+_QT_SLOT_EXTRA = int(T("layout.icon.gap"))
 #: 清除按钮解析哨兵：已确认不存在内置清除 action（免重复扫描）
 _NO_CLEAR_ACTION = object()
 
@@ -144,7 +155,7 @@ class LineEdit(SizeMixin, QLineEdit):
     参数:
         text: 初始文本。
         placeholder: 占位提示。
-        size: ``sm`` / ``md`` / ``lg``，高度 24 / 32 / 40。
+        size: ``sm`` / ``md`` / ``lg``，高度 22 / 28 / 34。
         clearable: 是否启用内置清除按钮。
         parent: 父控件。
 
@@ -260,7 +271,7 @@ class LineEdit(SizeMixin, QLineEdit):
         """
         edge = _icon_edge(self.size_name())
         ink = self._symbol_ink(symbol)
-        if ink.width() <= edge - 2:
+        if ink.width() <= edge - int(T("space.05")):
             return self._render_slot_icon(_draw_text_symbol(symbol)), False
         return _transparent_icon(edge, self.devicePixelRatioF()), True
 
@@ -279,7 +290,7 @@ class LineEdit(SizeMixin, QLineEdit):
         style = self.style()
         icon = style.pixelMetric(QStyle.PM_LineEditIconSize, None, self)
         margin = style.pixelMetric(QStyle.PM_LineEditIconMargin, None, self)
-        widget_width = icon + 6
+        widget_width = icon + _QT_SLOT_EXTRA
         return margin, widget_width, margin + widget_width
 
     def _content_side_insets(self):

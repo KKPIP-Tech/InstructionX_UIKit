@@ -475,7 +475,7 @@ class DiffEditor(QWidget):
         self._side_page = QWidget(self)
         side_lay = QHBoxLayout(self._side_page)
         side_lay.setContentsMargins(0, 0, 0, 0)
-        side_lay.setSpacing(1)
+        side_lay.setSpacing(2)
         side_lay.addLayout(self._make_column(
             self._title_left, self._badge_left, self._ed_left), 1)
         # 中央槽（回滚箭头列，VS Code 并排 diff 样式）

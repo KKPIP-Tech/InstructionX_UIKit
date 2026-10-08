@@ -29,6 +29,7 @@ from PySide6.QtGui import (
     QPixmap,
 )
 
+from ._draw import arc_points
 from .theme import T
 
 __all__ = ["get_icon", "ICON_NAMES"]
@@ -213,9 +214,13 @@ def _draw_trash(p: QPainter, color: QColor) -> None:
 
 def _draw_refresh(p: QPainter, color: QColor) -> None:
     """重新生成：回旋箭头（3/4 圆弧 + 端部箭头）。"""
+    ring = QRectF(4.8, 4.8, 14.4, 14.4)
     path = QPainterPath()
-    path.arcMoveTo(QRectF(4.8, 4.8, 14.4, 14.4), 50)
-    path.arcTo(QRectF(4.8, 4.8, 14.4, 14.4), 50, 290)
+    pts = arc_points(ring, 50, 290)
+    if pts:
+        path.moveTo(pts[0][0], pts[0][1])
+        for x, y in pts[1:]:
+            path.lineTo(x, y)
     p.drawPath(path)
     _polyline(p, [(14.6, 3.6), (19.2, 5.1), (17.4, 9.6)])
 

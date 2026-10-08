@@ -2,6 +2,17 @@
 """页头 PageHeader（SPEC §5.3 page_header.py）。
 
 包含返回按钮、标题、副标题、面包屑槽与右侧操作区，底部带分隔线。
+
+对齐约定（与 COMPONENT-DESIGN-CONTRACT §3 对齐）：
+
+- **面包屑 / 标题 / 副标题左缘严格一致**：三者放在同一个竖列里，
+  天然共用左缘。旧版把面包屑 ``insertWidget(0, …)`` 到最外层布局，
+  而标题在「返回按钮 + 间距」之后的子列里，于是面包屑比标题左移了
+  一个返回按钮的宽度（实测 34px），三者对不齐。
+- **返回按钮只是缩进**：隐藏返回按钮时竖列整体左移到页头内边距，
+  不留空占位（``_back`` 走 ``setVisible(False)``，布局项宽度归零）。
+- 字号走 ``set_font``（全局 QSS 会覆盖 ``setFont``，契约 §6），
+  所有内边距 / 间距取令牌，页头内部只有底部一条 1px 分隔线。
 """
 
 from PySide6.QtCore import QPointF, Qt, Signal
@@ -14,9 +25,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..theme import T, ThemeManager, set_property
+from ..theme import T, ThemeManager, set_font, set_property
 from .breadcrumb import Breadcrumb
 from shiboken6 import isValid as _shiboken_is_valid
+
+#: 返回按钮边长：与 md 档控件高度一致（契约 §1 密度刻度，space.7 = 28）
+_BACK_BTN_H = T("space.7")
+#: 返回箭头图标边长（小图标，取按钮边长的一半）
+_BACK_ICON = _BACK_BTN_H // 2
 
 
 def _connect_theme(widget, slot) -> None:
@@ -38,7 +54,8 @@ __all__ = ["PageHeader"]
 
 def _back_icon() -> QIcon:
     """绘制主题感知的返回箭头图标。"""
-    pm = QPixmap(14, 14)
+    size = _BACK_ICON
+    pm = QPixmap(size, size)
     pm.fill(Qt.transparent)
     painter = QPainter(pm)
     painter.setRenderHint(QPainter.Antialiasing)
@@ -47,8 +64,13 @@ def _back_icon() -> QIcon:
     pen.setCapStyle(Qt.RoundCap)
     pen.setJoinStyle(Qt.RoundJoin)
     painter.setPen(pen)
+    # 箭头几何按图标边长的比例推导（令牌派生，无裸数字）
+    c = size / 2.0
     painter.drawPolyline([
-        QPointF(9.0, 3.0), QPointF(4.5, 7.0), QPointF(9.0, 11.0)])
+        QPointF(c + size * 0.18, c - size * 0.29),
+        QPointF(c - size * 0.18, c),
+        QPointF(c + size * 0.18, c + size * 0.29),
+    ])
     painter.end()
     return QIcon(pm)
 
@@ -78,33 +100,43 @@ class PageHeader(QWidget):
         self._breadcrumb = None
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 12, 16, 12)
-        root.setSpacing(6)
+        root.setContentsMargins(T("layout.page.pad"), T("layout.card.pad_top"),
+                                T("layout.page.pad"), T("layout.card.pad_top"))
+        root.setSpacing(T("layout.card.gap"))
 
         self._row = QHBoxLayout()
-        self._row.setSpacing(12)
+        self._row.setContentsMargins(0, 0, 0, 0)
+        self._row.setSpacing(T("layout.gutter"))
         root.addLayout(self._row)
 
         self._back = QToolButton(self)
-        self._back.setFixedSize(28, 28)
+        self._back.setFixedSize(_BACK_BTN_H, _BACK_BTN_H)
         self._back.setCursor(Qt.PointingHandCursor)
         self._back.setToolTip("返回")
         self._back.clicked.connect(self.backClicked.emit)
         self._row.addWidget(self._back, 0, Qt.AlignTop)
 
+        # 竖列：面包屑 → 标题 → 副标题（三者共用左缘，严格对齐）
         col = QVBoxLayout()
-        col.setSpacing(2)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(T("layout.card.title_gap"))
+        self._col = col
         self._title = QLabel(title, self)
-        set_property(self._title, "uikPh", "title")
+        set_font(self._title, "title.md", "semibold")
         self._subtitle = QLabel(subtitle, self)
-        set_property(self._subtitle, "uikPh", "subtitle")
+        set_font(self._subtitle, "sm", "regular")
+        set_property(self._subtitle, "role", "secondary")
         self._subtitle.setVisible(bool(subtitle))
         col.addWidget(self._title)
         col.addWidget(self._subtitle)
         self._row.addLayout(col, 1)
 
         self._actions = QHBoxLayout()
-        self._actions.setSpacing(8)
+        self._actions.setContentsMargins(0, 0, 0, 0)
+        self._actions.setSpacing(T("layout.inline.gap"))
+        # 注意：**不能**给嵌套布局传 alignment（insertLayout 带对齐参数会
+        # 让布局项按整行均分宽度，按钮被拉成两段等宽的大块）。
+        # 默认对齐即可，操作区与标题块在行内垂直居中（契约 §3）。
         self._row.addLayout(self._actions)
 
         self._back.setVisible(show_back)
@@ -134,12 +166,17 @@ class PageHeader(QWidget):
         self._back.setVisible(visible)
 
     def set_breadcrumb(self, items) -> None:
-        """设置面包屑槽内容（文本列表），显示在标题上方。"""
+        """设置面包屑槽内容（文本列表），插在标题上方。
+
+        必须插进标题所在的**同一竖列**：插到最外层布局会让面包屑
+        比标题左移一个返回按钮的宽度，三者左缘就对不齐了。
+        """
         if self._breadcrumb is None:
             self._breadcrumb = Breadcrumb(items, parent=self)
-            self.layout().insertWidget(0, self._breadcrumb)
+            self._col.insertWidget(0, self._breadcrumb)
         else:
             self._breadcrumb.set_items(items)
+        self._breadcrumb.setVisible(bool(items))
 
     def breadcrumb(self) -> Breadcrumb:
         """返回内部 Breadcrumb（未设置时为 None）。"""
@@ -147,24 +184,17 @@ class PageHeader(QWidget):
 
     def add_action(self, widget: QWidget) -> None:
         """向右侧操作区追加控件（通常为按钮）。"""
-        self._actions.addWidget(widget)
+        self._actions.addWidget(widget, 0, Qt.AlignVCenter)
 
     # -- 内部 -------------------------------------------------------------
     def _reload_style(self) -> None:
+        # 底色 / 底部分隔线走实例级 QSS：与全局 QWidget 基座同源，
+        # 但页头自带 1px 底边（页面级分隔），且不带圆角（通栏元素）。
         c = lambda k: T(f"color.{k}")  # noqa: E731
         self.setStyleSheet(f"""
 PageHeader {{
     background-color: {c('bg.base')};
     border-bottom: 1px solid {c('border')};
-}}
-QLabel[uikPh="title"] {{
-    color: {c('text.primary')};
-    font-size: {T('font.title.md')}px;
-    font-weight: 600;
-}}
-QLabel[uikPh="subtitle"] {{
-    color: {c('text.secondary')};
-    font-size: {T('font.sm')}px;
 }}
 """)
         self._back.setIcon(_back_icon())

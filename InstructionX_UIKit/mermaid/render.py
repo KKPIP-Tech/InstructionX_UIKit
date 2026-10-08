@@ -28,6 +28,7 @@ QGuiApplication / QApplication：文本度量依赖 QFont，纯 QCoreApplication
 import math
 import re
 
+from .._draw import draw_arc
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
     QColor,
@@ -526,7 +527,7 @@ def _layout_flowchart(lines, style: dict, meas: _Measure) -> _Drawing:
             if e.src == e.dst:
                 # 自环防护：节点右侧画小回环，避免崩溃
                 r = QRectF(src.x + src.w - 4, src.y + src.h / 2 - 10, 26, 20)
-                p.drawArc(r, 40 * 16, 280 * 16)
+                draw_arc(p, r, 40.0, 280.0)
                 if e.kind != "plain":
                     tip = QPointF(r.left() + 2, r.center().y() + 8)
                     _draw_arrow_head(p, tip, QPointF(tip.x(), tip.y() - 6), line_color)
