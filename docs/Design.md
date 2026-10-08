@@ -32,33 +32,33 @@
 
 | 令牌键（`T()` 参数） | 亮色 | 暗色 | 用途 |
 |---|---|---|---|
-| `color.bg.canvas` | `#F6F7F9` | `#101319` | 画布：页面底色，卡片浮于其上形成层次 |
-| `color.bg.base` | `#FFFFFF` | `#171B22` | 面：卡片 / 输入框 / 表格底 |
-| `color.bg.subtle` | `#F2F4F7` | `#1E232C` | 次背景：表头、代码块、状态栏 |
-| `color.bg.muted` | `#E9ECF1` | `#262C36` | 填充背景：hover 底色、禁用底、滑轨 |
+| `color.bg.canvas` | `#F6F7F9` | `#15181E` | 画布：页面底色，卡片浮于其上形成层次 |
+| `color.bg.base` | `#FFFFFF` | `#1B1F27` | 面：卡片 / 输入框 / 表格底 |
+| `color.bg.subtle` | `#F6F7F9` | `#1F242E` | 次背景：表头、代码块、状态栏 |
+| `color.bg.muted` | `#EFF1F5` | `#232936` | 填充背景：hover 底色、禁用底、滑轨 |
 | `color.bg.elevated` | `#FFFFFF` | `#1F242E` | 抬升面：菜单、弹窗、下拉浮层 |
-| `color.border` | `#E4E7EC` | `#2A313C` | 常规边框 / 分割线 |
-| `color.border.strong` | `#CDD3DC` | `#3B4450` | 强调边框：hover 边框、滚动条 |
+| `color.border` | `#E3E6EB` | `#2C333F` | 常规边框 / 分割线 |
+| `color.border.strong` | `#C9CFD8` | `#3D4654` | 强调边框：hover 边框、滚动条 |
 | `color.border.subtle` | `#EEF0F4` | `#21262F` | 弱分割：代码块边框、表头列分隔 |
-| `color.text.primary` | `#16191F` | `#E4E9F2` | 主要文字 |
-| `color.text.secondary` | `#5A6472` | `#A3ADBD` | 次要文字、表头、说明 |
-| `color.text.tertiary` | `#828C9A` | `#727D8D` | 占位符、辅助提示 |
-| `color.text.disabled` | `#AEB6C2` | `#525B69` | 禁用态文字 / 图标 |
-| `color.primary` | `#2B5FD9` | `#7FA6EE` | 品牌主色（靛蓝系） |
-| `color.primary.hover` | `#2554C4` | `#93B4F2` | 主色 hover |
-| `color.primary.pressed` | `#1E47A6` | `#AAC3F5` | 主色 pressed |
-| `color.primary.subtle` | `#EAEFFC` | `#1C2740` | 主色浅底：选中底、徽标底 |
-| `color.on.primary` | `#FFFFFF` | `#101319` | 主色上的文字 / 图标 |
-| `color.success` | `#2E7D53` | `#5FCF9B` | 成功 |
-| `color.success.hover` | `#256944` | `#7EDCB2` | 成功 hover |
-| `color.success.subtle` | `#E8F4EC` | `#16281F` | 成功浅底 |
-| `color.warning` | `#96620C` | `#E0B062` | 警告 |
-| `color.warning.hover` | `#7C5009` | `#EBC182` | 警告 hover |
-| `color.warning.subtle` | `#FBF3E3` | `#2B2418` | 警告浅底 |
-| `color.danger` | `#CC3D3D` | `#F27A7A` | 危险 / 错误 |
-| `color.danger.hover` | `#B32F2F` | `#F79191` | 危险 hover |
-| `color.danger.subtle` | `#FCEDED` | `#2E1D1D` | 危险浅底 |
-| `color.overlay` | `rgba(22,25,31,0.45)` | `rgba(0,0,0,0.60)` | 模态遮罩 |
+| `color.text.primary` | `#1C2330` | `#E7EAF0` | 主要文字 |
+| `color.text.secondary` | `#59636F` | `#A6AEBB` | 次要文字、表头、说明 |
+| `color.text.tertiary` | `#98A0AC` | `#6E7684` | 占位符、辅助提示 |
+| `color.text.disabled` | `#C2C8D0` | `#4A515C` | 禁用态文字 / 图标 |
+| `color.primary` | `#3F5E8C` | `#7C98C4` | 品牌主色（钢蓝系） |
+| `color.primary.hover` | `#35507A` | `#93AAD1` | 主色 hover |
+| `color.primary.pressed` | `#2B4266` | `#A9BDDD` | 主色 pressed |
+| `color.primary.subtle` | `#EBEFF5` | `#26324A` | 主色浅底：选中底、徽标底 |
+| `color.on.primary` | `#FFFFFF` | `#15181E` | 主色上的文字 / 图标 |
+| `color.success` | `#3E7E5F` | `#6BA98A` | 成功 |
+| `color.success.hover` | `#34684F` | `#55D0A0` | 成功 hover |
+| `color.success.subtle` | `#E9F2EC` | `#22362D` | 成功浅底 |
+| `color.warning` | `#C08A3E` | `#D2A668` | 警告 |
+| `color.warning.hover` | `#A97634` | `#E2BC85` | 警告 hover |
+| `color.warning.subtle` | `#F7F0E3` | `#3A3226` | 警告浅底 |
+| `color.danger` | `#B25050` | `#CD7A7A` | 危险 / 错误 |
+| `color.danger.hover` | `#9A4444` | `#F07878` | 危险 hover |
+| `color.danger.subtle` | `#F7EBEB` | `#3E2A2A` | 危险浅底 |
+| `color.overlay` | `rgba(28,35,48,0.45)` | `rgba(0,0,0,0.55)` | 模态遮罩 |
 
 ### 2.2 语义用法
 
@@ -88,25 +88,28 @@
 
 ### 2.4 对比度说明
 
-按 WCAG 2.x 相对亮度公式计算（亮色基底取 `bg.base=#FFFFFF`，暗色基底取 `bg.base=#171B22`）：
+按 WCAG 2.x 相对亮度公式计算（亮色基底取 `bg.base=#FFFFFF`，暗色基底取 `bg.base=#1B1F27`）：
 
 | 色彩对 | 亮色对比度 | 暗色对比度 | 评级 |
 |---|---|---|---|
-| text.primary / bg.base | 17.60:1 | 14.17:1 | AAA（正文） |
-| text.secondary / bg.base | 6.00:1 | 7.62:1 | AA（正文） |
-| text.tertiary / bg.base | 3.41:1 | 4.14:1 | 仅用于占位 / 辅助信息，不承载关键内容 |
-| on.primary / primary | 5.61:1 | 7.61:1 | AA（按钮文字） |
-| primary / bg.base | 5.61:1 | 7.06:1 | AA（链接、图标） |
-| success / bg.base | 5.03:1 | 8.95:1 | AA（正文 / 状态图标） |
-| danger / bg.base | 4.88:1 | 6.45:1 | AA（正文级） |
-| warning / bg.base | 5.19:1 | 8.68:1 | AA（正文级） |
+| text.primary / bg.base | 15.76:1 | 13.70:1 | AAA（正文） |
+| text.secondary / bg.base | 6.11:1 | 7.39:1 | AA（正文） |
+| text.tertiary / bg.base | 2.64:1 | 3.61:1 | 仅用于占位 / 辅助信息，不承载关键内容 |
+| on.primary / primary | 6.58:1 | 6.05:1 | AA（按钮文字） |
+| primary / bg.base | 6.58:1 | 5.62:1 | AA（链接、图标） |
+| success / bg.base | 4.82:1 | 6.03:1 | AA（正文 / 状态图标） |
+| danger / bg.base | 5.05:1 | 5.24:1 | AA（正文级） |
+| warning / bg.base | 3.02:1 | 7.39:1 | **亮色未达 AA**，仅用于图标 / 大号文字 / 状态块 |
 
-结论：**所有语义色在亮 / 暗两套主题下均达到 AA（≥4.5:1）**，正文一律使用 `text.primary` / `text.secondary`；`text.tertiary` 仅用于占位 / 辅助信息。`primary.subtle` 作为选中底时，其上的 `text.primary` 对比度为 15.30:1（亮）/ 12.19:1（暗），同样安全。
+结论：除亮色 `warning`（3.02:1，旧配色遗留短板，仅作图标与状态块用途、不承载正文）外，
+语义色在亮 / 暗两套主题下均达到 AA（≥4.5:1）。正文一律使用 `text.primary` / `text.secondary`；
+`text.tertiary` 仅用于占位 / 辅助信息。`primary.subtle` 作为选中底时，其上的 `text.primary`
+对比度为 13.66:1（亮）/ 10.64:1（暗），同样安全。
 
 ### 2.5 暗色模式策略
 
-1. **面层级提升**：暗色不是亮色的简单反相。`bg.canvas` 最深（#101319，页面底），`bg.base`（#171B22）为卡片 / 输入框面，`subtle → muted → elevated` 逐层变亮，弹层用更亮的 `bg.elevated`（#1F242E）浮于卡片之上，用「更亮」代替「白色」表达高度。
-2. **主色提亮**：`primary` 由 #2B5FD9 提为 #7FA6EE，`hover / pressed` 相应向更亮方向偏移（暗模式下越按越亮，与亮模式「越按越深」方向相反，但视觉重量一致）；`on.primary` 由 #FFFFFF 反转为深底 #101319（暗模式下主色是浅色底，需深色文字保对比度）。
+1. **面层级提升**：暗色不是亮色的简单反相。`bg.canvas` 最深（#15181E，页面底），`bg.base`（#1B1F27）为卡片 / 输入框面，`subtle → muted → elevated` 逐层变亮，弹层用更亮的 `bg.elevated`（#1F242E）浮于卡片之上，用「更亮」代替「白色」表达高度。
+2. **主色提亮**：`primary` 由 #3F5E8C 提为 #7C98C4，`hover / pressed` 相应向更亮方向偏移（暗模式下越按越亮，与亮模式「越按越深」方向相反，但视觉重量一致）；`on.primary` 由 #FFFFFF 反转为深底 #15181E（暗模式下主色是浅色底，需深色文字保对比度）。
 3. **阴影 alpha 调整**：暗色下阴影颜色改为纯黑 RGB=(0,0,0)，alpha 由 15%/25%/36% 提高到 40%/55%/70%，弥补深色背景下阴影可见性的下降。
 4. **遮罩加深**：overlay 由 45% 深灰蓝改为 55% 纯黑。
 5. **自绘组件**：必须在 `paintEvent` 内实时调用 `T()`，并在 `__init__` 连接 `ThemeManager.instance().theme_changed` 到 `self.update()`，禁止把颜色缓存为成员变量。

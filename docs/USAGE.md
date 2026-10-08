@@ -90,7 +90,7 @@ ThemeManager.instance().theme_changed.connect(lambda mode: self.update())
 ```python
 from InstructionX_UIKit.theme import T
 
-color = T("color.primary")       # "#2B5FD9"（亮）/ "#7FA6EE"（暗）
+color = T("color.primary")       # "#3F5E8C"（亮）/ "#7C98C4"（暗）
 gap = T("space.4")               # 16
 radius = T("radius.md")          # 6
 shadow = T("shadow.md")          # {"blur": 16, "offset": (0, 4), "color": (16, 24, 40, 64)}
@@ -307,7 +307,7 @@ rt.set_read_only(True)                          # 展示模式
 
 ```python
 from InstructionX_UIKit.components.color_picker import ColorPicker
-cp = ColorPicker(color="#2B5FD9", size="md", show_text=True)
+cp = ColorPicker(color="#3F5E8C", size="md", show_text=True)
 cp.colorChanged.connect(lambda c: print(c.name()))
 ```
 
@@ -867,7 +867,7 @@ animp.flash_highlight(row, times=2)                     # 高亮闪烁（默认 
 animp.float_loop(tip_card)                              # 无限上下漂浮
 animp.pulse_glow(avatar)                                # 阴影半径呼吸（辉光）
 animp.breathing(tip_label)                              # 透明度呼吸
-animp.gradient_flow(panel, colors=["#2B5FD9", "#2E7D53"])  # 背景渐变流动（无限循环，用 anim.restore() 还原）
+animp.gradient_flow(panel, colors=["#3F5E8C", "#3E7E5F"])  # 背景渐变流动（无限循环，用 anim.restore() 还原）
 animp.gradient_text_flow(title_label)                   # 文字逐字渐变流动
 animp.cross_fade(stacked, index=1)                      # 页面交叉淡化（或 a 淡出 b 淡入）
 animp.page_transition(stacked, 1, kind="slide")         # QStackedWidget 切页 fade/slide
@@ -903,7 +903,7 @@ sh = StickyHeader(); sh.setHeaderWidget(bar); sh.setBody(body, cover_height=120)
 ScrollProgressBar(area=scroll_area, height=4)            # 滚动进度条
 st = ScrollStoryArea(); st.addStep("第一步", "准备环境")   # 滚动驱动叙事时间线
 MarqueeLabel(text="很长很长的公告文本", speed=1.6)        # 跑马灯
-FluidBackground(colors=["#2B5FD9", "#2E7D53"], blobs=3)  # 流体渐变背景
+FluidBackground(colors=["#3F5E8C", "#3E7E5F"], blobs=3)  # 流体渐变背景
 TypewriterLabel(text="逐字打出这段话", interval=60)       # 打字机
 TextDecodeLabel(text="解码这段文字")                      # 乱码→明文解码
 nr = NumberRollLabel(value=0, decimals=0, prefix="¥"); nr.setValue(12800)   # 数字滚动 count-up
@@ -974,7 +974,7 @@ chart.update_option({"series": [{"data": [130, 120, 150, 160, 170, 240]}]})  # �
 # heatmap 热力（grid）：[x下标, y下标, 值]；配合顶层 visualMap 或默认主题色带
 {"xAxis": {"type": "category", "data": ["8时", "10时", "12时"]},
  "yAxis": {"type": "category", "data": ["周一", "周二"]},
- "visualMap": {"min": 0, "max": 120, "inRange": {"colors": ["#EAEFFC", "#2B5FD9"]},
+ "visualMap": {"min": 0, "max": 120, "inRange": {"colors": ["#EBEFF5", "#3F5E8C"]},
                "orient": "vertical"},
  "series": [{"type": "heatmap", "name": "客流量",
              "data": [[0, 0, 58], [1, 0, 96], [2, 1, 77]]}]}
@@ -1108,7 +1108,7 @@ chart.update_option({"series": [{"data": [130, 120, 150, 160, 170, 240]}]})  # �
 "options": [{"series": [{"type": "bar", "name": "月度销量", "data": [...]}]}, ...]
 
 # map 地图：内置 "demo" 7 大区块示意地图（演示数据），或 geo.regions 自定义多边形
-{"visualMap": {"min": 0, "max": 100, "inRange": {"colors": ["#EAEFFC", "#2B5FD9"]}},
+{"visualMap": {"min": 0, "max": 100, "inRange": {"colors": ["#EBEFF5", "#3F5E8C"]}},
  "series": [{"type": "map", "name": "区域销量", "map": "demo",
              "data": [{"name": "华北", "value": 82}, {"name": "华东", "value": 95}]}]}
 # 自定义：{"geo": {"regions": {"甲区": [[0, 0], [40, 0], [20, 30]]}}, ...}
