@@ -1495,21 +1495,40 @@ editor.set_region_highlight("blame", [(3, 8)], "#8A6D3B")   # 自定义 layer �
 
 ### 10.6 补全与悬停 provider
 
-两者默认都不自动弹，完全由宿主驱动：
+补全默认按**当前语言**取候选：语言关键字/内置符号 + 当前文档中出现的标识符
+（Pylance 风格 symbol），**默认不返回代码片段模板**（Python 不会出现 JS 关键字）；
+`plain` / `markdown` 默认没有内置候选；也可完全替换为宿主自己的 provider：
 
 ```python
-def complete(prefix: str, line: int, col: int):
+def complete(prefix: str, line: int, col: int, language: str):
     # 返回 [{"label": str, "kind": str, "detail": str, "insert": str}, ...]
-    return [it for it in MY_ITEMS if it["label"].startswith(prefix)]
+    return [it for it in MY_ITEMS.get(language, [])
+            if it["label"].lower().startswith(prefix.lower())]
 
-editor.set_completion_provider(complete)
-editor.set_completion_auto_trigger(True)   # 输入即弹（弹窗不抢焦点）
+editor.set_completion_provider(complete)                 # 全局 fallback
+editor.set_completion_provider(complete, language="python")  # 只覆盖 Python
+editor.set_completion_auto_trigger(False)                # 全局关闭自动弹
+
+# 按语言配置：JSON 不自动弹，HTML 不启用补全；其它语言继承全局默认
+editor.set_completion_auto_trigger(False, language="json")
+editor.set_completion_enabled(False, language="html")
+editor.set_completion_document_symbols(False, language="json")  # 只保留关键字，不补文档标识符
+
+# 查询当前语言/指定语言的实际配置
+editor.completion_enabled()               # 当前语言是否启用
+editor.completion_auto_trigger("python")  # Python 是否输入自动触发
+
+# 模块级注册，供所有 CodeEditor 共享
+from InstructionX_UIKit.code_editor import register_completion
+register_completion("mylang", my_provider)  # fn(prefix,line,col,language)
 
 def hover(line: int, col: int):
     return "<b>calculate_total</b>(items, discount=0.0) -> float"   # 富文本；None 表示不弹
 
 editor.set_hover_provider(hover)           # 延迟约 300ms
 ```
+
+旧的 3 参数 provider 仍然兼容：`fn(prefix, line, col)`。
 
 ### 10.7 语言注册表与语法色板
 

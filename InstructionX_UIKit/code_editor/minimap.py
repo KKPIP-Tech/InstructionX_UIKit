@@ -12,7 +12,7 @@
 """
 
 from PySide6.QtCore import QRectF, QTimer, Qt
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 from ..theme import T, ThemeManager
@@ -78,7 +78,7 @@ class MiniMap(QWidget):
         total = self._total_height()
         first = ta.firstVisibleBlock().blockNumber()
         # 可见行数估算
-        fm = ta.fontMetrics()
+        fm = QFontMetrics(self._editor.editor_font())
         visible = max(1, int(ta.viewport().height() / max(1, fm.height())))
         if total <= self.height():
             top = first * _LINE_H

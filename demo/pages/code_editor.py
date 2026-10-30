@@ -18,7 +18,6 @@
 页面仅组合既有组件，主题切换由 CodeEditor / DiffEditor / 组件库各自保证。
 """
 
-import keyword
 import re
 
 from PySide6.QtCore import QSize, Qt
@@ -442,19 +441,6 @@ FONT_OPTIONS = [
 # 补全 / 悬停 provider 演示数据
 # ---------------------------------------------------------------------------
 
-_PY_SNIPPETS = [
-    {"label": "def", "kind": "snippet", "detail": "函数定义片段",
-     "insert": "def name(args):\n    pass"},
-    {"label": "class", "kind": "snippet", "detail": "类定义片段",
-     "insert": "class Name:\n    def __init__(self):\n        pass"},
-    {"label": "for", "kind": "snippet", "detail": "for 循环片段",
-     "insert": "for item in items:\n    pass"},
-    {"label": "ifmain", "kind": "snippet", "detail": "主程序入口片段",
-     "insert": "if __name__ == \"__main__\":\n    main()"},
-    {"label": "try", "kind": "snippet", "detail": "异常捕获片段",
-     "insert": "try:\n    pass\nexcept Exception as exc:\n    raise"},
-]
-
 _HOVER_DOCS = {
     "calculate_total": (
         "<b>def</b> calculate_total(items: Iterable[OrderItem], "
@@ -480,18 +466,6 @@ def _apply_mono(widget, scale: str = "sm") -> None:
     set_font(widget, scale)
     widget.setStyleSheet(widget.styleSheet()
                          + f"font-family: {MONO_FAMILY};")
-
-
-def _completion_items():
-    """Python 关键字 + 片段的完整候选（kind / detail 齐全）。"""
-    items = list(_PY_SNIPPETS)
-    for kw in sorted(keyword.kwlist):
-        items.append({"label": kw, "kind": "keyword",
-                      "detail": "Python 关键字", "insert": kw})
-    for fn in ("print", "len", "range", "enumerate", "isinstance", "sum"):
-        items.append({"label": fn, "kind": "function",
-                      "detail": "内置函数", "insert": fn})
-    return items
 
 
 # ---------------------------------------------------------------------------
@@ -568,9 +542,9 @@ class EditorDemoPage(QWidget):
         self.sw_shortcuts.setToolTip(
             "关闭后编辑器不安装任何自定义快捷键（Ctrl+F/H/G/D/Space/Y）")
         self.sw_shortcuts.toggled.connect(self.editor.set_shortcuts_enabled)
-        self.sw_autocomplete = Switch(checked=False, size="sm")
+        self.sw_autocomplete = Switch(checked=True, size="sm")
         self.sw_autocomplete.setToolTip(
-            "默认关闭：补全仅 Ctrl+Space 触发；开启后输入字符自动弹出")
+            "默认开启：输入标识符自动弹出；关闭后仅 Ctrl+Space 触发")
         self.sw_autocomplete.toggled.connect(
             self.editor.set_completion_auto_trigger)
 
@@ -648,7 +622,6 @@ class EditorDemoPage(QWidget):
         # provider 默认注册（演示开箱即用）
         self._completion_on = True
         self._hover_on = True
-        self.editor.set_completion_provider(self._completion_provider)
         self.editor.set_hover_provider(self._hover_provider)
 
         # 信号驱动状态栏
@@ -724,8 +697,7 @@ class EditorDemoPage(QWidget):
 
     def _toggle_completion(self) -> None:
         self._completion_on = not self._completion_on
-        self.editor.set_completion_provider(
-            self._completion_provider if self._completion_on else None)
+        self.editor.set_completion_enabled(self._completion_on)
         self.btn_completion.setText(
             "补全演示: 开" if self._completion_on else "补全演示: 关")
 
@@ -749,15 +721,6 @@ class EditorDemoPage(QWidget):
     # ------------------------------------------------------------------
     # provider 实现（演示）
     # ------------------------------------------------------------------
-    def _completion_provider(self, prefix: str, line: int, col: int) -> list:
-        """补全 provider：按前缀过滤 Python 关键字 + 代码片段。"""
-        items = _completion_items()
-        if prefix:
-            matched = [it for it in items
-                       if it["label"].startswith(prefix.lower())]
-            return matched
-        return items[:12]  # 空前缀时给最常用的前 12 项，避免超长列表
-
     def _hover_provider(self, line: int, col: int):
         """悬停 provider：函数名 / 类名悬停显示签名富文本。"""
         lines = self.editor.text().split("\n")

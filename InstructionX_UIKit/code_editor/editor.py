@@ -16,12 +16,16 @@ Alt+Click 多光标无法直接渲染多选区，故以 VS Code 核心多选手�
 见 ``select_next_occurrence()``。
 """
 
+import inspect
 import re
 
 from PySide6.QtCore import QPoint, QPointF, QTimer, Qt, Signal
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtGui import (
     QColor,
     QFont,
+    QFontInfo,
+    QFontMetrics,
     QKeySequence,
     QPainter,
     QPen,
@@ -38,6 +42,7 @@ from PySide6.QtWidgets import (
 
 from ..theme import T, ThemeManager
 from ..tokens import MONO_FAMILY
+from .completion import completion_provider_for
 from .gutter import Gutter
 from .highlight import create_engine
 from .minimap import MiniMap
@@ -50,6 +55,9 @@ _BRACKETS_OPEN = "([{"
 _BRACKETS_CLOSE = ")]}"
 _BRACKET_PAIR = {")": "(", "]": "[", "}": "{"}
 _WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+#: 当前文档标识符补全上限；避免大文件把候选列表撑爆。
+_COMPLETION_SYMBOL_LIMIT = 160
 
 #: 快捷键动作默认值（action -> QKeySequence 字符串）。
 #: 该表同时是合法 action 名的唯一权威来源，``set_shortcut`` 依其校验。
@@ -123,7 +131,7 @@ class _TextArea(QPlainTextEdit):
             block = block.next()
 
     def _paint_indent_guides(self, p: QPainter) -> None:
-        fm = self.fontMetrics()
+        fm = QFontMetrics(self._editor.editor_font())
         tab_w = self._editor._tab_size * fm.horizontalAdvance(" ")
         x0 = self.contentOffset().x() + self.document().documentMargin()
         level_colors = [
@@ -186,6 +194,12 @@ class _TextArea(QPlainTextEdit):
         if ed._completion is not None and ed._completion.isVisible() \
                 and ed._completion.handle_key(key):
             return
+        # 点击文本区/移动光标时补全已过期，先收起；真实鼠标点击由
+        # _TextArea.mousePressEvent 处理，这里覆盖 Home/End/方向键等。
+        if key in (Qt.Key_Home, Qt.Key_End, Qt.Key_Left, Qt.Key_Right,
+                   Qt.Key_PageUp, Qt.Key_PageDown):
+            if ed._completion is not None:
+                ed._completion.hide()
         # Esc：退出多选 / 关闭查找栏
         if key == Qt.Key_Escape:
             if ed._multi:
@@ -221,26 +235,35 @@ class _TextArea(QPlainTextEdit):
                 return
             ed._clear_multi()  # 其他键（方向键等）退出多选
         super().keyPressEvent(event)
-        # 输入触发补全（默认关闭，见 set_completion_auto_trigger；
-        # 手动触发走 trigger_completion 快捷键，默认 Ctrl+Space）
-        if (
-            ed._completion_auto_trigger
-            and ed._completion_provider
-            and event.text()
-            and (event.text().isprintable() or key == Qt.Key_Backspace)
-            and not event.modifiers() & (Qt.ControlModifier | Qt.AltModifier)
-        ):
-            ed._trigger_completion()
-        elif (ed._completion is not None and ed._completion.isVisible()
-              and not ed._completion_auto_trigger
-              and (event.text().isprintable() or key == Qt.Key_Backspace)):
-            # 默认手动补全：继续输入时旧候选已过期，直接收起。
+        # 补全触发：默认输入即补全；手动模式（auto=False）下，如果弹窗
+        # 已经由 Ctrl+Space 打开，继续输入也刷新过滤，而不是直接收起。
+        text = event.text()
+        is_word = key == Qt.Key_Backspace or (
+            len(text) == 1 and (text.isalnum() or text == "_")
+        )
+        has_ctrl_alt = bool(event.modifiers() & (Qt.ControlModifier
+                                                  | Qt.AltModifier))
+        popup_visible = (ed._completion is not None
+                         and ed._completion.isVisible())
+        if is_word and not has_ctrl_alt:
+            if ed.completion_auto_trigger() \
+                    and ed._active_completion_provider():
+                ed._trigger_completion()
+            elif popup_visible:
+                ed._trigger_completion()
+        elif popup_visible:
             ed._completion.hide()
 
     def focusOutEvent(self, event):  # noqa: N802 - Qt 命名
         if self._editor._completion is not None:
             self._editor._completion.hide()
         super().focusOutEvent(event)
+
+    def mousePressEvent(self, event):  # noqa: N802 - Qt 命名
+        # 点击文本区会移动光标，补全前缀失效，直接收起。
+        if self._editor._completion is not None:
+            self._editor._completion.hide()
+        super().mousePressEvent(event)
 
     # ------------------------------------------------------------------
     # 悬停
@@ -306,10 +329,21 @@ class CodeEditor(QWidget):
         #: 括号层级着色的每块起始深度缓存（None 表示需重建）
         self._bracket_depth_cache = None
         self._last_selection = None
-        self._completion_provider = None
+        self._completion_provider = None       # 全局 fallback provider
+        self._completion_providers = {}        # language -> provider
+        self._completion_enabled = True
+        self._completion_language_enabled = {}  # language -> bool
         self._hover_provider = None
         self._completion_prefix = ""
-        self._completion_auto_trigger = False
+        self._completion_start = 0
+        # VS Code 默认输入即补全；仍可通过 set_completion_auto_trigger(False)
+        # 关闭，只用 Ctrl+Space 手动触发。
+        self._completion_auto_trigger = True
+        self._completion_language_auto = {}     # language -> bool
+        self._completion_document_symbols = True
+        self._completion_language_symbols = {}  # language -> bool
+        self._completion_symbols_cache = None
+        self._completion_symbols_timer = None
         self._line_label_provider = None
         self._line_marker_provider = None
         self._dual_line_label_provider = None
@@ -320,6 +354,7 @@ class CodeEditor(QWidget):
 
         # 子控件
         self._text = _TextArea(self)
+        self._text.setObjectName("CodeEditorTextArea")
         self._gutter = Gutter(self)
         self._minimap = MiniMap(self)
         self._regions = RegionManager(self._text)
@@ -383,6 +418,13 @@ class CodeEditor(QWidget):
         self._bracket_timer.setSingleShot(True)
         self._bracket_timer.setInterval(120)
         self._bracket_timer.timeout.connect(self._update_bracket_colors)
+
+        # 当前文档标识符（Pylance 风格 symbol 补全）缓存；编辑时去抖刷新。
+        self._completion_symbols_timer = QTimer(self)
+        self._completion_symbols_timer.setSingleShot(True)
+        self._completion_symbols_timer.setInterval(150)
+        self._completion_symbols_timer.timeout.connect(
+            self._refresh_completion_symbols)
 
         # 快捷键（统一由 _shortcuts 映射驱动，见 set_shortcut）
         self._install_shortcuts()
@@ -475,30 +517,48 @@ class CodeEditor(QWidget):
         """当前全部快捷键映射的副本 ``{action: key_sequence}``。"""
         return dict(self._shortcuts)
 
+    def editor_font(self) -> QFont:
+        """当前编辑器字体（字号/字族已被 set_font_* 解析）。"""
+        return _mono_font(self._font_families, self._font_size)
+
+    def _font_css_families(self) -> str:
+        # QSS 的 font-family 多值回退在 Qt 6 上不可靠：列表里的字体
+        # 未安装时可能直接落到 Arial，而不是下一项。先用 QFontInfo
+        # 解析出真正可用的 family，再写单值。
+        resolved = QFontInfo(self.editor_font()).family()
+        return f'"{resolved}"' if resolved else "monospace"
+
     def _apply_font(self) -> None:
-        self._text.setFont(_mono_font(self._font_families, self._font_size))
+        self._text.setFont(self.editor_font())
+        # 全局 QSS 的 QWidget{font-size} 会覆盖 setFont（Qt 6.11 实测）；
+        # 必须再用 ID 选择器的实例级 QSS 显式设置 font-family / font-size。
+        self._refresh_text_style()
         self._update_tab_stop()
         self._gutter.refresh()
         self._minimap.update()
         self._update_bracket_colors()
 
     def _refresh_text_style(self) -> None:
-        """文本区实例级 QSS：主题令牌底色 / 前景 / 选区色（实时取 T()）。
+        """文本区实例级 QSS：主题令牌底色 / 前景 / 字体 / 选区色。
 
-        不依赖全局 QSS 是否已 apply，保证独立使用也主题正确。
+        ID 选择器保证压过全局 ``QWidget { font-size }``；只依赖类型
+        选择器时 Qt 会把用户设置的字号静默改回全局字号。
         """
         self._text.setStyleSheet(
-            "QPlainTextEdit {"
+            "#CodeEditorTextArea {"
             f"background: {T('color.bg.base')};"
             f"color: {T('color.text.primary')};"
             "border: none;"
+            f"font-family: {self._font_css_families()};"
+            f"font-size: {self._font_size}px;"
+            "font-weight: 400;"
             f"selection-background-color: {T('color.primary')};"
             f"selection-color: {T('color.on.primary')};"
             "}"
         )
 
     def _update_tab_stop(self) -> None:
-        fm = self._text.fontMetrics()
+        fm = QFontMetrics(self.editor_font())
         self._text.setTabStopDistance(
             self._tab_size * fm.horizontalAdvance(" "))
 
@@ -513,6 +573,10 @@ class CodeEditor(QWidget):
         self._fold_timer.stop()
         self._search_timer.stop()
         self._bracket_timer.stop()
+        self._completion_symbols_timer.stop()
+        self._completion_symbols_cache = None
+        if self._completion is not None:
+            self._completion.hide()
         self._breakpoints.clear()
         self._multi = None
         self._search_matches = []
@@ -548,6 +612,8 @@ class CodeEditor(QWidget):
         """设置语言（经 highlight 注册表创建引擎）。"""
         if name == self._language and self._engine is not None:
             return
+        if self._completion is not None:
+            self._completion.hide()
         if self._engine is not None:
             self._engine.setDocument(None)
             self._engine.deleteLater()
@@ -681,6 +747,7 @@ class CodeEditor(QWidget):
         self._bracket_depth_cache = None
         self._fold_timer.start()
         self._bracket_timer.start()
+        self._completion_symbols_timer.start()
         self._gutter.refresh()
         self._minimap.schedule_refresh()
         if not self._find_bar.isHidden() and self._find_bar.pattern():
@@ -859,27 +926,186 @@ class CodeEditor(QWidget):
     # ------------------------------------------------------------------
     # Provider 扩展点
     # ------------------------------------------------------------------
-    def set_completion_provider(self, fn) -> None:
-        """补全 provider：``fn(prefix, line, col) -> list[dict]``。"""
-        self._completion_provider = fn
+    def set_completion_provider(self, fn, language: str = None) -> None:
+        """设置补全 provider；``language=None`` 时为全局 fallback。
+
+        Provider 推荐签名::
+
+            fn(prefix, line, col, language) -> list[dict]
+
+        兼容旧的三参数 ``fn(prefix, line, col)``。未设置自定义 provider
+        时使用 ``completion.py`` 的内置语言候选；传 ``None`` 清除对应
+        自定义 provider。
+        """
+        if language is None:
+            self._completion_provider = fn
+        else:
+            name = str(language)
+            if fn is None:
+                self._completion_providers.pop(name, None)
+            else:
+                self._completion_providers[name] = fn
+        if self._completion is not None:
+            self._completion.hide()
+
+    def completion_provider(self, language: str = None):
+        """当前生效的 provider（自定义优先，其次内置；无则 None）。"""
+        return self._active_completion_provider(language)
+
+    def set_completion_enabled(self, on: bool,
+                               language: str = None) -> None:
+        """启用/禁用补全。
+
+        ``language=None`` 设置全局主开关并清空所有语言级覆盖；
+        指定 ``language`` 时只覆盖该语言。
+        """
+        if language is None:
+            self._completion_enabled = bool(on)
+            self._completion_language_enabled.clear()
+        else:
+            self._completion_language_enabled[str(language)] = bool(on)
+        self._hide_completion_if_disabled()
+
+    def completion_enabled(self, language: str = None) -> bool:
+        """补全是否启用；未指定语言时看当前语言。"""
+        name = self._language if language is None else str(language)
+        return self._completion_language_enabled.get(
+            name, self._completion_enabled)
+
+    def set_completion_auto_trigger(self, on: bool,
+                                    language: str = None) -> None:
+        """输入时是否自动弹补全。
+
+        ``language=None`` 设置全局主开关并清空所有语言级覆盖；
+        指定 ``language`` 时只覆盖该语言的自动触发。
+        """
+        if language is None:
+            self._completion_auto_trigger = bool(on)
+            self._completion_language_auto.clear()
+        else:
+            self._completion_language_auto[str(language)] = bool(on)
+
+    def completion_auto_trigger(self, language: str = None) -> bool:
+        """输入自动触发是否开启；未指定语言时看当前语言。"""
+        name = self._language if language is None else str(language)
+        return self._completion_language_auto.get(
+            name, self._completion_auto_trigger)
+
+    def set_completion_document_symbols(self, on: bool,
+                                        language: str = None) -> None:
+        """是否补全当前文档中出现的标识符（Pylance 风格 symbol）。
+
+        ``language=None`` 设置全局主开关并清空语言级覆盖；指定语言则
+        只覆盖该语言。关闭后只返回 provider/内置关键字候选。
+        """
+        if language is None:
+            self._completion_document_symbols = bool(on)
+            self._completion_language_symbols.clear()
+        else:
+            self._completion_language_symbols[str(language)] = bool(on)
+
+    def completion_document_symbols(self, language: str = None) -> bool:
+        """当前语言是否补全文档内标识符。"""
+        name = self._language if language is None else str(language)
+        return self._completion_language_symbols.get(
+            name, self._completion_document_symbols)
+
+    def _refresh_completion_symbols(self) -> None:
+        """扫描当前文档标识符并写入缓存（150ms 去抖）。"""
+        try:
+            text = self._text.toPlainText()
+        except RuntimeError:
+            return
+        seen = set()
+        symbols = []
+        comment_starts = ("#", "//", "/*", "*", "<!--", "--")
+        for line in text.splitlines():
+            stripped = line.lstrip()
+            if stripped.startswith(comment_starts):
+                continue
+            for match in _WORD_RE.finditer(line):
+                word = match.group(0)
+                if word in seen:
+                    continue
+                seen.add(word)
+                symbols.append(word)
+                if len(symbols) >= _COMPLETION_SYMBOL_LIMIT:
+                    self._completion_symbols_cache = symbols
+                    return
+        self._completion_symbols_cache = symbols
+
+    def _document_completion_symbols(self):
+        if not self.completion_document_symbols():
+            return []
+        if self._completion_symbols_cache is None:
+            self._refresh_completion_symbols()
+        return self._completion_symbols_cache or []
+
+    @staticmethod
+    def _merge_document_symbols(items, symbols, prefix: str, limit=60):
+        """把文档标识符追加到语言候选后，去重并按前缀过滤。"""
+        p = str(prefix or "").casefold()
+        existing = {str(it.get("label", "")).casefold() for it in items}
+        out = list(items)
+        added = 0
+        for word in symbols:
+            key = word.casefold()
+            if key == p or key in existing or not key.startswith(p):
+                continue
+            existing.add(key)
+            out.append({
+                "label": word,
+                "kind": "symbol",
+                "detail": "当前文档",
+                "insert": word,
+            })
+            added += 1
+            if added >= limit:
+                break
+        return out
+
+    def _active_completion_provider(self, language: str = None):
+        name = self._language if language is None else str(language)
+        if not self.completion_enabled(name):
+            return None
+        provider = self._completion_providers.get(name)
+        if provider is None:
+            provider = self._completion_provider
+        if provider is None:
+            provider = completion_provider_for(name)
+        return provider
+
+    @staticmethod
+    def _invoke_completion_provider(provider, prefix, line, col,
+                                    language):
+        """调用 provider，兼容 3 参数旧签名与 4 参数语言感知签名。"""
+        try:
+            params = inspect.signature(provider).parameters.values()
+        except (TypeError, ValueError):
+            return provider(prefix, line, col)
+        positional = [
+            p for p in params
+            if p.kind in (inspect.Parameter.POSITIONAL_ONLY,
+                          inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        ]
+        has_varargs = any(p.kind == inspect.Parameter.VAR_POSITIONAL
+                          for p in params)
+        if has_varargs or len(positional) >= 4:
+            return provider(prefix, line, col, language)
+        if len(positional) >= 3:
+            return provider(prefix, line, col)
+        if len(positional) == 1:
+            return provider(prefix)
+        return []
+
+    def _hide_completion_if_disabled(self) -> None:
+        if self._completion is not None and self._completion.isVisible() \
+                and self._active_completion_provider() is None:
+            self._completion.hide()
 
     def set_hover_provider(self, fn) -> None:
         """悬停 provider：``fn(line, col) -> str | None``（富文本）。"""
         self._hover_provider = fn
-
-    def set_completion_auto_trigger(self, on: bool) -> None:
-        """输入字符时是否自动弹出补全（默认 False）。
-
-        默认关闭：补全只在 ``trigger_completion`` 快捷键（缺省
-        Ctrl+Space，可用 ``set_shortcut`` 改绑）时弹出。开启后
-        每次击键同步调用 provider 并刷新弹窗（弹窗不抢焦点，
-        不会阻塞输入）。
-        """
-        self._completion_auto_trigger = bool(on)
-
-    def completion_auto_trigger(self) -> bool:
-        """补全自动触发是否开启。"""
-        return self._completion_auto_trigger
 
     def set_line_label_provider(self, fn) -> None:
         """自定义行号提供者（默认 None，行为不变）。
@@ -1084,6 +1310,11 @@ class CodeEditor(QWidget):
     def _current_prefix(self) -> tuple:
         """光标前单词前缀与起点偏移：``(prefix, start_pos)``。"""
         cur = self._text.textCursor()
+        if cur.hasSelection():
+            selected = cur.selectedText()
+            if selected and _WORD_RE.fullmatch(selected):
+                return selected, cur.selectionStart()
+            return "", cur.position()
         pos = cur.position()
         text = self._text.document().findBlock(pos).text()
         col = cur.positionInBlock()
@@ -1099,17 +1330,24 @@ class CodeEditor(QWidget):
 
     def _trigger_completion(self) -> None:
         """触发补全（输入触发或 Ctrl+Space）。"""
-        if self._completion_provider is None:
+        provider = self._active_completion_provider()
+        if provider is None:
             if self._completion is not None:
                 self._completion.hide()
             return
-        prefix, _start = self._current_prefix()
+        prefix, start = self._current_prefix()
         self._completion_prefix = prefix
+        self._completion_start = start
         line, col = self.cursor_position()
+        language = self._language
         try:
-            items = self._completion_provider(prefix, line, col) or []
+            items = self._invoke_completion_provider(
+                provider, prefix, line, col, language) or []
         except Exception:
             items = []
+        # Pylance 风格：语言关键字之后追加当前文档里出现过的标识符。
+        items = self._merge_document_symbols(
+            items, self._document_completion_symbols(), prefix)
         if not items:
             if self._completion is not None:
                 self._completion.hide()
@@ -1118,14 +1356,33 @@ class CodeEditor(QWidget):
         popup.set_items(items)
         rect = self._text.cursorRect()
         pos = self._text.viewport().mapToGlobal(rect.bottomLeft())
+        # 贴边/贴底时夹到可用屏幕内；否则底部行的候选会被屏幕裁掉。
+        screen = QGuiApplication.screenAt(pos) or self._text.screen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            w, h = popup.width(), popup.height()
+            x = max(avail.left(), min(pos.x(), avail.right() - w + 1))
+            y = pos.y()
+            if y + h > avail.bottom():
+                y = pos.y() - rect.height() - h
+            y = max(avail.top(), y)
+            pos = QPoint(x, y)
         popup.popup_at(pos)
 
     def _apply_completion(self, insert_text: str) -> None:
-        """确认补全：替换当前前缀为插入文本。"""
-        prefix, start = self._current_prefix()
+        """确认补全：用弹出时捕获的前缀/起点替换为插入文本。
+
+        不在确认时重新计算前缀：弹窗显示期间鼠标点击/Home/End 等
+        可能移动光标，重算会把文本插到错误位置。
+        """
+        start = self._completion_start
+        prefix = self._completion_prefix
+        doc = self._text.document()
+        if start < 0 or start + len(prefix) > doc.characterCount() - 1:
+            prefix, start = self._current_prefix()
         cur = self._text.textCursor()
         cur.setPosition(start)
-        cur.setPosition(cur.position() + len(prefix), QTextCursor.KeepAnchor)
+        cur.setPosition(start + len(prefix), QTextCursor.KeepAnchor)
         cur.insertText(insert_text)
         self._text.setTextCursor(cur)
         if self._completion is not None:
