@@ -606,7 +606,7 @@ class GaugeSeriesRenderer(SeriesRenderer):
         pen.setCapStyle(Qt.FlatCap)
         p.setBrush(Qt.NoBrush)
         # draw_arc 走折线：Qt 的 drawArc 在离屏光栅下会丢段，
-        # 仪表盘的长弧会缺一截（见 _utils.draw_arc 注释）
+        # 仪表盘的长弧会缺一截（见 InstructionX_UIKit/_draw.py 模块 docstring）
         draw_arc(p, rect, -a_lo, a_lo - a_hi, pen)
 
     def paint(self, p: QPainter, anim_t: float) -> None:

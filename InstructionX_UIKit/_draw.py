@@ -58,8 +58,10 @@ def _arc_step(radius: float) -> float:
 def arc_points(rect, start_deg: float, span_deg: float):
     """圆弧上的点列（``[(x, y), ...]``），不依赖 Qt 圆弧图元。
 
-    角度沿用 Qt 约定：3 点钟为 0°，**逆时针为正**，设备坐标 Y 轴向下
-    （因此角度递增在屏幕上是顺时针）。
+    角度沿用 Qt 约定：3 点钟为 0°，**逆时针为正**；设备坐标 Y 轴向下，
+    因此实现用 ``cy - sin(a) * r``，与 ``QPainter.drawArc`` 的落点一致
+    （90° 在 12 点方向，180° 在 9 点方向）。不要改回 ``cy + sin``——
+    那会与 Qt 关于水平轴镜像，饼图/仪表盘/进度弧会整体落到错误象限。
     """
     r = min(float(rect.width()), float(rect.height())) / 2.0
     if r <= 0:
@@ -72,7 +74,7 @@ def arc_points(rect, start_deg: float, span_deg: float):
     pts = []
     for i in range(n + 1):
         a = math.radians(float(start_deg) + span * i / n)
-        pts.append((cx + math.cos(a) * r, cy + math.sin(a) * r))
+        pts.append((cx + math.cos(a) * r, cy - math.sin(a) * r))
     return pts
 
 

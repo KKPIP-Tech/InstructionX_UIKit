@@ -88,13 +88,13 @@ class _FlatDial(QDial):
     _KNOB = 10
     #: 指示点描边宽度
     _KNOB_RING = 2
-    #: 弧带起点。Qt 画弧约定下角度自 3 点钟起、逆时针为正、Y 轴向下，
-    #: 因此**角度递增 = 屏幕上顺时针**。135° 落在屏幕 7:30（左下），
-    #: 正是常规表盘的最小值位；扫 270° 后落在 4:30（右下），
-    #: 缺口自然留在正下方。早先取 225° 起点，缺口跑到了正上方。
-    _START = 135.0
-    #: 弧带跨度，底部留 90° 缺口
-    _SPAN = 270.0
+    #: 弧带起点。Qt 角度自 3 点钟起、逆时针为正（Y 轴向下由 Qt 换算，
+    #: 因此屏幕上角度递增看起来是逆时针）。225° 落在屏幕 7:30（左下），
+    #: 正是常规表盘的最小值位；向顺时针扫 270°（Qt 跨度为负）后落在
+    #: 4:30（右下），缺口自然留在正下方。
+    _START = 225.0
+    #: 弧带跨度（Qt 负值 = 屏幕上顺时针），底部留 90° 缺口
+    _SPAN = -270.0
     #: 凹面到控件边缘的留白
     _INSET = 10
 
@@ -117,17 +117,18 @@ class _FlatDial(QDial):
 
     def _frac_for(self, angle: float) -> float:
         """Qt 画弧角度 → 进度 0~1。缺口区按就近端点吸附。"""
-        off = (angle - self._START) % 360.0
-        if off > self._SPAN:
-            gap = 360.0 - self._SPAN
-            return 0.0 if off - self._SPAN <= gap / 2 else 1.0
-        return off / self._SPAN
+        span = abs(self._SPAN)
+        off = (self._START - angle) % 360.0
+        if off > span:
+            gap = 360.0 - span
+            return 0.0 if off - span <= gap / 2 else 1.0
+        return off / span
 
     def _angle_at(self, pos) -> float:
-        """控件坐标 → Qt 画弧约定的角度。"""
+        """控件坐标 → Qt 画弧约定的角度（逆时针为正）。"""
         c = self.rect().center()
-        return math.degrees(
-            math.atan2(pos.y() - c.y(), pos.x() - c.x())) % 360.0
+        return (-math.degrees(
+            math.atan2(pos.y() - c.y(), pos.x() - c.x()))) % 360.0
 
     def _value_at(self, pos) -> int:
         """控件坐标 → 数值，按 singleStep 对齐。"""
