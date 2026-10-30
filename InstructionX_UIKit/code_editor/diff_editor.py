@@ -448,7 +448,7 @@ class _RevertSlot(QWidget):
     """并排模式两编辑器之间的中央槽（VS Code 回滚箭头列）。
 
     每个 hunk 在对应垂直位置（以左编辑器块几何定位）绘制一个
-    回滚箭头按钮（``arrow_left`` 图标）；点击后由 DiffEditor 执行
+    回滚箭头按钮（``arrow-left`` 图标）；点击后由 DiffEditor 执行
     ``revert_hunk``（右侧新文档该 hunk 恢复为左侧旧内容）。
     背景透明自绘，滚动时经 ``update()`` 同步重绘。
     """
@@ -495,7 +495,7 @@ class _RevertSlot(QWidget):
         if not self._owner._revert_enabled:
             p.end()
             return
-        icon = get_icon("arrow_left", 12,
+        icon = get_icon("arrow-left", 12,
                         QColor(T("color.text.secondary")))
         for i, hunk in enumerate(self._owner._hunks):
             r = self._hunk_button_rect(hunk)

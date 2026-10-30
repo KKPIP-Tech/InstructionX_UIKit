@@ -85,7 +85,7 @@ _COPY_FEEDBACK_MS = 1000
 #: 各角色气泡的操作按钮：(操作名, 图标名, 提示文案)
 _ACTIONS = {
     "user": (("copy", "copy", "复制"),
-             ("edit", "edit", "编辑"),
+             ("edit", "edit-pencil", "编辑"),
              ("delete", "trash", "删除")),
     "assistant": (("copy", "copy", "复制"),
                   ("regenerate", "refresh", "重新生成"),

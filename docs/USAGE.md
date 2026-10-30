@@ -160,6 +160,44 @@ ts.reset_all()                             # 还原全部
 
 `T()` 内部即委托 `TokenState`，旧代码无需修改即可感知会话覆盖。
 
+### 3.5 图标（Iconoir）
+
+图标来自 [Iconoir v7.12.1](https://github.com/iconoir-icons/iconoir)（MIT），完整内置 **1,383 Regular + 288 Solid = 1,671 个**，运行时按主题色渲染；QtSvg 不可用时回退到 QPainter 手绘：
+
+```python
+from InstructionX_UIKit import (
+    Icon, get_icon, get_pixmap, icon_svg, icon_names, search_icons,
+    ICON_NAMES, ICONOIR_NAMES, ICONOIR_REGULAR_NAMES, ICONOIR_SOLID_NAMES,
+)
+
+# 可复用的图标对象：修改颜色 / 尺寸 / 描边后重新取图
+icon = Icon("home", size=24)
+icon.set_color("#1677ff").set_stroke_width(2.0)
+button.setIcon(icon.qicon())
+label.setPixmap(icon.pixmap())
+icon.set_color(None)                            # 恢复当前主题次要文本色
+
+get_icon("home", size=16)                       # Iconoir 原名
+get_icon("home", size=20, color="#1677ff",
+         stroke_width=2.0)                      # 尺寸 / 颜色 / 描边宽度
+get_icon("iconoir:stats-report", size=24)       # 直接使用 Iconoir 原名
+get_icon("io:check")                            # io: 是 iconoir: 的简写
+get_icon("heart-solid", size=24)                # Solid 变体
+
+get_pixmap("home", 32, color="#1677ff")          # 自定义控件要 QPixmap 时
+icon_svg("home", color="#1677ff", stroke_width=2.0)  # 内嵌 SVG 源码
+icon_names(solid=False)                         # Regular 1383 个
+icon_names(solid=True)                          # Solid 288 个
+search_icons("arrow")                           # 名称搜索
+
+ICON_NAMES       # 完整 Iconoir 名列表（1,671 个）
+ICONOIR_NAMES    # 完整 Iconoir 名列表（1,671 个）
+```
+
+Demo 左侧「设计令牌 → 图标库」可搜索、按 Regular/Solid 过滤、切换尺寸与描边，并通过调色盘实时设置图标颜色，同时查看 `get_icon` 调用示例。
+
+第三方来源与完整 MIT 许可证见项目根目录 [THIRD-PARTY.md](../THIRD-PARTY.md)。
+
 ## 4. 组件用法
 
 导入约定：`from InstructionX_UIKit.components.<模块> import <类>`。示例中省略 `QApplication` 骨架，实际运行请参考 §2.2。

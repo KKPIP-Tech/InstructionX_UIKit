@@ -18,6 +18,7 @@
 - **实时数据接入**：`chart.stream()` 提供无锁环形缓冲（单写单读）+ 帧合并（不丢点）+ 定时入图；生产者在任意线程写入、界面按刷新节奏取数，滚动窗口写满丢最旧。
 - **蓝图节点图**：类 UE5 Blueprint / ComfyUI 的节点图编辑器，支持右键建节点、引脚拖线、类型校验、序列化与执行状态模拟。
 - **代码编辑器**：纯 PySide6（无 WebView）对齐 VS Code 编辑区体验——语法高亮（9 种内置语言 + 注册表扩展）、小地图、查找替换、诊断 / 断点 / 折叠、补全与悬停 provider、Ctrl+D 多选批量编辑，另含并排 / 内联 / 自动断点的 Diff 对比编辑器。
+- **完整图标库**：内置 Iconoir v7.12.1 的 1,383 Regular + 288 Solid（共 1,671 个 SVG），提供 `Icon` / `get_icon` / `get_pixmap` / `icon_svg` / `search_icons` / `icon_names` 接口，可设置尺寸、颜色与描边宽度；Demo「设计令牌 → 图标库」可搜索、过滤与预览全部图标。
 - **职责分离**：`InstructionX_UIKit/` 为纯 Kit 包（零假数据、零 Demo 逻辑，一切内容由调用方 API 传入，无内容时显示优雅空占位）；`demo/` 为独立演示程序（**11 大类、79 个演示页**，每页顶部附「用法」代码示例）。
 
 ## 界面预览
@@ -109,7 +110,8 @@ python main.py
 ├── InstructionX_UIKit/          # 纯 Kit 包（零假数据、零 Demo 逻辑）
 │   ├── tokens.py                # 设计令牌（唯一数值来源 + TokenState）
 │   ├── theme.py                 # ThemeManager + 全局 QSS 生成
-│   ├── icons.py                 # QPainter 运行时矢量图标集
+│   ├── icons.py                 # Iconoir SVG 图标（QtSvg 渲染 + QPainter 回退）
+│   ├── iconoir_icons.py         # Iconoir v7.12.1 完整图标资产（1,671 个，MIT）
 │   ├── components/              # 59 个组件（输入 / 展示 / 反馈）
 │   ├── layouts/                 # 13 个响应式布局预设（API 驱动）
 │   ├── anim/                    # 28 属性动画 + 24 自绘动画
@@ -150,6 +152,15 @@ $env:QT_QPA_PLATFORM="offscreen"; $env:QT_QPA_FONTDIR="C:\Windows\Fonts"
 python tests\test_core.py
 ```
 
+## 致谢与第三方
+
+感谢以下开源项目与社区的工作：
+
+- **[Iconoir](https://github.com/iconoir-icons/iconoir)**：本项目 `icons.py` 的主图标来源。Iconoir 由 Luca Burgio 创建，采用 MIT License；已内置 v7.12.1 完整图标集（1,383 Regular + 288 Solid，共 1,671 个），统一使用 Iconoir 原名，也可通过 `get_icon("iconoir:<名称>")` 显式入口；左侧「设计令牌 → 图标库」可视化全部图标，并支持调色盘实时换色。
+- **Qt for Python / PySide6**、**qrcode**、**Pillow**、**matplotlib**、**numpy**、**Mermaid** 等运行时依赖；它们让本项目的 GUI、二维码、公式、数据处理与图表渲染成为可能。
+
+完整的来源、版本、许可证文本和维护约定见 **[THIRD-PARTY.md](THIRD-PARTY.md)**。
+
 ## 文档
 
 - [docs/Design.md](docs/Design.md) — 设计规范（令牌数值、断点、动效、状态矩阵、暗色策略）
@@ -157,6 +168,7 @@ python tests\test_core.py
   - §1–§7 安装 / 快速开始 / 主题系统 / 组件 / 布局 / 动画 / 图表用法
   - **§8 大数据与实时渲染** — 渲染后端（GPU 与软件双视口）、自动降采样与保真承诺、实时数据接入（`chart.stream()`）、GPU 原生直绘（`gpuDirect`）、同屏多图性能特征
   - §9 蓝图模式 · §10 代码编辑器 · §11 常见问题
+- [THIRD-PARTY.md](THIRD-PARTY.md) — 第三方项目来源、许可证与致谢清单（Iconoir 等）
 
 ## 仓库
 

@@ -40,22 +40,22 @@ from .pages import NAV
 # ``_icon()`` 的实现（以及 ``_CATEGORY_ICONS`` 的取值），导航渲染逻辑
 # （尺寸 / 对齐 / 主题换色 / 缓存策略）都不需要改动。
 #
-# 当前用 Kit 自带的 QPainter 矢量图标占位。注意 Kit 的 QIcon 把颜色烤进
-# 像素，所以主题切换时必须重新取一次——调用方通过 ``_icon()`` 统一处理。
+# 图标来自完整的 Iconoir 库。注意 QIcon 把颜色烤进像素，所以主题切换时
+# 必须重新取一次——调用方通过 ``_icon()`` 统一处理。
 
-#: 导航分类 -> 图标语义名。接入正式图标库后，把取值换成图标库的 name 即可。
+#: 导航分类 -> Iconoir 原名。
 _CATEGORY_ICONS = {
-    "tokens": "chart",
-    "layouts": "layout",
+    "tokens": "stats-report",
+    "layouts": "view-grid",
     "inputs": "component",
-    "display": "layout",
-    "feedback": "info",
-    "anim_property": "animation",
-    "anim_painted": "animation",
-    "charts": "chart",
+    "display": "view-grid",
+    "feedback": "info-circle",
+    "anim_property": "play",
+    "anim_painted": "play",
+    "charts": "stats-report",
     "basic_widgets": "component",
-    "blueprint": "layout",
-    "code_editor": "edit",
+    "blueprint": "view-grid",
+    "code_editor": "edit-pencil",
 }
 
 #: 未知图标名的回退
@@ -366,8 +366,12 @@ class _Sidebar(QWidget):
         self._list_layout.addWidget(cat_lab)
         self._list_layout.addSpacing(6)
 
+        # 设计令牌分类保留 NAV 显式顺序（总览在前、图标库紧随其后）；
+        # 其它分类仍按标题 A-Z / 拼音排序，便于查找。
+        ordered = pages if cat_key == "tokens" else sorted(
+            pages, key=_nav_sort_key)
         items = []
-        for page_key, page_title, _factory in sorted(pages, key=_nav_sort_key):
+        for page_key, page_title, _factory in ordered:
             item = _NavItem(page_title, _CATEGORY_ICONS.get(cat_key, "component"), page_key)
             item.clicked.connect(self._on_item_clicked)
             self._list_layout.addWidget(item)

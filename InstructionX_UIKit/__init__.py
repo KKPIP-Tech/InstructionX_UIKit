@@ -30,7 +30,21 @@ from .tokens import (
     EASING,
     TokenState,
 )
-from .icons import get_icon, ICON_NAMES
+from .icons import (
+    Icon,
+    get_icon,
+    get_pixmap,
+    icon_names,
+    icon_svg,
+    search_icons,
+    ICON_NAMES,
+    ICONOIR_LICENSE,
+    ICONOIR_NAMES,
+    ICONOIR_REGULAR_NAMES,
+    ICONOIR_SOLID_NAMES,
+    ICONOIR_SOURCE,
+    ICONOIR_VERSION,
+)
 
 __version__ = "alpha-v1.0.3"
 
@@ -53,6 +67,17 @@ __all__ = [
     "EASING",
     "TokenState",
     # icons
+    "Icon",
     "get_icon",
+    "get_pixmap",
+    "icon_svg",
+    "icon_names",
+    "search_icons",
     "ICON_NAMES",
+    "ICONOIR_NAMES",
+    "ICONOIR_REGULAR_NAMES",
+    "ICONOIR_SOLID_NAMES",
+    "ICONOIR_VERSION",
+    "ICONOIR_SOURCE",
+    "ICONOIR_LICENSE",
 ]

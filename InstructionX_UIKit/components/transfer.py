@@ -217,8 +217,8 @@ class Transfer(QWidget):
     def _apply_btn_icons(self) -> None:
         # 图标是调用时烘进 QIcon 的位图，所以 hover / 切主题都要重烘一次；
         # 否则边框变主色而图标还是常规色，按钮看起来少了一半反馈。
-        for btn, name in ((self._btn_right, "arrow_right"),
-                          (self._btn_left, "arrow_left")):
+        for btn, name in ((self._btn_right, "arrow-right"),
+                          (self._btn_left, "arrow-left")):
             color = (T("color.primary") if btn.underMouse()
                      else T("color.text.primary"))
             btn.setIcon(get_icon(name, size=_BTN_ICON, color=color))

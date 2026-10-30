@@ -1,302 +1,220 @@
 # -*- coding: utf-8 -*-
-"""轻量矢量图标集（QPainter 运行时绘制，无外部资源依赖）。
+"""Iconoir 图标集（完整 v7.12.1，MIT License）。
 
-统一视觉规范（对齐 Feather / Lucide 线性图标）：
+- 图标来自 Iconoir v7.12.1（1,383 Regular + 288 Solid，共 1,671 个）；
+- 使用 QtSvg 渲染，运行时把 ``currentColor`` 替换为调用方颜色；
+- 不提供旧图标别名：图标名就是 Iconoir 原名；
+- 完整第三方许可见项目根目录 ``THIRD-PARTY.md``。
 
-- 24px 设计网格：所有路径坐标按 24x24 定义，渲染时缩放到目标尺寸；
-- 1.5px 描边（网格坐标系），圆角端点 / 圆角连接；
-- 抗锯齿绘制，透明背景；
-- 颜色由调用方传入（主题感知），缺省取 ``T("color.text.secondary")``。
+开发者接口::
 
-对外 API::
+    from InstructionX_UIKit import Icon, get_icon, get_pixmap, icon_svg
 
-    from InstructionX_UIKit.icons import get_icon, ICON_NAMES
-
-    icon = get_icon("home")                                  # 16px，次要文本色
-    icon = get_icon("settings", size=20, color="#1677ff")    # 指定尺寸与颜色
-    icon = get_icon("check", color=T("color.success"))       # 令牌色
+    get_icon("home", size=24, color="#1677ff", stroke_width=2.0)
+    get_pixmap("heart-solid", 32, color="#e5484d")
+    icon = Icon("search", size=20).set_color("#1677ff")
+    widget.setIcon(icon.qicon())
 """
 
-import math
+from PySide6.QtCore import QByteArray, QRectF, Qt
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import (
-    QColor,
-    QIcon,
-    QPainter,
-    QPainterPath,
-    QPen,
-    QPixmap,
+try:
+    from PySide6.QtSvg import QSvgRenderer
+except ImportError:  # pragma: no cover - 精简 PySide6 分发可能不带 QtSvg
+    QSvgRenderer = None
+
+from .iconoir_icons import (
+    ICONOIR_ICONS,
+    ICONOIR_LICENSE,
+    ICONOIR_REGULAR_NAMES,
+    ICONOIR_SOLID_NAMES,
+    ICONOIR_SOURCE,
+    ICONOIR_VERSION,
 )
-
-from ._draw import arc_points
 from .theme import T
 
-__all__ = ["get_icon", "ICON_NAMES"]
+__all__ = [
+    "Icon",
+    "get_icon",
+    "get_pixmap",
+    "icon_svg",
+    "icon_names",
+    "search_icons",
+    "ICON_NAMES",
+    "ICONOIR_NAMES",
+    "ICONOIR_REGULAR_NAMES",
+    "ICONOIR_SOLID_NAMES",
+    "ICONOIR_VERSION",
+    "ICONOIR_SOURCE",
+    "ICONOIR_LICENSE",
+]
 
-#: 设计网格边长（图标坐标均以 24x24 定义）
-_GRID = 24.0
-#: 网格坐标系下的描边宽度（px）
-_STROKE = 1.5
+#: 完整 Iconoir 图标名（Regular 在前、Solid 在后）。
+ICONOIR_NAMES = list(ICONOIR_REGULAR_NAMES) + list(ICONOIR_SOLID_NAMES)
 
-
-# ---------------------------------------------------------------------------
-# 绘制辅助
-# ---------------------------------------------------------------------------
-
-def _pen(color: QColor) -> QPen:
-    """统一描边画笔：1.5px、圆角端点与连接。"""
-    pen = QPen(color)
-    pen.setWidthF(_STROKE)
-    pen.setCapStyle(Qt.RoundCap)
-    pen.setJoinStyle(Qt.RoundJoin)
-    return pen
-
-
-def _dot(p: QPainter, color: QColor, x: float, y: float, r: float = 1.1) -> None:
-    """实心圆点（info / warning 图标的感叹点）。"""
-    p.save()
-    p.setPen(Qt.NoPen)
-    p.setBrush(color)
-    p.drawEllipse(QPointF(x, y), r, r)
-    p.restore()
+#: 完整 Iconoir 名列表（与 ``ICONOIR_NAMES`` 相同，保留公共常量名）。
+ICON_NAMES = list(ICONOIR_NAMES)
 
 
-def _line(p: QPainter, x1, y1, x2, y2) -> None:
-    p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+def _resolve_name(name: str):
+    """解析 Iconoir 原名；只接受原名与 ``iconoir:`` / ``io:`` 前缀。"""
+    text = str(name or "")
+    if text.startswith("iconoir:"):
+        text = text.split(":", 1)[1]
+    elif text.startswith("io:"):
+        text = text.split(":", 1)[1]
+    return text if text in ICONOIR_ICONS else None
 
 
-def _polyline(p: QPainter, pts) -> None:
-    p.drawPolyline([QPointF(x, y) for x, y in pts])
+def _normalize_color(color) -> QColor:
+    return color if isinstance(color, QColor) else QColor(
+        color or T("color.text.secondary"))
 
 
-def _rect(p: QPainter, x, y, w, h, r=0.0) -> None:
-    rect = QRectF(x, y, w, h)
-    if r > 0:
-        p.drawRoundedRect(rect, r, r)
-    else:
-        p.drawRect(rect)
+def _normalize_stroke(width) -> float:
+    try:
+        value = float(width)
+    except (TypeError, ValueError):
+        value = 1.5
+    return max(0.5, min(4.0, value))
 
 
-# ---------------------------------------------------------------------------
-# 各图标路径（painter 已按 24 网格缩放，画笔/画刷颜色已就绪）
-# ---------------------------------------------------------------------------
-
-def _draw_home(p: QPainter, color: QColor) -> None:
-    """房子：屋顶折线 + 墙体 + 门。"""
-    _polyline(p, [(3.5, 11), (12, 3.8), (20.5, 11)])
-    _polyline(p, [(5.5, 9.6), (5.5, 20), (18.5, 20), (18.5, 9.6)])
-    _rect(p, 10, 14, 4, 6)
+def _svg_color(color: QColor) -> str:
+    if color.alpha() >= 255:
+        return color.name()
+    return (f"rgba({color.red()}, {color.green()}, "
+            f"{color.blue()}, {color.alpha() / 255:.3f})")
 
 
-def _draw_chart(p: QPainter, color: QColor) -> None:
-    """柱状图：三根递增柱 + 基线。"""
-    _line(p, 4, 20, 20, 20)
-    _line(p, 7, 20, 7, 13)
-    _line(p, 12, 20, 12, 8.5)
-    _line(p, 17, 20, 17, 4.5)
+def icon_names(solid=None) -> list:
+    """返回 Iconoir 图标名。
 
-
-def _draw_layout(p: QPainter, color: QColor) -> None:
-    """布局：外框 + 左栏 + 右侧上下分区。"""
-    _rect(p, 3.5, 4, 17, 16, 2)
-    _line(p, 9.5, 4, 9.5, 20)
-    _line(p, 9.5, 11, 20.5, 11)
-
-
-def _draw_component(p: QPainter, color: QColor) -> None:
-    """方块组合：一个实心块 + 三个描边块。"""
-    p.save()
-    p.setBrush(color)
-    _rect(p, 4, 4, 7, 7, 1.5)
-    p.restore()
-    _rect(p, 13, 4, 7, 7, 1.5)
-    _rect(p, 4, 13, 7, 7, 1.5)
-    _rect(p, 13, 13, 7, 7, 1.5)
-
-
-def _draw_animation(p: QPainter, color: QColor) -> None:
-    """播放 / 闪电：一道闪电折线。"""
-    _polyline(p, [(13, 3), (6, 13.2), (11, 13.2), (10.2, 21), (18, 10.4), (13, 10.4)])
-
-
-def _draw_settings(p: QPainter, color: QColor) -> None:
-    """齿轮：外环 + 八根轮齿 + 中心毂。"""
-    p.drawEllipse(QPointF(12, 12), 5.6, 5.6)
-    for i in range(8):
-        a = math.radians(i * 45)
-        ca, sa = math.cos(a), math.sin(a)
-        _line(p, 12 + 5.6 * ca, 12 + 5.6 * sa, 12 + 8.4 * ca, 12 + 8.4 * sa)
-    p.drawEllipse(QPointF(12, 12), 2.1, 2.1)
-
-
-def _draw_user(p: QPainter, color: QColor) -> None:
-    """人像：头部圆 + 肩部弧线。"""
-    p.drawEllipse(QPointF(12, 8), 3.4, 3.4)
-    path = QPainterPath(QPointF(5, 20))
-    path.quadTo(QPointF(5, 14.8), QPointF(12, 14.8))
-    path.quadTo(QPointF(19, 14.8), QPointF(19, 20))
-    p.drawPath(path)
-
-
-def _draw_search(p: QPainter, color: QColor) -> None:
-    """放大镜：镜片圆 + 手柄。"""
-    p.drawEllipse(QPointF(10.8, 10.8), 6.2, 6.2)
-    _line(p, 15.3, 15.3, 20, 20)
-
-
-def _draw_menu(p: QPainter, color: QColor) -> None:
-    """汉堡菜单：三条横线。"""
-    for y in (6, 12, 18):
-        _line(p, 4, y, 20, y)
-
-
-def _draw_arrow_left(p: QPainter, color: QColor) -> None:
-    """左箭头（折角）。"""
-    _polyline(p, [(14.5, 5), (6.5, 12), (14.5, 19)])
-
-
-def _draw_arrow_right(p: QPainter, color: QColor) -> None:
-    """右箭头（折角）。"""
-    _polyline(p, [(9.5, 5), (17.5, 12), (9.5, 19)])
-
-
-def _draw_plus(p: QPainter, color: QColor) -> None:
-    """加号。"""
-    _line(p, 12, 5, 12, 19)
-    _line(p, 5, 12, 19, 12)
-
-
-def _draw_close(p: QPainter, color: QColor) -> None:
-    """关闭（叉）。"""
-    _line(p, 6, 6, 18, 18)
-    _line(p, 18, 6, 6, 18)
-
-
-def _draw_info(p: QPainter, color: QColor) -> None:
-    """信息：圆圈 + i。"""
-    p.drawEllipse(QPointF(12, 12), 8.4, 8.4)
-    _dot(p, color, 12, 7.9)
-    _line(p, 12, 11.2, 12, 16.4)
-
-
-def _draw_warning(p: QPainter, color: QColor) -> None:
-    """警告：圆角三角 + 感叹号。"""
-    path = QPainterPath(QPointF(12, 4.6))
-    path.lineTo(QPointF(20.8, 19))
-    path.lineTo(QPointF(3.2, 19))
-    path.closeSubpath()
-    p.drawPath(path)
-    _line(p, 12, 10, 12, 14.4)
-    _dot(p, color, 12, 17)
-
-
-def _draw_check(p: QPainter, color: QColor) -> None:
-    """对勾。"""
-    _polyline(p, [(4.8, 12.6), (10, 17.6), (19.2, 7)])
-
-
-def _draw_copy(p: QPainter, color: QColor) -> None:
-    """复制：双矩形错位（前框 + 后框右上露边）。"""
-    _polyline(p, [(15, 8.8), (15, 5), (15, 4.2), (20, 4.2), (20, 13.2),
-                  (15.8, 13.2)])
-    _rect(p, 4, 8.8, 11, 11.4, 1.6)
-
-
-def _draw_trash(p: QPainter, color: QColor) -> None:
-    """删除：垃圾桶（盖 + 提手 + 桶身 + 两道竖痕）。"""
-    _line(p, 4.2, 6.6, 19.8, 6.6)
-    _polyline(p, [(9.4, 6.6), (9.4, 4.4), (14.6, 4.4), (14.6, 6.6)])
-    _polyline(p, [(6, 6.6), (6.8, 19.8), (17.2, 19.8), (18, 6.6)])
-    _line(p, 10, 10.4, 10, 16.4)
-    _line(p, 14, 10.4, 14, 16.4)
-
-
-def _draw_refresh(p: QPainter, color: QColor) -> None:
-    """重新生成：回旋箭头（3/4 圆弧 + 端部箭头）。"""
-    ring = QRectF(4.8, 4.8, 14.4, 14.4)
-    path = QPainterPath()
-    pts = arc_points(ring, 50, 290)
-    if pts:
-        path.moveTo(pts[0][0], pts[0][1])
-        for x, y in pts[1:]:
-            path.lineTo(x, y)
-    p.drawPath(path)
-    _polyline(p, [(14.6, 3.6), (19.2, 5.1), (17.4, 9.6)])
-
-
-def _draw_play(p: QPainter, color: QColor) -> None:
-    """继续生成：三角播放（描边圆角三角）。"""
-    path = QPainterPath(QPointF(9, 6.2))
-    path.lineTo(QPointF(18.6, 12))
-    path.lineTo(QPointF(9, 17.8))
-    path.closeSubpath()
-    p.drawPath(path)
-
-
-def _draw_edit(p: QPainter, color: QColor) -> None:
-    """编辑：铅笔（斜笔身 + 笔尖 + 底线）。"""
-    _polyline(p, [(14.8, 5.4), (18.6, 9.2), (9.6, 18.2), (5.2, 18.8),
-                  (5.8, 14.4), (14.8, 5.4)])
-    _line(p, 12.8, 7.4, 16.6, 11.2)
-
-
-#: 图标注册表：名称 -> 绘制函数
-_DRAWERS = {
-    "home": _draw_home,
-    "chart": _draw_chart,
-    "layout": _draw_layout,
-    "component": _draw_component,
-    "animation": _draw_animation,
-    "settings": _draw_settings,
-    "user": _draw_user,
-    "search": _draw_search,
-    "menu": _draw_menu,
-    "arrow_left": _draw_arrow_left,
-    "arrow_right": _draw_arrow_right,
-    "plus": _draw_plus,
-    "close": _draw_close,
-    "info": _draw_info,
-    "warning": _draw_warning,
-    "check": _draw_check,
-    "copy": _draw_copy,
-    "trash": _draw_trash,
-    "refresh": _draw_refresh,
-    "play": _draw_play,
-    "edit": _draw_edit,
-}
-
-#: 全部可用图标名（注册表键的有序列表）
-ICON_NAMES = list(_DRAWERS)
-
-
-def get_icon(name: str, size: int = 16, color=None) -> QIcon:
-    """按名称生成矢量图标。
-
-    参数:
-        name: 图标名，见 ``ICON_NAMES``。
-        size: 输出边长（px），默认 16。
-        color: 描边颜色，``str``（如 ``"#5c6b7a"``）或 ``QColor``；
-            缺省取当前主题 ``color.text.secondary``。
-
-    返回:
-        ``QIcon``（抗锯齿、透明背景；按 2x 设备像素比绘制，高清屏不糊）。
+    ``solid=None`` 返回全部；``False`` 只返回 Regular；``True`` 只返回 Solid。
     """
-    drawer = _DRAWERS.get(name)
-    if drawer is None:
-        raise ValueError(f"未知图标: {name!r}，可用: {ICON_NAMES}")
-    size = max(int(size), 2)
-    qcolor = color if isinstance(color, QColor) else QColor(color or T("color.text.secondary"))
+    if solid is True:
+        return list(ICONOIR_SOLID_NAMES)
+    if solid is False:
+        return list(ICONOIR_REGULAR_NAMES)
+    return list(ICONOIR_NAMES)
 
-    dpr = 2.0  # 固定 2x 超采样，保证任意尺寸下边缘平滑
-    pm = QPixmap(int(size * dpr), int(size * dpr))
+
+def search_icons(query: str = "", solid=None) -> list:
+    """按名称子串搜索 Iconoir 图标（大小写不敏感）。"""
+    text = str(query or "").strip().lower()
+    names = icon_names(solid)
+    if not text:
+        return names
+    return [name for name in names if text in name.lower()]
+
+
+def icon_svg(name: str, color=None, stroke_width=1.5) -> str:
+    """返回替换好颜色/描边宽度的 Iconoir SVG 源码。"""
+    iconoir_name = _resolve_name(name)
+    if iconoir_name is None:
+        raise ValueError(
+            f"未知图标: {name!r}；请使用 Iconoir 原名，"
+            f"共 {len(ICONOIR_ICONS)} 个（见 ICONOIR_NAMES）")
+    source = ICONOIR_ICONS[iconoir_name]
+    source = source.replace("currentColor", _svg_color(_normalize_color(color)))
+    width = _normalize_stroke(stroke_width)
+    return source.replace('stroke-width="1.5"',
+                          f'stroke-width="{width:g}"')
+
+
+def get_pixmap(name: str, size: int = 16, color=None,
+               stroke_width=1.5) -> QPixmap:
+    """生成图标 QPixmap（尺寸、颜色、描边可配置，2x 设备像素）。"""
+    iconoir_name = _resolve_name(name)
+    if iconoir_name is None:
+        raise ValueError(
+            f"未知图标: {name!r}；请使用 Iconoir 原名，"
+            f"共 {len(ICONOIR_ICONS)} 个（见 ICONOIR_NAMES）")
+    if QSvgRenderer is None:
+        raise RuntimeError("当前 PySide6 分发不包含 QtSvg，无法渲染 Iconoir 图标")
+    source = icon_svg(iconoir_name, color, stroke_width)
+    renderer = QSvgRenderer(QByteArray(source.encode("utf-8")))
+    if not renderer.isValid():
+        raise ValueError(f"Iconoir SVG 无效: {iconoir_name!r}")
+    side = max(int(size), 2)
+    dpr = 2.0
+    pm = QPixmap(int(round(side * dpr)), int(round(side * dpr)))
     pm.setDevicePixelRatio(dpr)
     pm.fill(Qt.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing)
-    p.scale(size / _GRID, size / _GRID)
-    p.setPen(_pen(qcolor))
-    p.setBrush(Qt.NoBrush)
-    drawer(p, qcolor)
+    # QPainter 在高 DPI pixmap 上使用逻辑坐标，目标矩形不能乘 dpr。
+    renderer.render(p, QRectF(0, 0, side, side))
     p.end()
-    return QIcon(pm)
+    return pm
+
+
+def get_icon(name: str, size: int = 16, color=None,
+             stroke_width=1.5) -> QIcon:
+    """生成图标 QIcon（尺寸、颜色、描边可配置）。"""
+    return QIcon(get_pixmap(name, size, color, stroke_width))
+
+
+class Icon:
+    """可复用的图标对象：封装名称、尺寸、颜色和描边宽度。
+
+    用法::
+
+        icon = Icon("home", size=24)
+        icon.set_color("#1677ff").set_stroke_width(2.0)
+        button.setIcon(icon.qicon())
+        label.setPixmap(icon.pixmap())
+    """
+
+    def __init__(self, name: str, size: int = 16, color=None,
+                 stroke_width=1.5):
+        self._name = str(name)
+        self._size = max(int(size), 2)
+        self._color = _normalize_color(color)
+        self._stroke_width = _normalize_stroke(stroke_width)
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def set_name(self, name: str) -> "Icon":
+        self._name = str(name)
+        return self
+
+    def set_size(self, size: int) -> "Icon":
+        self._size = max(int(size), 2)
+        return self
+
+    def set_color(self, color) -> "Icon":
+        """设置颜色；``color=None`` 恢复当前主题次要文本色。"""
+        self._color = _normalize_color(color)
+        return self
+
+    def set_stroke_width(self, width) -> "Icon":
+        self._stroke_width = _normalize_stroke(width)
+        return self
+
+    def color(self) -> QColor:
+        """当前颜色（副本）。"""
+        return QColor(self._color)
+
+    def size(self) -> int:
+        return self._size
+
+    def stroke_width(self) -> float:
+        return self._stroke_width
+
+    def svg(self) -> str:
+        return icon_svg(self._name, self._color, self._stroke_width)
+
+    def pixmap(self) -> QPixmap:
+        return get_pixmap(self._name, self._size, self._color,
+                          self._stroke_width)
+
+    def qicon(self) -> QIcon:
+        return QIcon(self.pixmap())
+
+    def __repr__(self) -> str:
+        return (f"Icon({self._name!r}, size={self._size}, "
+                f"color={self._color.name()!r}, "
+                f"stroke_width={self._stroke_width:g})")
