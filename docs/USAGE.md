@@ -1411,6 +1411,9 @@ editor.text_edited.connect(lambda: print("内容已修改"))
 
 内置语言：`python` / `cpp` / `js` / `ts` / `json` / `html` / `css` / `markdown` / `qss` / `plain`。
 
+> `set_text()` 按「新文档」语义重置断点、诊断、搜索高亮、多选与折叠状态；
+> 切换文件请直接调用它，不要复用旧文档的行级状态。
+
 ### 10.2 视图选项
 
 ```python
@@ -1462,7 +1465,7 @@ editor.replace_current(); editor.replace_all()
 editor.close_find_bar()
 ```
 
-搜索命中全部高亮（当前命中强化）+ 小地图标记；区域优先级：诊断 > 搜索当前命中 > 搜索命中 > 选中词 > 括号匹配 > 自定义层 > 语法。
+搜索命中全部高亮（当前命中强化）+ 小地图标记；区域优先级：选区 > 诊断 > 搜索当前命中 > 搜索命中 > 选中词 > 括号匹配 > 自定义层 > 语法。
 
 ### 10.5 诊断、断点与折叠
 
@@ -1525,8 +1528,8 @@ def my_engine(document):             # 自定义语言的 QSyntaxHighlighter 工
 register_language("mylang", my_engine, [".my", ".myl"])
 ```
 
-语法色板走 tokens 派生的亮/暗两套（`SYNTAX_LIGHT` / `SYNTAX_DARK`，`syntax_palette(mode)` 取当前），
-`theme_changed` 时自动重刷，无需手动重启。
+语法色板是固定低饱和的亮/暗两套（`SYNTAX_LIGHT` / `SYNTAX_DARK`，与界面令牌解耦，
+`theme_changed` 时自动重刷，无需手动重启），这样调整 UI 配色不会破坏代码可读性。
 
 ### 10.8 DiffEditor（并排 / 内联 / 自动）
 
@@ -1552,7 +1555,8 @@ diff.revert_hunk(0); diff.hunk_reverted.connect(lambda index: ...)
 ```
 
 并排模式左右两侧共用一条滚动位置（同步滚动），删除行左侧 danger 底、插入行右侧 success 底、
-替换行两侧 emphasis 底；内联模式删除行前缀 `-`、插入行前缀 `+`，前缀列自绘。
+replace 行左侧 danger 底 / 右侧 success 底（VS Code 风格）；内联模式删除行前缀 `-`、
+插入行前缀 `+`，前缀列自绘。
 
 ### 10.9 扩展绘制钩子
 
@@ -1564,8 +1568,9 @@ editor.set_line_marker_provider(lambda line: "coverage")     # gutter 标记图�
 
 ### 10.10 主题与嵌入
 
-`CodeEditor` / `DiffEditor` 全部颜色经 `T()` 令牌读取并连接 `theme_changed`，
-`ThemeManager.instance().set_mode("dark")` 后自动换肤；控件背景透明防全局 QSS 污染，
+`CodeEditor` / `DiffEditor` 的全部界面颜色经 `T()` 令牌读取并连接 `theme_changed`
+（语法 token 色板除外，见 10.7），`ThemeManager.instance().set_mode("dark")` 后自动换肤；
+控件背景透明防全局 QSS 污染，
 可直接放进任意布局 / `SplitPanel` / `Tabs`。子控件访问器：
 `text_area()` / `gutter()` / `minimap()` / `find_bar()` / `completion_popup()` / `hover_bubble()` / `highlight_engine()`。
 

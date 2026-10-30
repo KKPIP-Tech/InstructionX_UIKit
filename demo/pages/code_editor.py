@@ -22,7 +22,7 @@ import keyword
 import re
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QFont, QPainter
+from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout,
                                QWidget)
 
@@ -34,7 +34,7 @@ from InstructionX_UIKit.components import (
     Tabs,
     TextArea,
 )
-from InstructionX_UIKit.theme import T, set_property
+from InstructionX_UIKit.theme import T, set_font, set_property
 from InstructionX_UIKit.tokens import MONO_FAMILY
 
 from .common import Section, flow_row, hint_label, make_page, row
@@ -475,6 +475,13 @@ _HOVER_DOCS = {
 _WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
+def _apply_mono(widget, scale: str = "sm") -> None:
+    """用实例级 QSS 设置等宽字阶（不直接用 setFont）。"""
+    set_font(widget, scale)
+    widget.setStyleSheet(widget.styleSheet()
+                         + f"font-family: {MONO_FAMILY};")
+
+
 def _completion_items():
     """Python 关键字 + 片段的完整候选（kind / detail 齐全）。"""
     items = list(_PY_SNIPPETS)
@@ -626,7 +633,7 @@ class EditorDemoPage(QWidget):
         self.status_diag = _ElideLabel()
         for lab in (self.status_pos, self.status_sel, self.status_lang,
                     self.status_indent, self.status_enc, self.status_diag):
-            lab.setFont(self._mono(12))
+            _apply_mono(lab)
             set_property(lab, "role", "secondary")
         status_bar = QWidget()
         status_lay = QHBoxLayout(status_bar)
@@ -670,13 +677,6 @@ class EditorDemoPage(QWidget):
         self._update_diag_status()
 
     # ------------------------------------------------------------------
-    @staticmethod
-    def _mono(px: int) -> QFont:
-        f = QFont()
-        f.setFamily(MONO_FAMILY)
-        f.setPixelSize(px)
-        return f
-
     # ------------------------------------------------------------------
     # 工具条回调
     # ------------------------------------------------------------------
@@ -871,7 +871,7 @@ class DiffDemoPage(QWidget):
         for edit, text in ((self.old_edit, DIFF_OLD),
                            (self.new_edit, DIFF_NEW)):
             edit.setPlainText(text)
-            edit.setFont(self._mono(12))
+            _apply_mono(edit)
             edit.setMinimumHeight(170)
 
         self.btn_update = Button("更新对比", variant="primary", size="sm")
@@ -888,7 +888,7 @@ class DiffDemoPage(QWidget):
 
         self.stats_label = QLabel()
         set_property(self.stats_label, "role", "secondary")
-        self.stats_label.setFont(self._mono(12))
+        _apply_mono(self.stats_label)
 
         self.diff = DiffEditor()
         self.diff.setMinimumHeight(420)
@@ -910,13 +910,6 @@ class DiffDemoPage(QWidget):
         self.update_diff()
 
     # ------------------------------------------------------------------
-    @staticmethod
-    def _mono(px: int) -> QFont:
-        f = QFont()
-        f.setFamily(MONO_FAMILY)
-        f.setPixelSize(px)
-        return f
-
     @staticmethod
     def _labeled(title: str, widget: QWidget) -> QWidget:
         host = QWidget()

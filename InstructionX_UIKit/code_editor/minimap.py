@@ -181,12 +181,15 @@ class MiniMap(QWidget):
             ta.setTextCursor(cur)
             ta.centerCursor()
             return
-        off = self._offset()
-        target = y + off - ta.viewport().height() / 2 * (
-            _LINE_H / max(1, ta.fontMetrics().height())
-        )
-        fraction = max(0.0, min(1.0, target / max(1.0, total - self.height())))
-        bar.setValue(int(bar.maximum() * fraction))
+        # y 是小地图控件坐标（0..height），先映射到小地图内容坐标
+        # （0..total），再以视口高度一半为中心换算成滚动比例。旧实现直接
+        # 用 y 参与 total 比例，点击底部只能跳到文档约 1/6 处。
+        content_y = (y / max(1.0, self.height() - 1.0)) * total
+        visible_h = max(_LINE_H, self._viewport_rect().height())
+        target = content_y - visible_h / 2.0
+        fraction = target / max(1.0, total - visible_h)
+        fraction = max(0.0, min(1.0, fraction))
+        bar.setValue(int(round(bar.maximum() * fraction)))
 
     def mousePressEvent(self, event):  # noqa: N802 - Qt 命名
         if event.button() == Qt.LeftButton:

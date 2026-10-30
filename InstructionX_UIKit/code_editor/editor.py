@@ -4,8 +4,9 @@
 架构：``CodeEditor(QWidget)`` 组合
 
 - ``Gutter``：行号槽（行号 / 断点 / 折叠箭头 / 诊断着色条）；
-- ``_TextArea(QPlainTextEdit)``：文本区，自绘当前行以外的叠加层
-  （缩进参考线 / 括号着色 / 行尾空白），等宽字体，tab_size 按字体度量换算；
+- ``_TextArea(QPlainTextEdit)``：文本区，自绘缩进参考线与行尾空白叠加层；
+  括号层级着色走 ``RegionManager`` 的 ExtraSelections 前景色层（不重绘字形，
+  避免抗锯齿重影）；等宽字体，tab_size 按字体度量换算；
 - ``MiniMap``：小地图；
 - ``FindReplaceBar`` / ``CompletionPopup`` / ``HoverBubble``：浮层。
 
@@ -17,7 +18,7 @@ Alt+Click 多光标无法直接渲染多选区，故以 VS Code 核心多选手�
 
 import re
 
-from PySide6.QtCore import QPoint, QTimer, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QTimer, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -25,8 +26,8 @@ from PySide6.QtGui import (
     QPainter,
     QPen,
     QShortcut,
+    QTextCharFormat,
     QTextCursor,
-    QTextOption,
 )
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -72,7 +73,11 @@ def _mono_font(families, px: int) -> QFont:
 
 
 class _TextArea(QPlainTextEdit):
-    """文本区：负责叠加绘制（缩进线 / 括号着色）与按键路由。"""
+    """文本区：负责叠加绘制（缩进线 / 行尾空白）与按键路由。
+
+    括号层级着色不在这里重绘字形，而是由 CodeEditor 写入 ExtraSelections
+    前景色层——重绘括号会与原字形叠加产生重影。
+    """
 
     def __init__(self, editor: "CodeEditor", parent=None):
         super().__init__(parent or editor)
@@ -98,8 +103,8 @@ class _TextArea(QPlainTextEdit):
         try:
             if ed._indent_guides:
                 self._paint_indent_guides(p)
-            if ed._bracket_colorization:
-                self._paint_brackets(p)
+            if ed._whitespace_visible:
+                self._paint_trailing_whitespace(p)
             if ed._paint_hook is not None:
                 ed._paint_hook(p, self)
         finally:
@@ -143,30 +148,33 @@ class _TextArea(QPlainTextEdit):
                 x = x0 + lvl * tab_w
                 p.drawLine(int(x), int(top), int(x), int(top + height))
 
-    def _paint_brackets(self, p: QPainter) -> None:
-        colors = [
-            QColor(T("color.primary")),
-            QColor(T("color.success")),
-            QColor(T("color.warning")),
-        ]
-        fm = self.fontMetrics()
-        x0 = self.contentOffset().x() + self.document().documentMargin()
-        p.setFont(self.font())
-        depth = 0
+    def _paint_trailing_whitespace(self, p: QPainter) -> None:
+        """只绘制行尾的连续空格 / 制表符（而非整篇空白）。"""
+        color = QColor(T("color.text.tertiary"))
+        x0 = self.contentOffset().x()
         for block, top, height in self._visible_blocks():
             text = block.text()
-            baseline = top + fm.ascent() + fm.leading()
-            for col, ch in enumerate(text):
-                if ch in _BRACKETS_OPEN:
-                    p.setPen(QPen(colors[depth % len(colors)]))
-                    x = x0 + fm.horizontalAdvance(text[:col])
-                    p.drawText(QPoint(int(x), int(baseline)), ch)
-                    depth += 1
-                elif ch in _BRACKETS_CLOSE:
-                    depth = max(0, depth - 1)
-                    p.setPen(QPen(colors[depth % len(colors)]))
-                    x = x0 + fm.horizontalAdvance(text[:col])
-                    p.drawText(QPoint(int(x), int(baseline)), ch)
+            stripped = text.rstrip(" \t")
+            if len(stripped) == len(text):
+                continue
+            layout = block.layout()
+            p.setPen(QPen(color, 1))
+            for col in range(len(stripped), len(text)):
+                line = layout.lineForTextPosition(col)
+                if not line.isValid():
+                    continue
+                x = x0 + line.cursorToX(col)[0]
+                baseline = top + line.y() + line.ascent()
+                if text[col] == "\t":
+                    # 制表符用一个小右箭头表示
+                    p.drawLine(QPointF(x + 1, baseline - 2),
+                               QPointF(x + 7, baseline - 2))
+                    p.drawLine(QPointF(x + 4, baseline - 5),
+                               QPointF(x + 7, baseline - 2))
+                    p.drawLine(QPointF(x + 4, baseline + 1),
+                               QPointF(x + 7, baseline - 2))
+                else:
+                    p.drawPoint(QPointF(x + 2, baseline - 2))
 
     # ------------------------------------------------------------------
     # 按键路由
@@ -183,7 +191,7 @@ class _TextArea(QPlainTextEdit):
             if ed._multi:
                 ed._clear_multi()
                 return
-            if ed._find_bar.isVisible():
+            if not ed._find_bar.isHidden():
                 ed.close_find_bar()
                 return
             super().keyPressEvent(event)
@@ -223,6 +231,16 @@ class _TextArea(QPlainTextEdit):
             and not event.modifiers() & (Qt.ControlModifier | Qt.AltModifier)
         ):
             ed._trigger_completion()
+        elif (ed._completion is not None and ed._completion.isVisible()
+              and not ed._completion_auto_trigger
+              and (event.text().isprintable() or key == Qt.Key_Backspace)):
+            # 默认手动补全：继续输入时旧候选已过期，直接收起。
+            ed._completion.hide()
+
+    def focusOutEvent(self, event):  # noqa: N802 - Qt 命名
+        if self._editor._completion is not None:
+            self._editor._completion.hide()
+        super().focusOutEvent(event)
 
     # ------------------------------------------------------------------
     # 悬停
@@ -243,6 +261,11 @@ class _TextArea(QPlainTextEdit):
         if self._editor._hover_bubble is not None:
             self._editor._hover_bubble.hide()
         super().leaveEvent(event)
+
+    def resizeEvent(self, event):  # noqa: N802 - Qt 命名
+        super().resizeEvent(event)
+        # 视口尺寸变化会改变可见 block 集合，括号前景色层只覆盖可见区。
+        self._editor._update_bracket_colors()
 
 
 # ---------------------------------------------------------------------------
@@ -273,12 +296,16 @@ class CodeEditor(QWidget):
         self._line_number_mode = "on"
         self._indent_guides = True
         self._bracket_colorization = True
+        self._whitespace_visible = False
         self._breakpoints = set()
         self._fold_points = {}     # 起始行(1-based) -> 结束行(1-based, 含)
         self._folded = set()
         self._multi = None         # [(start, end)] 多选区
         self._search_matches = []
         self._search_index = -1
+        #: 括号层级着色的每块起始深度缓存（None 表示需重建）
+        self._bracket_depth_cache = None
+        self._last_selection = None
         self._completion_provider = None
         self._hover_provider = None
         self._completion_prefix = ""
@@ -296,6 +323,9 @@ class CodeEditor(QWidget):
         self._gutter = Gutter(self)
         self._minimap = MiniMap(self)
         self._regions = RegionManager(self._text)
+        # 可见区域变化时更新括号前景色层（只处理可见 block，滚动开销很小）
+        self._text.verticalScrollBar().valueChanged.connect(
+            self._update_bracket_colors)
         self._find_bar = FindReplaceBar(self, parent=self)
         self._find_bar.hide()
         # 补全弹窗与悬停气泡**延迟创建**（见 _ensure_completion/
@@ -341,6 +371,18 @@ class CodeEditor(QWidget):
         self._fold_timer.setSingleShot(True)
         self._fold_timer.setInterval(200)
         self._fold_timer.timeout.connect(self._recompute_folds)
+
+        # 编辑时搜索命中去抖刷新（查找栏可见时）
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(150)
+        self._search_timer.timeout.connect(self.find_update)
+
+        # 括号层级着色（ExtraSelections 前景色，避免重绘字形产生重影）
+        self._bracket_timer = QTimer(self)
+        self._bracket_timer.setSingleShot(True)
+        self._bracket_timer.setInterval(120)
+        self._bracket_timer.timeout.connect(self._update_bracket_colors)
 
         # 快捷键（统一由 _shortcuts 映射驱动，见 set_shortcut）
         self._install_shortcuts()
@@ -438,6 +480,7 @@ class CodeEditor(QWidget):
         self._update_tab_stop()
         self._gutter.refresh()
         self._minimap.update()
+        self._update_bracket_colors()
 
     def _refresh_text_style(self) -> None:
         """文本区实例级 QSS：主题令牌底色 / 前景 / 选区色（实时取 T()）。
@@ -449,8 +492,8 @@ class CodeEditor(QWidget):
             f"background: {T('color.bg.base')};"
             f"color: {T('color.text.primary')};"
             "border: none;"
-            f"selection-background-color: {T('color.primary.subtle')};"
-            f"selection-color: {T('color.text.primary')};"
+            f"selection-background-color: {T('color.primary')};"
+            f"selection-color: {T('color.on.primary')};"
             "}"
         )
 
@@ -463,10 +506,39 @@ class CodeEditor(QWidget):
     # 内容
     # ------------------------------------------------------------------
     def set_text(self, text: str) -> None:
-        """设置全部文本。"""
+        """设置全部文本（按「新文档」语义重置行级状态）。"""
+        # 清理全部与旧文档偏移/行号绑定的状态：断点、诊断、搜索高亮、
+        # 多选、折叠。否则错误行号会残留到新文档，甚至出现「folded_lines
+        # 声称已折叠、但新文本块可见」的自相矛盾状态。
+        self._fold_timer.stop()
+        self._search_timer.stop()
+        self._bracket_timer.stop()
+        self._breakpoints.clear()
+        self._multi = None
+        self._search_matches = []
+        self._search_index = -1
+        self._folded.clear()
+        self._fold_points = {}
+        self._bracket_depth_cache = None
+        self._last_selection = None
+        self._regions.clear_all()
         self._text.setPlainText(text)
+        # setPlainText 会同步触发 contentsChanged，上面已停掉去抖定时器，
+        # 这里显式重算一次，避免新文档等待 200ms 才建立折叠点。
+        self._fold_timer.stop()
+        self._search_timer.stop()
+        self._bracket_timer.stop()
         self._recompute_folds()
+        self._gutter.refresh()
         self._minimap.schedule_refresh()
+        self._regions.set_current_line(self._text.textCursor().position())
+        self._update_bracket_match()
+        self._update_bracket_colors()
+        self._update_selection_highlight()
+        if not self._find_bar.isHidden():
+            self.find_update()
+        else:
+            self._regions.set_word_occurrences([])
 
     def text(self) -> str:
         """全部文本。"""
@@ -496,8 +568,8 @@ class CodeEditor(QWidget):
         self._apply_font()
 
     def set_font_size(self, px: int) -> None:
-        """设置字号（px）。"""
-        self._font_size = max(6, int(px))
+        """设置字号（px，范围 8-32，与 CE_SPEC / USAGE 一致）。"""
+        self._font_size = max(8, min(32, int(px)))
         self._apply_font()
 
     # ------------------------------------------------------------------
@@ -506,13 +578,17 @@ class CodeEditor(QWidget):
     def set_word_wrap(self, on: bool) -> None:
         self._text.setLineWrapMode(
             QPlainTextEdit.WidgetWidth if on else QPlainTextEdit.NoWrap)
+        self._update_bracket_colors()
 
     def set_minimap_visible(self, on: bool) -> None:
         self._minimap.setVisible(bool(on))
         self._layout_overlays()
+        self._update_bracket_colors()
 
     def minimap_visible(self) -> bool:
-        return self._minimap.isVisible()
+        # 不能用 isVisible()：父级隐藏时它恒为 False，逻辑上的「已启用」
+        # 会被误报为关闭。isHidden() 只反映控件自身的显隐设置。
+        return not self._minimap.isHidden()
 
     def set_line_numbers(self, mode: str) -> None:
         """行号模式：``"on"`` / ``"off"`` / ``"relative"``。"""
@@ -520,6 +596,7 @@ class CodeEditor(QWidget):
             raise ValueError(f"未知行号模式: {mode!r}")
         self._line_number_mode = mode
         self._gutter.refresh()
+        self._update_bracket_colors()
 
     def line_number_mode(self) -> str:
         return self._line_number_mode
@@ -542,18 +619,12 @@ class CodeEditor(QWidget):
 
     def set_bracket_colorization(self, on: bool) -> None:
         self._bracket_colorization = bool(on)
+        self._update_bracket_colors()
         self._text.viewport().update()
 
     def set_whitespace_visible(self, on: bool) -> None:
-        """行尾空白 / 制表符可见（stretch 项）。"""
-        opt = self._text.document().defaultTextOption()
-        flags = opt.flags()
-        if on:
-            flags |= QTextOption.ShowTabsAndSpaces
-        else:
-            flags &= ~QTextOption.ShowTabsAndSpaces
-        opt.setFlags(flags)
-        self._text.document().setDefaultTextOption(opt)
+        """行尾空白可见（只标记行末连续空格 / 制表符，不是整篇空白）。"""
+        self._whitespace_visible = bool(on)
         self._text.viewport().update()
 
     # ------------------------------------------------------------------
@@ -576,23 +647,44 @@ class CodeEditor(QWidget):
         self._text.centerCursor()
         self._text.setFocus()
 
+    def _update_selection_highlight(self) -> None:
+        """把原生选区复制到最高优先级 ExtraSelection 层。
+
+        diff 行底色、搜索高亮等都是 ExtraSelection，Qt 会把它们叠在
+        原生选区之上；只改 QSS 的 selection-background-color 在 diff 页
+        仍会被整行底色遮住。这里用独立的 selection 层保证拖选始终可见。
+        """
+        cur = self._text.textCursor()
+        rng = ((cur.selectionStart(), cur.selectionEnd())
+               if cur.hasSelection() else (0, 0))
+        if rng == self._last_selection:
+            return
+        self._last_selection = rng
+        self._regions.set_selection(*rng)
+
     def _on_cursor_moved(self) -> None:
         line, col = self.cursor_position()
         self._regions.set_current_line(self._text.textCursor().position())
+        self._update_selection_highlight()
         self._update_bracket_match()
         self.cursor_position_changed.emit(line, col)
 
     def _on_selection_changed(self) -> None:
         cur = self._text.textCursor()
         text = cur.selectedText().replace(" ", "\n")
+        self._update_selection_highlight()
         self.selection_changed.emit(text)
         self._update_word_occurrences()
 
     def _on_contents_changed(self) -> None:
         self.text_edited.emit()
+        self._bracket_depth_cache = None
         self._fold_timer.start()
+        self._bracket_timer.start()
         self._gutter.refresh()
         self._minimap.schedule_refresh()
+        if not self._find_bar.isHidden() and self._find_bar.pattern():
+            self._search_timer.start()
 
     # ------------------------------------------------------------------
     # 选中词同词高亮
@@ -626,6 +718,66 @@ class CodeEditor(QWidget):
             self._regions.set_bracket_pair(pair)
         else:
             self._regions.set_bracket_pair([])
+
+    def _bracket_start_depths(self) -> list:
+        """每个 block 起始处的括号嵌套深度（供视口着色使用缓存）。"""
+        doc = self._text.document()
+        n = doc.blockCount()
+        cache = self._bracket_depth_cache
+        if cache is not None and len(cache) == n:
+            return cache
+        depths = []
+        depth = 0
+        block = doc.firstBlock()
+        while block.isValid():
+            depths.append(depth)
+            for ch in block.text():
+                if ch in _BRACKETS_OPEN:
+                    depth += 1
+                elif ch in _BRACKETS_CLOSE:
+                    depth = max(0, depth - 1)
+            block = block.next()
+        self._bracket_depth_cache = depths
+        return depths
+
+    def _update_bracket_colors(self) -> None:
+        """用 ExtraSelections 前景色给可见括号按嵌套深度着色。
+
+        不用 ``paintEvent`` 重绘括号字形：重绘与原字形叠加会出现重影
+        （尤其是抗锯齿边缘），而且 x 坐标一偏就会在原文旁多出一个括号。
+        ExtraSelection 的 foreground 只改一次字形颜色，没有叠加问题。
+        """
+        if getattr(self, "_regions", None) is None:
+            return
+        if not self._bracket_colorization:
+            self._regions.clear_layer("bracket_color")
+            return
+        depths = self._bracket_start_depths()
+        colors = [
+            QColor(T("color.primary")),
+            QColor(T("color.success")),
+            QColor(T("color.warning")),
+        ]
+        fmts = []
+        for color in colors:
+            fmt = QTextCharFormat()
+            fmt.setForeground(color)
+            fmts.append(fmt)
+        items = []
+        for block, _top, _height in self._text._visible_blocks():
+            bn = block.blockNumber()
+            depth = depths[bn] if bn < len(depths) else 0
+            text = block.text()
+            for col, ch in enumerate(text):
+                if ch in _BRACKETS_CLOSE:
+                    depth = max(0, depth - 1)
+                if ch in _BRACKETS_OPEN or ch in _BRACKETS_CLOSE:
+                    items.append((block.position() + col,
+                                  block.position() + col + 1,
+                                  fmts[depth % len(fmts)]))
+                if ch in _BRACKETS_OPEN:
+                    depth += 1
+        self._regions.set_region_formats("bracket_color", items)
 
     @staticmethod
     def _find_bracket_pair(text: str, pos: int):
@@ -680,8 +832,10 @@ class CodeEditor(QWidget):
         return self._regions.diagnostic_lines()
 
     def toggle_breakpoint(self, line: int) -> None:
-        """切换某行断点（1-based）。"""
+        """切换某行断点（1-based；越界行号直接忽略）。"""
         line = int(line)
+        if not 1 <= line <= self._text.document().blockCount():
+            return
         if line in self._breakpoints:
             self._breakpoints.discard(line)
             self.breakpoint_toggled.emit(line, False)
@@ -793,6 +947,7 @@ class CodeEditor(QWidget):
     # ------------------------------------------------------------------
     def open_find_bar(self, replace: bool = False) -> None:
         """打开查找替换浮条（顶部右侧）。"""
+        self._search_timer.stop()
         cur = self._text.textCursor()
         seed = ""
         if cur.hasSelection():
@@ -804,6 +959,7 @@ class CodeEditor(QWidget):
 
     def close_find_bar(self) -> None:
         """关闭查找替换浮条并清除搜索高亮。"""
+        self._search_timer.stop()
         self._find_bar.hide()
         self._search_matches = []
         self._search_index = -1
@@ -828,6 +984,7 @@ class CodeEditor(QWidget):
 
     def find_update(self) -> None:
         """按浮条当前输入重新搜索并高亮全部命中。"""
+        self._search_timer.stop()
         rx = self._compile_search()
         matches = []
         if rx is not None:
@@ -1012,7 +1169,18 @@ class CodeEditor(QWidget):
         return indents
 
     def _recompute_folds(self) -> None:
-        """基于缩进重算可折叠区域。"""
+        """基于缩进重算可折叠区域，并恢复失效折叠隐藏的行。"""
+        doc = self._text.document()
+        # 折叠是本编辑器里唯一使用 block 可见性的功能。重算前先全部恢复
+        # 可见，再按仍有效的折叠点重新隐藏：否则编辑让某个折叠点失效后，
+        # 旧折叠隐藏的 block 会永远留在不可见状态（unfold_all 也救不回来，
+        # 因为 _folded 已经被过滤掉）。
+        block = doc.firstBlock()
+        while block.isValid():
+            if not block.isVisible():
+                block.setVisible(True)
+            block = block.next()
+
         indents = self._line_indents()
         points = {}
         n = len(indents)
@@ -1032,10 +1200,17 @@ class CodeEditor(QWidget):
                 k += 1
             if end > i:
                 points[i + 1] = end + 1
-        # 保留仍合法的折叠状态
+        # 保留仍合法的折叠状态，并按新范围重新隐藏
         self._fold_points = points
-        self._folded = {l for l in self._folded if l in points}
+        self._folded = {line for line in self._folded if line in points}
+        for line in sorted(self._folded):
+            end = points[line]
+            for ln in range(line + 1, end + 1):
+                b = doc.findBlockByNumber(ln - 1)
+                if b.isValid():
+                    b.setVisible(False)
         self._gutter.update()
+        self._update_bracket_colors()
 
     def fold_points(self) -> dict:
         """可折叠起始行 ``{起始行: 结束行}``（1-based，结束行含）。"""
@@ -1098,39 +1273,89 @@ class CodeEditor(QWidget):
         self._text.updateGeometry()
         self._gutter.update()
         self._minimap.schedule_refresh()
+        self._update_bracket_colors()
 
     # ------------------------------------------------------------------
     # 缩进选择区（Tab / Shift+Tab）
     # ------------------------------------------------------------------
     def _indent_selection(self, dedent: bool = False) -> None:
+        """Tab / Shift+Tab：缩进选择区；无选区时在光标处插入缩进。"""
         cur = self._text.textCursor()
         doc = self._text.document()
-        start = doc.findBlock(cur.selectionStart()).blockNumber()
-        end = doc.findBlock(cur.selectionEnd()).blockNumber()
         unit = " " * self._tab_size
-        cur.beginEditBlock()
-        for bn in range(start, end + 1):
-            block = doc.findBlockByNumber(bn)
+
+        def dedent_block(block) -> int:
+            """删除 block 行首最多一个缩进档，返回删除字符数。"""
             c = QTextCursor(block)
-            if dedent:
-                text = block.text()
-                remove = 0
-                for ch in text[: self._tab_size]:
-                    if ch == " ":
-                        remove += 1
-                    elif ch == "\t":
-                        remove += 1
-                        break
-                    else:
-                        break
-                if remove:
-                    c.movePosition(QTextCursor.NextCharacter,
-                                   QTextCursor.KeepAnchor, remove)
-                    c.removeSelectedText()
-            else:
-                c.insertText(unit)
-        cur.endEditBlock()
-        # 恢复选择（近似：选中范围整体偏移已在编辑块内由 Qt 跟踪）
+            text = block.text()
+            remove = 0
+            for ch in text[: self._tab_size]:
+                if ch == " ":
+                    remove += 1
+                elif ch == "\t":
+                    remove += 1
+                    break
+                else:
+                    break
+            if remove:
+                c.movePosition(QTextCursor.NextCharacter,
+                               QTextCursor.KeepAnchor, remove)
+                c.removeSelectedText()
+            return remove
+
+        if cur.hasSelection():
+            sel_start = cur.selectionStart()
+            sel_end = cur.selectionEnd()
+            start_bn = doc.findBlock(sel_start).blockNumber()
+            end_bn = doc.findBlock(sel_end).blockNumber()
+            # 选区结束在下一行行首时，不应把那一行也缩进（VS Code 语义），
+            # 同时避免选中以换行结尾时给末尾空行补缩进。
+            if (end_bn > start_bn
+                    and sel_end == doc.findBlock(sel_end).position()):
+                end_bn -= 1
+            start_bn = max(0, min(start_bn, doc.blockCount() - 1))
+            end_bn = max(start_bn, min(end_bn, doc.blockCount() - 1))
+
+            edit_cur = QTextCursor(doc)
+            edit_cur.beginEditBlock()
+            for bn in range(start_bn, end_bn + 1):
+                block = doc.findBlockByNumber(bn)
+                if not block.isValid():
+                    continue
+                if dedent:
+                    dedent_block(block)
+                else:
+                    QTextCursor(block).insertText(unit)
+            edit_cur.endEditBlock()
+
+            # 恢复为「完整行选择」：包含缩进后的行首空白，下一次 Tab 可
+            # 继续对同一组行缩进，不会再出现半行/多一行。
+            first = doc.findBlockByNumber(start_bn)
+            last = doc.findBlockByNumber(end_bn)
+            if first.isValid() and last.isValid():
+                c = self._text.textCursor()
+                c.setPosition(first.position())
+                c.setPosition(last.position() + len(last.text()),
+                              QTextCursor.KeepAnchor)
+                self._text.setTextCursor(c)
+            self._text.setFocus()
+            return
+
+        # 无选区：Tab 在光标处插入缩进；Shift+Tab 去掉当前行行首缩进。
+        block = doc.findBlock(cur.position())
+        if not block.isValid():
+            return
+        if dedent:
+            pos = cur.position()
+            removed = dedent_block(block)
+            if removed:
+                c = self._text.textCursor()
+                c.setPosition(max(block.position(), pos - removed))
+                self._text.setTextCursor(c)
+        else:
+            cur.insertText(unit)
+            self._text.setTextCursor(cur)
+        self._text.setFocus()
 
     # ------------------------------------------------------------------
     # 多光标（Ctrl+D，Alt+Click 的替代实现，见模块 docstring）
@@ -1180,7 +1405,7 @@ class CodeEditor(QWidget):
         if not self._multi:
             return
         doc = self._text.document()
-        recorded = []
+        recorded = []          # 已处理（更高偏移）选区在新文档中的 (start,end)
         cur = QTextCursor(doc)
         cur.beginEditBlock()
         for a, b in sorted(self._multi, reverse=True):
@@ -1191,21 +1416,24 @@ class CodeEditor(QWidget):
             c.setPosition(b, QTextCursor.KeepAnchor)
             if delete and a == b:
                 c.deleteChar()
-                delta, caret = -1, a
+                delta = -1
+                new_range = (a, a)
             elif text:
                 c.insertText(text)
-                delta, caret = len(text) - (b - a), a + len(text)
+                delta = len(text) - (b - a)
+                new_range = (a, a + len(text))
             else:
                 c.removeSelectedText()
-                delta, caret = -(b - a), a
-            # 已记录位置都在更高偏移处，随本次编辑平移
-            recorded = [p + delta for p in recorded]
-            recorded.append(caret)
+                delta = -(b - a)
+                new_range = (a, a)
+            # 已记录的选区都在更高偏移处，随本次（更低位置）编辑整体平移
+            recorded = [(s + delta, e + delta) for s, e in recorded]
+            recorded.append(new_range)
         cur.endEditBlock()
-        self._multi = [(p, p) for p in sorted(recorded)]
+        self._multi = sorted(recorded)
         self._regions.set_multi_selections(self._multi)
         last = self._text.textCursor()
-        last.setPosition(self._multi[-1][0])
+        last.setPosition(self._multi[-1][1])
         self._text.setTextCursor(last)
 
     # ------------------------------------------------------------------
@@ -1215,11 +1443,10 @@ class CodeEditor(QWidget):
         """主题切换：引擎自动重刷，这里刷新自绘层。"""
         try:
             self._refresh_text_style()
-            self._regions.set_current_line(self._text.textCursor().position())
+            self._regions.refresh_theme()
+            self._update_bracket_colors()
         except RuntimeError:
             return  # 控件已销毁
-        self._update_bracket_match()
-        self._update_word_occurrences()
         self._gutter.update()
         self._minimap.update()
         self._text.viewport().update()
@@ -1235,10 +1462,11 @@ class CodeEditor(QWidget):
 
     def _layout_overlays(self) -> None:
         """查找栏定位：编辑器顶部右侧（避开小地图）。"""
-        if not self._find_bar.isVisible():
+        if self._find_bar.isHidden():
             return
         self._find_bar.adjustSize()
-        right_pad = 12 + (self._minimap.width() if self._minimap.isVisible() else 0)
+        right_pad = 12 + (self._minimap.width()
+                          if not self._minimap.isHidden() else 0)
         x = max(self._gutter.width() + 8,
                 self.width() - self._find_bar.width() - right_pad)
         self._find_bar.move(x, 8)

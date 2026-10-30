@@ -15,15 +15,20 @@
   900px）时内联，否则并排；``resizeEvent`` 中平滑切换并保持当前
   hunk 定位。
 
-diff 模型：``difflib.SequenceMatcher`` opcodes → hunk（equal 之外的
+diff 模型：行级 opcodes（大区间用 patience 唯一行锚点 + LIS 分治，
+小区间回退 ``difflib.SequenceMatcher``）→ hunk（equal 之外的
 delete / insert / replace；相邻非 equal 操作之间间隔不超过
-``_MERGE_GAP`` 行的 equal 小块会被吸收进同一个 hunk）。
+``_MERGE_GAP`` 行的 equal 小块会被吸收进同一个 hunk）。replace
+块内部再按行相似度配对，避免把相邻语义行硬按 index 配成错位行。
 
-行底色通过 ``QTextBlockFormat`` 背景实现（与 CodeEditor 的
-ExtraSelections 区域层互不干扰），主题切换时实时取 ``T()`` 重刷。
+行底色通过 ``RegionManager`` 的 ``diff_bg`` 自定义 ExtraSelections 层
+实现（避免 QTextBlockFormat 在大文件上触发整篇重排），主题切换时实时
+取 ``T()`` 重刷。
 """
 
+import bisect
 import difflib
+from collections import Counter
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import QPoint, QRect, Qt, Signal
@@ -34,7 +39,6 @@ from PySide6.QtGui import (
     QPainter,
     QPen,
     QPixmap,
-    QTextBlockFormat,
     QTextCharFormat,
     QTextCursor,
     QTextFormat,
@@ -57,6 +61,14 @@ __all__ = ["DiffEditor", "DiffHunk"]
 
 #: 相邻变更之间不超过该行数的 equal 间隔被合并进同一 hunk
 _MERGE_GAP = 1
+
+#: 小于该规模的行区间直接交给 difflib（质量优先）；大区间走 patience
+#: 锚点分治，避免 SequenceMatcher 在大量相似行上的 O(n²) 退化。
+_DIFF_BRUTE_LIMIT = 250_000
+
+#: replace 行块内部的相似度对齐上限；超过则退回逐行配对，避免大块
+#: O(n*m) 的相似度计算。
+_REPLACE_ALIGN_LIMIT = 40_000
 
 #: 行底色透明度
 _BG_ALPHA = 70
@@ -116,14 +128,174 @@ class DiffHunk:
         return self.new_end - self.new_start
 
 
-def build_hunks(old_lines, new_lines, merge_gap=_MERGE_GAP):
+def _merge_opcodes(ops):
+    """合并相邻同类 opcode 并去掉零长度项，保证区间连续且无空段。"""
+    out = []
+    for tag, a0, a1, b0, b1 in ops:
+        if a0 == a1 and b0 == b1:
+            continue
+        if (out and out[-1][0] == tag
+                and out[-1][2] == a0 and out[-1][4] == b0):
+            prev = out[-1]
+            out[-1] = (tag, prev[1], a1, prev[3], b1)
+        else:
+            out.append((tag, a0, a1, b0, b1))
+    return out
+
+
+def _align_replace_rows(old_lines, new_lines):
+    """把 replace 行块按相似度重新配对，返回 ``[(old_i|None, new_i|None)]``。
+
+    直接按 index 配对会把 ``if not line.strip():`` 和
+    ``stripped = line.strip()`` 配成一行、把真正的
+    ``if not stripped:`` 当成 insert，侧栏看起来“错位”。这里用
+    Needleman-Wunsch 做一次小规模相似度对齐：相似行配对，余量拆成
+    delete / insert 行。大块直接退回 index 配对，避免性能退化。
+    """
+    n, m = len(old_lines), len(new_lines)
+    if n == 0:
+        return [(None, j) for j in range(m)]
+    if m == 0:
+        return [(i, None) for i in range(n)]
+    if n * m > _REPLACE_ALIGN_LIMIT:
+        out = []
+        for k in range(max(n, m)):
+            out.append((k if k < n else None, k if k < m else None))
+        return out
+
+    # 0 = 对角配对，1 = 删除旧行，2 = 插入新行
+    dp = [[0.0] * (m + 1) for _ in range(n + 1)]
+    move = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            ratio = difflib.SequenceMatcher(
+                None, old_lines[i - 1], new_lines[j - 1],
+                autojunk=False).ratio()
+            diag = dp[i - 1][j - 1] + ratio
+            up = dp[i - 1][j]
+            left = dp[i][j - 1]
+            best, choice = diag, 0
+            if up > best:
+                best, choice = up, 1
+            if left > best:
+                best, choice = left, 2
+            dp[i][j] = best
+            move[i][j] = choice
+
+    rows = []
+    i, j = n, m
+    while i or j:
+        if i and j and move[i][j] == 0:
+            rows.append((i - 1, j - 1))
+            i, j = i - 1, j - 1
+        elif i and (j == 0 or move[i][j] == 1):
+            rows.append((i - 1, None))
+            i -= 1
+        else:
+            rows.append((None, j - 1))
+            j -= 1
+    rows.reverse()
+    return rows
+
+
+def _lis_pairs(pairs):
+    """按第二个坐标求最长递增子序列，返回升序锚点对。"""
+    if not pairs:
+        return []
+    tails = []
+    tail_idx = []
+    prev = [-1] * len(pairs)
+    for idx, (_ai, bi) in enumerate(pairs):
+        k = bisect.bisect_left(tails, bi)
+        if k == len(tails):
+            tails.append(bi)
+            tail_idx.append(idx)
+        else:
+            tails[k] = bi
+            tail_idx[k] = idx
+        prev[idx] = tail_idx[k - 1] if k > 0 else -1
+    out = []
+    i = tail_idx[-1]
+    while i >= 0:
+        out.append(pairs[i])
+        i = prev[i]
+    out.reverse()
+    return out
+
+
+def _patience_opcodes(a, b):
+    """Patience 风格行 diff：唯一行锚点 + LIS 分治，避免 O(n²) 退化。
+
+    小区间仍用 ``difflib.SequenceMatcher`` 保证边界与 hunk 质量；大区间
+    若找不到唯一锚点，直接整体视为 replace（大文件场景的快速兜底）。
+    """
+    out = []
+
+    def rec(a0, a1, b0, b1):
+        # 先去掉公共前缀，并把前缀作为 equal 输出（opcode 必须完整覆盖）
+        start_a, start_b = a0, b0
+        while a0 < a1 and b0 < b1 and a[a0] == b[b0]:
+            a0 += 1
+            b0 += 1
+        if a0 > start_a:
+            out.append(("equal", start_a, a0, start_b, b0))
+        # 再探测公共后缀（先不消费，处理完核心区再补 equal）
+        suffix = 0
+        while (a1 - suffix > a0 and b1 - suffix > b0
+               and a[a1 - 1 - suffix] == b[b1 - 1 - suffix]):
+            suffix += 1
+        a1c, b1c = a1 - suffix, b1 - suffix
+
+        if a0 == a1c:
+            if b0 < b1c:
+                out.append(("insert", a0, a0, b0, b1c))
+        elif b0 == b1c:
+            out.append(("delete", a0, a1c, b0, b0))
+        elif (a1c - a0) * (b1c - b0) <= _DIFF_BRUTE_LIMIT:
+            sub = difflib.SequenceMatcher(
+                None, a[a0:a1c], b[b0:b1c], autojunk=False)
+            for tag, i1, i2, j1, j2 in sub.get_opcodes():
+                out.append((tag, a0 + i1, a0 + i2, b0 + j1, b0 + j2))
+        else:
+            ca = Counter(a[a0:a1c])
+            cb = Counter(b[b0:b1c])
+            pos_b = {line: j for j, line in enumerate(b[b0:b1c], start=b0)
+                     if cb[line] == 1}
+            anchors = [(i, pos_b[line])
+                       for i, line in enumerate(a[a0:a1c], start=a0)
+                       if ca[line] == 1 and line in pos_b]
+            anchors = _lis_pairs(anchors)
+            if not anchors:
+                out.append(("replace", a0, a1c, b0, b1c))
+            else:
+                pa, pb = a0, b0
+                for ai, bi in anchors:
+                    rec(pa, ai, pb, bi)
+                    out.append(("equal", ai, ai + 1, bi, bi + 1))
+                    pa, pb = ai + 1, bi + 1
+                rec(pa, a1c, pb, b1c)
+
+        if suffix:
+            out.append(("equal", a1c, a1, b1c, b1))
+
+    rec(0, len(a), 0, len(b))
+    return _merge_opcodes(out)
+
+
+def diff_opcodes(old_lines, new_lines):
+    """行级 diff 的 opcode 列表（patience 实现，兼容 difflib 语义）。"""
+    a = list(old_lines)
+    b = list(new_lines)
+    return _patience_opcodes(a, b)
+
+
+def build_hunks(old_lines, new_lines, merge_gap=_MERGE_GAP, opcodes=None):
     """由两段文本的行列表构建 hunk 列表（equal 不产生 hunk）。
 
     相邻变更间不超过 ``merge_gap`` 行的 equal 间隔会被吸收；
     吸收后组内同时含删除与插入行时归类为 ``replace``。
     """
-    sm = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
-    ops = sm.get_opcodes()
+    ops = diff_opcodes(old_lines, new_lines) if opcodes is None else opcodes
     hunks = []
     i = 0
     n = len(ops)
@@ -167,19 +339,21 @@ def build_hunks(old_lines, new_lines, merge_gap=_MERGE_GAP):
     return hunks
 
 
-def diff_stats(old_lines, new_lines):
-    """``(新增行数, 删除行数)``：replace 同时计旧行删除与新行新增。"""
+def stats_from_opcodes(ops):
+    """从 opcode 列表统计 ``(新增行数, 删除行数)``。"""
     adds = dels = 0
-    sm = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
-    for tag, a0, a1, b0, b1 in sm.get_opcodes():
-        if tag == "insert":
+    for tag, a0, a1, b0, b1 in ops:
+        if tag in ("insert", "replace"):
             adds += b1 - b0
-        elif tag == "delete":
+        if tag in ("delete", "replace"):
             dels += a1 - a0
-        elif tag == "replace":
-            dels += a1 - a0
-            adds += b1 - b0
     return adds, dels
+
+
+def diff_stats(old_lines, new_lines, opcodes=None):
+    """``(新增行数, 删除行数)``：replace 同时计旧行删除与新行新增。"""
+    ops = diff_opcodes(old_lines, new_lines) if opcodes is None else opcodes
+    return stats_from_opcodes(ops)
 
 
 def _char_segments(old_line: str, new_line: str):
@@ -423,7 +597,6 @@ class DiffEditor(QWidget):
         self._adds = 0
         self._dels = 0
         self._syncing_scroll = False
-        self._bg_lines = {}          # editor -> 已着底色的块号（供清除）
         self._side_left_kinds = []   # 并排左栏每视图行类型
         self._side_right_kinds = []
         self._inline_kinds = []
@@ -581,8 +754,10 @@ class DiffEditor(QWidget):
 
     def _rebuild(self) -> None:
         """按当前 ``_old_lines`` / ``_new_lines`` 重建 diff 两视图。"""
-        self._hunks = build_hunks(self._old_lines, self._new_lines)
-        self._adds, self._dels = diff_stats(self._old_lines, self._new_lines)
+        ops = diff_opcodes(self._old_lines, self._new_lines)
+        self._hunks = build_hunks(self._old_lines, self._new_lines,
+                                  opcodes=ops)
+        self._adds, self._dels = stats_from_opcodes(ops)
 
         self._title_left.setText(self._old_title)
         self._title_right.setText(self._new_title)
@@ -933,32 +1108,32 @@ class DiffEditor(QWidget):
                         right_kinds.append("insert")
                         left_labels.append(None)
                         right_labels.append(b0 + k + 1)
-                else:  # replace：逐行配对，余量补占位
-                    old_n, new_n = a1 - a0, b1 - b0
-                    for k in range(max(old_n, new_n)):
+                else:  # replace：按相似度配对，余量补 delete / insert 占位
+                    for old_i, new_i in _align_replace_rows(
+                            old[a0:a1], new[b0:b1]):
                         bn = len(left_lines)
-                        if k < old_n:
-                            left_lines.append(old[a0 + k])
+                        if old_i is not None:
+                            left_lines.append(old[a0 + old_i])
                             left_kinds.append(
-                                "replace" if k < new_n else "delete")
-                            left_labels.append(a0 + k + 1)
+                                "replace" if new_i is not None else "delete")
+                            left_labels.append(a0 + old_i + 1)
                         else:
                             left_lines.append("")
                             left_kinds.append("placeholder")
                             left_labels.append(None)
-                        if k < new_n:
-                            right_lines.append(new[b0 + k])
+                        if new_i is not None:
+                            right_lines.append(new[b0 + new_i])
                             right_kinds.append(
-                                "replace" if k < old_n else "insert")
-                            right_labels.append(b0 + k + 1)
+                                "replace" if old_i is not None else "insert")
+                            right_labels.append(b0 + new_i + 1)
                         else:
                             right_lines.append("")
                             right_kinds.append("placeholder")
                             right_labels.append(None)
-                        # 字符级 diff：配对行做 difflib 字符比较
-                        if k < old_n and k < new_n:
+                        # 字符级 diff：只有真正配对的行才比较字符
+                        if old_i is not None and new_i is not None:
                             segs_old, segs_new = _char_segments(
-                                old[a0 + k], new[b0 + k])
+                                old[a0 + old_i], new[b0 + new_i])
                             if segs_old:
                                 char_left[bn] = segs_old
                             if segs_new:
@@ -1024,29 +1199,42 @@ class DiffEditor(QWidget):
             for tag, a0, a1, b0, b1 in hunk.ops:
                 if tag == "equal":
                     emit_equal(a0, a1, b0)
-                elif tag in ("delete", "replace"):
-                    del_bn = len(lines)
+                elif tag == "delete":
                     for k in range(a0, a1):
                         lines.append(old[k])
                         kinds.append("delete")
                         labels.append(k + 1)  # 旧文件行号
                         dual.append((f"{k + 1}−", None, "−"))
-                    if tag == "replace":
-                        ins_bn = len(lines)
-                        for k in range(b0, b1):
-                            lines.append(new[k])
+                elif tag == "replace":
+                    # 与并排视图共用相似度配对：插入行出现在正确的
+                    # 旧行之前，避免“if not line.strip”与“stripped=...”
+                    # 被强行配成同一行。
+                    for old_i, new_i in _align_replace_rows(
+                            old[a0:a1], new[b0:b1]):
+                        if old_i is not None:
+                            del_bn = len(lines)
+                            lines.append(old[a0 + old_i])
+                            kinds.append("delete")
+                            labels.append(a0 + old_i + 1)
+                            dual.append((f"{a0 + old_i + 1}−", None, "−"))
+                        else:
+                            del_bn = None
+                        if new_i is not None:
+                            ins_bn = len(lines)
+                            lines.append(new[b0 + new_i])
                             kinds.append("insert")
-                            labels.append(k + 1)  # 新文件行号
-                            dual.append((None, f"{k + 1}+", "+"))
-                        # 字符级 diff：配对行做 difflib 字符比较
-                        for k in range(min(a1 - a0, b1 - b0)):
+                            labels.append(b0 + new_i + 1)
+                            dual.append((None, f"{b0 + new_i + 1}+", "+"))
+                        else:
+                            ins_bn = None
+                        if old_i is not None and new_i is not None:
                             segs_old, segs_new = _char_segments(
-                                old[a0 + k], new[b0 + k])
+                                old[a0 + old_i], new[b0 + new_i])
                             for a, b in segs_old:
-                                char_inline.setdefault(del_bn + k, []) \
+                                char_inline.setdefault(del_bn, []) \
                                     .append((a, b, "delete"))
                             for a, b in segs_new:
-                                char_inline.setdefault(ins_bn + k, []) \
+                                char_inline.setdefault(ins_bn, []) \
                                     .append((a, b, "insert"))
                 else:  # insert
                     for k in range(b0, b1):
@@ -1072,7 +1260,7 @@ class DiffEditor(QWidget):
         self._prefix_overlay.update()
 
     # ------------------------------------------------------------------
-    # 行底色（QTextBlockFormat 背景，与 ExtraSelections 层互不干扰）
+    # 行底色（RegionManager 自定义 ExtraSelections 层）
     # ------------------------------------------------------------------
     def _kind_color(self, kind: str):
         token = {
@@ -1088,20 +1276,50 @@ class DiffEditor(QWidget):
 
     def _set_line_backgrounds(self, editor: CodeEditor, kinds,
                               replace_family: str = None) -> None:
-        """按行类型表着行底色。
+        """按行类型表着行底色（ExtraSelections 自定义层）。
 
         ``replace_family``：并排模式 replace 配对行的用色家族——VS Code
         中左栏（旧）用 danger 系、右栏（新）用 success 系；缺省
         ``None`` 保持 warning（内联视图不产生 replace 行，不受影响）。
+
+        为什么不用 QTextBlockFormat：大 diff 下一次 setBlockFormat 覆盖
+        上万行会触发整篇重排（实测 5k 对行约 1.8 s）；ExtraSelections
+        10k 条约 100 ms，且不会改动文档内容。
         """
         doc = editor.text_area().document()
-        for bn in self._bg_lines.get(editor, []):
-            block = doc.findBlockByNumber(bn)
-            if block.isValid():
-                fmt = QTextBlockFormat(block.blockFormat())
-                fmt.clearBackground()
-                QTextCursor(block).setBlockFormat(fmt)
-        colored = []
+        fmt_cache = {}
+
+        def fmt_for(color) -> QTextCharFormat:
+            key = color.rgba()
+            fmt = fmt_cache.get(key)
+            if fmt is None:
+                fmt = QTextCharFormat()
+                fmt.setBackground(QBrush(color))
+                fmt.setProperty(QTextFormat.FullWidthSelection, True)
+                fmt_cache[key] = fmt
+            return fmt
+
+        items = []
+
+        def flush(run_start: int, run_end: int, color) -> None:
+            first = doc.findBlockByNumber(run_start)
+            last = doc.findBlockByNumber(run_end)
+            if not first.isValid() or not last.isValid():
+                return
+            if run_start == run_end:
+                # 单行必须用空光标选区：跨行文本选区在 Qt 中只覆盖文字，
+                # 不会铺满整行。
+                items.append((first.position(), first.position(),
+                              fmt_for(color)))
+            else:
+                # 多行同色 run 用一个跨行选区；FullWidthSelection 会逐行
+                # 铺满，减少大 diff 的 ExtraSelection 数量。
+                items.append((first.position(),
+                              last.position() + len(last.text()),
+                              fmt_for(color)))
+
+        run_start = run_end = None
+        run_color = None
         for bn, kind in enumerate(kinds):
             if kind == "replace" and replace_family:
                 c = QColor(T(f"color.{replace_family}"))
@@ -1110,15 +1328,22 @@ class DiffEditor(QWidget):
             else:
                 color = self._kind_color(kind)
             if color is None:
+                if run_start is not None:
+                    flush(run_start, run_end, run_color)
+                    run_start = run_end = None
                 continue
-            block = doc.findBlockByNumber(bn)
-            if not block.isValid():
-                continue
-            fmt = QTextBlockFormat(block.blockFormat())
-            fmt.setBackground(QBrush(color))
-            QTextCursor(block).setBlockFormat(fmt)
-            colored.append(bn)
-        self._bg_lines[editor] = colored
+            if run_start is None:
+                run_start = run_end = bn
+                run_color = color
+            elif bn == run_end + 1 and color.rgba() == run_color.rgba():
+                run_end = bn
+            else:
+                flush(run_start, run_end, run_color)
+                run_start = run_end = bn
+                run_color = color
+        if run_start is not None:
+            flush(run_start, run_end, run_color)
+        editor.region_manager().set_region_formats("diff_bg", items)
 
     # ------------------------------------------------------------------
     # 滚动同步 / hunk 导航
@@ -1184,7 +1409,8 @@ class DiffEditor(QWidget):
     def resizeEvent(self, event):  # noqa: N802 - Qt 命名
         super().resizeEvent(event)
         if self._mode == "auto":
-            self._apply_effective_mode(scroll=True)
+            # 只在模式真正切换时滚动到当前 hunk；纯 resize 不打断用户滚动。
+            self._apply_effective_mode(scroll=False)
 
     # ------------------------------------------------------------------
     # 主题

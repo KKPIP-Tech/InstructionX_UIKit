@@ -61,6 +61,29 @@ def _panel_qss() -> str:
     )
 
 
+def _list_qss() -> str:
+    """补全列表 QSS（透明底 + 令牌色）。"""
+    return (
+        "QListWidget { border: none; background: transparent;"
+        f" color: {T('color.text.primary')}; outline: 0; }}"
+        f"QListWidget::item {{ padding: 3px 8px; }}"
+        f"QListWidget::item:selected {{"
+        f" background: {T('color.primary.subtle')}; }}"
+    )
+
+
+def _button_qss() -> str:
+    """浮层工具按钮的实例级 QSS（主题切换时重新生成）。"""
+    return (
+        "QToolButton { border: none; background: transparent;"
+        f" color: {T('color.text.secondary')}; font-family: monospace;"
+        f" border-radius: {T('radius.sm')}px; }}"
+        f"QToolButton:hover {{ background: {T('color.bg.muted')}; }}"
+        f"QToolButton:checked {{ background: {T('color.primary.subtle')};"
+        f" color: {T('color.primary')}; }}"
+    )
+
+
 def _make_button(text: str, checkable=False, tooltip="") -> QToolButton:
     btn = QToolButton()
     btn.setText(text)
@@ -70,14 +93,7 @@ def _make_button(text: str, checkable=False, tooltip="") -> QToolButton:
     btn.setFocusPolicy(Qt.NoFocus)
     if tooltip:
         btn.setToolTip(tooltip)
-    btn.setStyleSheet(
-        "QToolButton { border: none; background: transparent;"
-        f" color: {T('color.text.secondary')}; font-family: monospace;"
-        f" border-radius: {T('radius.sm')}px; }}"
-        f"QToolButton:hover {{ background: {T('color.bg.muted')}; }}"
-        f"QToolButton:checked {{ background: {T('color.primary.subtle')};"
-        f" color: {T('color.primary')}; }}"
-    )
+    btn.setStyleSheet(_button_qss())
     return btn
 
 
@@ -102,7 +118,6 @@ class FindReplaceBar(QFrame):
         self.setAutoFillBackground(False)
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(_panel_qss())
-        _bind_theme(lambda: self.setStyleSheet(_panel_qss()))
 
         # -- 查找行 --
         self.find_edit = QLineEdit()
@@ -164,6 +179,17 @@ class FindReplaceBar(QFrame):
         self.replace_btn.clicked.connect(self._editor.replace_current)
         self.replace_all_btn.clicked.connect(self._editor.replace_all)
         self.close_btn.clicked.connect(self.close_requested.emit)
+        _bind_theme(self._apply_theme)
+
+    def _apply_theme(self) -> None:
+        """主题切换时刷新面板、计数标签与全部工具按钮。"""
+        self.setStyleSheet(_panel_qss())
+        self.count_label.setStyleSheet(
+            f"color: {T('color.text.tertiary')}; border: none;")
+        for btn in (self.case_btn, self.word_btn, self.regex_btn,
+                    self.prev_btn, self.next_btn, self.close_btn,
+                    self.replace_btn, self.replace_all_btn):
+            btn.setStyleSheet(_button_qss())
 
     # -- 状态 --------------------------------------------------------------
     def open(self, replace: bool = False, seed: str = "") -> None:
@@ -237,7 +263,6 @@ class CompletionPopup(QFrame):
         self.setAutoFillBackground(False)
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(_panel_qss())
-        _bind_theme(lambda: self.setStyleSheet(_panel_qss()))
         # 不用 Qt.Popup：Popup 在 show 时抓取键盘 / 鼠标（焦点抢夺），
         # 输入触发的补全会每击键重抓一次 → 编辑器看似卡死。
         self.setWindowFlags(Qt.ToolTip | Qt.FramelessWindowHint)
@@ -246,19 +271,25 @@ class CompletionPopup(QFrame):
 
         self._list = QListWidget()
         self._list.setFocusPolicy(Qt.NoFocus)
-        self._list.setStyleSheet(
-            "QListWidget { border: none; background: transparent;"
-            f" color: {T('color.text.primary')}; outline: 0; }}"
-            f"QListWidget::item {{ padding: 3px 8px; }}"
-            f"QListWidget::item:selected {{"
-            f" background: {T('color.primary.subtle')}; }}"
-        )
+        self._list.setStyleSheet(_list_qss())
         lay = QVBoxLayout(self)
         lay.setContentsMargins(2, 2, 2, 2)
         lay.addWidget(self._list)
         self._list.itemActivated.connect(self._activate)
         self._list.itemClicked.connect(self._activate)
         self._items = []
+        _bind_theme(self._apply_theme)
+
+    def _apply_theme(self) -> None:
+        """主题切换时刷新面板；补全项图标颜色按新令牌重建。"""
+        self.setStyleSheet(_panel_qss())
+        self._list.setStyleSheet(_list_qss())
+        if self._items:
+            row = self._list.currentRow()
+            self.set_items(self._items)
+            if row >= 0:
+                self._list.setCurrentRow(
+                    min(row, self._list.count() - 1))
 
     # -- 数据 --------------------------------------------------------------
     def set_items(self, items) -> None:
@@ -356,7 +387,6 @@ class HoverBubble(QFrame):
         self.setAutoFillBackground(False)
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(_panel_qss())
-        _bind_theme(lambda: self.setStyleSheet(_panel_qss()))
         self.setWindowFlags(Qt.ToolTip | Qt.FramelessWindowHint)
         self.setFocusPolicy(Qt.NoFocus)
         self._label = QLabel()
@@ -368,6 +398,13 @@ class HoverBubble(QFrame):
         lay.setContentsMargins(10, 8, 10, 8)
         lay.addWidget(self._label)
         self.setMaximumWidth(420)
+        _bind_theme(self._apply_theme)
+
+    def _apply_theme(self) -> None:
+        """主题切换时刷新面板与富文本正文颜色。"""
+        self.setStyleSheet(_panel_qss())
+        self._label.setStyleSheet(
+            f"color: {T('color.text.primary')}; border: none;")
 
     def show_at(self, global_pos, html: str) -> None:
         """在全局坐标显示富文本气泡。"""

@@ -2,7 +2,7 @@
 """区域高亮管理（CE_SPEC §2 / §3）。
 
 以 ``QTextEdit.ExtraSelection`` 实现所有非语法层的高亮，按优先级合并：
-诊断 > 搜索当前命中 > 搜索命中 > 选中词 > 括号匹配 > 自定义层 > 当前行
+选区 > 诊断 > 搜索当前命中 > 搜索命中 > 选中词 > 括号匹配 > 自定义层 > 当前行
 （语法着色由 ``highlight.HighlightEngine`` 负责，不在此列）。
 
 Qt 的 extraSelections 按列表顺序叠加绘制，因此本模块把低优先级层放在
@@ -41,6 +41,10 @@ _BUILTIN_ORDER = [
     "search",
     "search_current",
     "diagnostic",
+    # 选区必须最后绘制：diff 行底色 / 搜索底色 / 诊断等都可能是
+    # ExtraSelection，若选区在它们之前会被整行底色盖住，表现为
+    # 「鼠标拖选没反应」。这里用高对比前景/背景保证选区始终可见。
+    "selection",
 ]
 
 
@@ -65,6 +69,14 @@ class RegionManager:
         self._custom = {}          # layer -> (selections, color)
         self._diagnostics = []     # 原始诊断项（供 gutter / minimap 查询）
         self._diag_by_line = {}    # line(1-based) -> 最重 severity
+        # 最近一次设置的范围，供主题切换时按当前令牌重建
+        self._current_pos = 0
+        self._bracket_ranges = []
+        self._word_ranges = []
+        self._multi_ranges = []
+        self._search_ranges = []
+        self._search_current = None
+        self._selection = (0, 0)
 
     # ------------------------------------------------------------------
     # 底层
@@ -97,6 +109,7 @@ class RegionManager:
     # ------------------------------------------------------------------
     def set_current_line(self, position: int) -> None:
         """高亮光标所在行（整行宽）。"""
+        self._current_pos = int(position)
         fmt = QTextCharFormat()
         fmt.setBackground(_with_alpha(QColor(T("color.primary")), 18))
         fmt.setProperty(QTextFormat.FullWidthSelection, True)
@@ -105,15 +118,35 @@ class RegionManager:
         self.rebuild()
 
     # ------------------------------------------------------------------
+    # 选区
+    # ------------------------------------------------------------------
+    def set_selection(self, start: int, end: int) -> None:
+        """高亮原生选区（最后一个内置层，优先级最高）。"""
+        self._selection = (int(start), int(end))
+        if end <= start:
+            self._builtin["selection"] = []
+            self.rebuild()
+            return
+        fmt = QTextCharFormat()
+        fmt.setBackground(QColor(T("color.primary")))
+        fmt.setForeground(QColor(T("color.on.primary")))
+        self._builtin["selection"] = [
+            self._make_selection(start, end, fmt)
+        ]
+        self.rebuild()
+
+    # ------------------------------------------------------------------
     # 括号匹配
     # ------------------------------------------------------------------
     def set_bracket_pair(self, ranges) -> None:
         """高亮匹配的括号对，``ranges`` 为 ``[(pos, pos+1), ...]``。"""
+        self._bracket_ranges = list(ranges or [])
         fmt = QTextCharFormat()
         fmt.setBackground(_with_alpha(QColor(T("color.primary")), 60))
         fmt.setForeground(QColor(T("color.text.primary")))
         self._builtin["bracket"] = [
-            self._make_selection(a, b, QTextCharFormat(fmt)) for a, b in ranges
+            self._make_selection(a, b, QTextCharFormat(fmt))
+            for a, b in self._bracket_ranges
         ]
         self.rebuild()
 
@@ -122,10 +155,12 @@ class RegionManager:
     # ------------------------------------------------------------------
     def set_word_occurrences(self, ranges) -> None:
         """高亮选中词的全部出现位置。"""
+        self._word_ranges = list(ranges or [])
         fmt = QTextCharFormat()
         fmt.setBackground(_with_alpha(QColor(T("color.primary")), 45))
         self._builtin["word"] = [
-            self._make_selection(a, b, QTextCharFormat(fmt)) for a, b in ranges
+            self._make_selection(a, b, QTextCharFormat(fmt))
+            for a, b in self._word_ranges
         ]
         self.rebuild()
 
@@ -134,10 +169,12 @@ class RegionManager:
     # ------------------------------------------------------------------
     def set_multi_selections(self, ranges) -> None:
         """Ctrl+D 多选区可视化（类选中底色；优先级介于 word 与 search 之间）。"""
+        self._multi_ranges = list(ranges or [])
         fmt = QTextCharFormat()
         fmt.setBackground(_with_alpha(QColor(T("color.primary")), 90))
         self._builtin["multi"] = [
-            self._make_selection(a, b, QTextCharFormat(fmt)) for a, b in ranges
+            self._make_selection(a, b, QTextCharFormat(fmt))
+            for a, b in self._multi_ranges
         ]
         self.rebuild()
 
@@ -146,10 +183,13 @@ class RegionManager:
     # ------------------------------------------------------------------
     def set_search_matches(self, ranges, current=None) -> None:
         """搜索命中高亮；``current`` 为当前命中 ``(start, end)`` 或 None。"""
+        self._search_ranges = list(ranges or [])
+        self._search_current = current
         fmt = QTextCharFormat()
         fmt.setBackground(_with_alpha(QColor(T("color.warning")), 70))
         self._builtin["search"] = [
-            self._make_selection(a, b, QTextCharFormat(fmt)) for a, b in ranges
+            self._make_selection(a, b, QTextCharFormat(fmt))
+            for a, b in self._search_ranges
         ]
         cur_sels = []
         if current is not None:
@@ -181,18 +221,23 @@ class RegionManager:
             severity = str(item.get("severity", "error"))
             if severity not in SEVERITY_COLORS:
                 severity = "info"
-            # 记录每行最重诊断（gutter 着色条用）
+            # 只有真实存在的行才进入 gutter / 诊断映射，避免公开 API 传入
+            # 超行号后留下永远画不出来的幽灵诊断。
+            block = doc.findBlockByNumber(max(0, line - 1))
+            if not block.isValid():
+                continue
             order = {"error": 3, "warning": 2, "info": 1}
             prev = self._diag_by_line.get(line)
             if prev is None or order[severity] > order[prev]:
                 self._diag_by_line[line] = severity
-            block = doc.findBlockByNumber(max(0, line - 1))
-            if not block.isValid():
-                continue
-            start = block.position() + max(0, col - 1)
+            max_col = max(0, block.length() - 1)
+            start = block.position() + min(max(0, col - 1), max_col)
             end = min(start + length, block.position() + block.length() - 1)
             if end <= start:
-                end = start + 1
+                end = min(start + 1,
+                          block.position() + block.length() - 1)
+                if end <= start:
+                    continue
             color = QColor(T(SEVERITY_COLORS[severity]))
             fmt = QTextCharFormat()
             fmt.setUnderlineStyle(QTextCharFormat.WaveUnderline)
@@ -218,6 +263,32 @@ class RegionManager:
     # ------------------------------------------------------------------
     # 自定义层（公共扩展点）
     # ------------------------------------------------------------------
+    def clear_all(self) -> None:
+        """清空全部内置层、自定义层与诊断状态（文档整体替换时调用）。"""
+        for name in self._builtin:
+            self._builtin[name] = []
+        self._custom.clear()
+        self._diagnostics = []
+        self._diag_by_line = {}
+        self._current_pos = 0
+        self._bracket_ranges = []
+        self._word_ranges = []
+        self._multi_ranges = []
+        self._search_ranges = []
+        self._search_current = None
+        self._selection = (0, 0)
+        self.rebuild()
+
+    def refresh_theme(self) -> None:
+        """按当前主题令牌重建全部内置层（语法层由高亮引擎自理）。"""
+        self.set_current_line(self._current_pos)
+        self.set_bracket_pair(self._bracket_ranges)
+        self.set_word_occurrences(self._word_ranges)
+        self.set_multi_selections(self._multi_ranges)
+        self.set_search_matches(self._search_ranges, self._search_current)
+        self.set_diagnostics(self._diagnostics)
+        self.set_selection(*self._selection)
+
     def set_region_highlight(self, layer: str, ranges, color: str) -> None:
         """设置任意自定义高亮层。
 
