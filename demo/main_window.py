@@ -468,7 +468,7 @@ class MainWindow(QMainWindow):
         self._prewarm_page("blueprint")
         # 同理预热图表页：图表绘制视口在 GL 可用时也是 QOpenGLWidget
         # （charts/viewport.py），首个图表控件若在窗口可见后才创建同样会
-        # 触发句柄重建。全页 27 个 ChartWidget 会一次性建好（惰性页缓存）。
+        # 触发句柄重建。全页 28 个 ChartWidget 会一次性建好（惰性页缓存）。
         self._prewarm_page("charts")
 
         # 默认选中第一页

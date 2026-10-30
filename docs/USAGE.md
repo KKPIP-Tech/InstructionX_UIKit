@@ -1,6 +1,6 @@
 # USAGE — InstructionX_UIKit 使用方法
 
-> 本文档覆盖安装、快速开始、主题系统、全部 58 个组件、13 个布局、52 个动画预设、图表引擎、蓝图（节点图）组件与代码编辑器的最小可运行示例。
+> 本文档覆盖安装、快速开始、主题系统、全部 59 个组件、13 个布局、52 个动画预设、图表引擎、蓝图（节点图）组件与代码编辑器的最小可运行示例。
 > 所有示例均与仓库真实 API 一致；离屏验证一律使用 `QT_QPA_PLATFORM=offscreen`。
 
 ## 目录
@@ -44,7 +44,7 @@ qrcode[pil]>=7.4
 python main.py
 ```
 
-Demo 入口逻辑（main.py）：创建 `QApplication` → `ThemeManager.instance().apply(app)` → 显示 1280x800 的 `MainWindow`，左侧导航含设计令牌 / 布局 / 组件 / 动画全部分页。
+Demo 入口逻辑（main.py）：创建 `QApplication` → `ThemeManager.instance().apply(app)` → 显示 1440x900 的 `MainWindow`，左侧导航含设计令牌 / 布局 / 组件 / 动画全部分页。
 
 ### 2.2 最小应用骨架
 
@@ -92,7 +92,7 @@ from InstructionX_UIKit.theme import T
 
 color = T("color.primary")       # "#3F5E8C"（亮）/ "#7C98C4"（暗）
 gap = T("space.4")               # 16
-radius = T("radius.md")          # 6
+radius = T("radius.md")          # 8
 shadow = T("shadow.md")          # {"blur": 16, "offset": (0, 4), "color": (16, 24, 40, 64)}
 ```
 

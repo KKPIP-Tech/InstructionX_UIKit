@@ -2,7 +2,7 @@
 
 > 本文档是 InstructionX_UIKit 的完整设计规范，与 `InstructionX_UIKit/tokens.py`、`InstructionX_UIKit/theme.py` 中的数值严格一致。
 > 所有令牌均可通过 `InstructionX_UIKit.theme.T(key)` 在运行时按当前主题取出（颜色为 `str`，数值为 `int`，阴影为 `dict`）。
-> 键名规则：色彩 `color.*`、字阶 `font.*`、间距 `space.*`、圆角 `radius.*`、阴影 `shadow.*`、断点 `breakpoint.*`、动效 `duration.*` / `easing.*`。
+> 键名规则：色彩 `color.*`、字阶 `font.*`、间距 `space.*`、版面度量 `layout.*`、圆角 `radius.*`、阴影 `shadow.*`、断点 `breakpoint.*`、动效 `duration.*` / `easing.*`。
 
 ## 目录
 
@@ -20,8 +20,8 @@
 
 ## 1. 设计原则
 
-1. **紧凑优先**：正文基准 13px，控件默认高度 32px，间距以 4pt 基线取小档位，信息密度面向桌面生产力应用，而非移动端营销页。
-2. **现代中性**：大面积中性灰白底 + 单一品牌蓝作为强调色；圆角中等（6px 为主），阴影轻而低，避免厚重拟物。
+1. **紧凑优先**：正文基准 13px，控件默认高度 28px，间距以 4pt 基线取小档位，信息密度面向桌面生产力应用，而非移动端营销页。
+2. **现代中性**：大面积中性灰白底 + 单一品牌蓝作为强调色；圆角中等（8px 为主），阴影轻而低，避免厚重拟物。
 3. **主题一致**：一切视觉数值来自令牌，禁止在代码中硬编码颜色 / 尺寸；亮、暗两套主题由同一份 QSS 模板参数化生成，切换主题后任意控件无需重写绘制逻辑。
 4. **原生可实现性**：能用「Qt 原生控件子类化 + 动态属性 + 全局 QSS」表达的，绝不自绘；必须自绘的（开关、评分、时间轴等）在 `paintEvent` 中实时调用 `T()` 取色，并连接 `theme_changed` 信号触发 `update()`，保证主题切换即时生效。
 5. **状态完备**：hover / pressed / disabled / focus / error / loading 六类状态每个交互控件都必须有可见表达，禁用态文字统一使用 `text.disabled`。
@@ -163,14 +163,14 @@
 | 输入框 sm / md / lg | 12 / 13 / 14 | QLineEdit / ComboBox / SpinBox 同规格 |
 | 表格 / 树 / 列表 | 13 | 表头 13 + semibold |
 | QToolTip | 12 | `font.sm` |
-| QGroupBox 标题 | 13 + bold | 全局 QSS 定义 |
+| QGroupBox 标题 | 15 + semibold | 全局 QSS 定义（`font.title.sm`） |
 | 菜单项 / 下拉项 | 13 | 与正文一致 |
 | Statistic 数值 | 24 | `font.display` |
 | 页头标题 / 副标题 | 20 / 13 | `font.title.lg` / `font.md` |
 
 ## 4. 间距
 
-### 4.1 4pt 基线与 12 档间距表
+### 4.1 4pt 基线与 13 档间距表
 
 所有间距均为 4 的倍数（仅 `space.05=2` 用于微调），单位 px：
 
@@ -184,6 +184,7 @@
 | `space.4` | 16 | 卡片内边距、md 按钮水平 padding、弹层内边距 |
 | `space.5` | 20 | lg 按钮水平 padding、卡片组间距 |
 | `space.6` | 24 | 区块间距、页面小节间距 |
+| `space.7` | 28 | 与 md 输入控件同高的纵向节奏 |
 | `space.8` | 32 | 大区块间距、页面级留白 |
 | `space.10` | 40 | 页面段落间距 |
 | `space.12` | 48 | 英雄区上下留白 |
@@ -258,7 +259,7 @@
 
 圆角整体较初版上调（md 6→8、lg 8→12、xl 12→16）：更大的圆角配合更宽的留白与更浅的边框，是当前主流设计语言中「柔和但不幼稚」的关键参数。
 
-说明：QSS 中 `shape="round"` / `shape="circle"` 选择器按档位输出 12 / 16 / 20px 半径（对应 sm/md/lg 的半高），视觉等同 pill。
+说明：QSS 中 `shape="round"` / `shape="circle"` 选择器按**内容盒**半高输出 10 / 13 / 16px 半径（sm/md/lg 内容盒 20/26/32 的一半），视觉等同 pill。Qt 的 `border-radius` 以内容盒为参照，超过内容盒半高会整块退回方角；不要按总高 22/28/34 取 11/14/17px。
 
 ## 6. 阴影
 
@@ -379,15 +380,15 @@
 
 | 档位 | 总高(px) | 字号 | 水平 padding | 适用场景 |
 |---|---|---|---|---|
-| sm | 24 | 12 | 8 | 紧凑表格工具栏、密集表单 |
-| md | 32 | 13 | 12 ~ 16 | 默认档，绝大多数场景 |
-| lg | 40 | 14 | 20 | 登录页、主操作区、营销页 |
+| sm | 22 | 12 | 8 | 紧凑表格工具栏、密集表单 |
+| md | 28 | 13 | 12 ~ 16 | 默认档，绝大多数场景 |
+| lg | 34 | 14 | 20 | 登录页、主操作区、营销页 |
 
 实现细节（theme.py 中的口径）：
 
-- QSS 盒模型为内容盒：`min-height/max-height = 总高 - 2*边框(1px)`，按钮与输入框内容盒为 22 / 30 / 38。
-- `QAbstractSpinBox` 系列（SpinBox / DateEdit / TimeEdit）在 Fusion 样式下额外增高 3px，QSS 对其使用 19 / 27 / 35 的内容盒口径对齐总高。
-- Switch 仅 sm / md 两档（32x16 / 44x22 滑轨）；Avatar 提供 sm/md/lg（24/32/40）及像素自定义；Spinner 按 sm/md/lg 对应 16/24/32。
+- QSS 盒模型为内容盒：`min-height/max-height = 总高 - 2*边框(1px)`，按钮与输入框内容盒为 20 / 26 / 32。
+- `QAbstractSpinBox` 系列（SpinBox / DateEdit / TimeEdit）与一般输入同口径，内容盒同为 20 / 26 / 32，不再单独做 +3px 补偿。
+- Switch 提供 sm / md / lg 三档（40×22 / 52×28 / 64×34 滑轨）；Avatar 提供 sm/md/lg（22/28/34）及像素自定义；Spinner 按 sm/md/lg 对应 16/24/32。
 - 尺寸一律通过 `set_property(widget, "size", "sm"/"md"/"lg")` 或组件构造参数 `size=` 设置，内部自动映射 `uiksize` 动态属性（原因见 §11.3）。
 
 ## 11. QSS 约定
@@ -400,8 +401,8 @@
 QPushButton[variant="primary"] { ... }
 QPushButton[uiksize="sm"] { ... }
 QPushButton[shape="circle"] { ... }
-QLineEdit[error="true"] { border-color: #CC3D3D; }
-QProgressBar[status="success"]::chunk { ... }
+QLineEdit[error="true"] { border-color: #B25050; }
+QLabel[role="secondary"] { color: #59636F; }
 ```
 
 使用规则：

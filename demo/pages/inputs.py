@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""组件 · 输入演示页：20 个输入与按钮组件，每组件一页，覆盖主要变体。
+"""组件 · 输入演示页：21 个输入与按钮组件，每组件一页，覆盖主要变体。
 
 页面 = 标题 + 说明 + 分区演示（变体 / 尺寸 / 状态），紧凑排布。
 所有组件基于全局 QSS 与令牌，亮 / 暗主题切换自动换肤。
@@ -57,16 +57,16 @@ def create_button_page() -> QWidget:
         _disabled(Button("禁用", variant="primary"))))
     sizes.layout().addWidget(Button("块级按钮 block", variant="primary", block=True))
     shapes = Section("形状 shape")
-    # 圆形按钮：QSS 约定「配合组件固定宽=高」，此处按 sm/md/lg 边长
-    # 24/32/40 固定为正方形，否则 "+" 单字按钮宽度由字宽决定，会渲染成
+    # 圆形按钮：QSS 约定「配合组件固定宽=高」，此处按 sm/md/lg 总高
+    # 22/28/34 固定为正方形，否则 "+" 单字按钮宽度由字宽决定，会渲染成
     # 细长条。短文本（≤2 字符）圆形按钮由组件按墨迹盒自绘，"+" 在三档
     # 尺寸下均水平 + 垂直精确居中。
     circle_sm = Button("+", shape="circle", variant="primary", size="sm")
-    circle_sm.setFixedSize(24, 24)
+    circle_sm.setFixedSize(22, 22)
     circle_md = Button("+", shape="circle", variant="primary")
-    circle_md.setFixedSize(32, 32)
+    circle_md.setFixedSize(28, 28)
     circle_lg = Button("+", shape="circle", variant="primary", size="lg")
-    circle_lg.setFixedSize(40, 40)
+    circle_lg.setFixedSize(34, 34)
     shapes.layout().addWidget(row(
         Button("圆角", shape="round"), circle_sm, circle_md, circle_lg,
         Button("胶囊", shape="round", variant="primary")))

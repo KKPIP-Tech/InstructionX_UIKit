@@ -54,7 +54,7 @@ MODES = ("light", "dark")
 # Qt QSS 盒模型为内容盒：控件总高 = min/max-height + 2 * 边框宽(1px)。
 # 输入控件统一高度：sm=22 / md=28 / lg=34（较上一版 24/32/40 整体收紧，
 # 13px 正文配 28px 行高是桌面端高密度形态的下限，再低会牺牲可点性）。
-# QAbstractSpinBox 系列由样式额外增加 3px（实测 Fusion 风格）。
+# 数字 / 日期调节框与一般输入同口径（见 _SPIN_BOX，不再单独 +3px 补偿）。
 # ---------------------------------------------------------------------------
 
 _INPUT_HEIGHTS = {"sm": 22, "md": 28, "lg": 34}
@@ -501,7 +501,7 @@ QWidget[role="code"] {{
     border-radius: {t['radius.md']}px;
 }}
 QWidget[role="code"] QLabel {{ background-color: transparent; }}
-/* 顶部条：elevated 面色 + 底部分隔 */
+/* 顶部条：面底色 + 底部分隔 */
 QWidget[role="topbar"] {{
     background-color: {c('bg.base')};
     border-bottom: 1px solid {c('border')};
@@ -567,7 +567,7 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: none; }}
 
 /* 分隔条：静止时完全不绘制，靠两侧面板自身的边框表达分隔；
-   悬停 / 按下才显形。同时把抓取区加宽到 8px��比 2px 的细线好拖得多。
+   悬停 / 按下才显形。同时把抓取区加宽到 8px，比 2px 的细线好拖得多。
    早期版本是一条贯穿全高的 2px 实线，既切断卡片又与卡片边框交叉。 */
 QSplitter::handle {{ border: none; }}
 QSplitter::handle:horizontal {{
@@ -779,7 +779,7 @@ QPushButton[variant="danger"]:disabled {{
     color: {c('text.disabled')};
 }}
 
-/* 尺寸：sm=24 / md=32 / lg=40（size 与 uiksize 别名选择器并存） */
+/* 尺寸：sm=22 / md=28 / lg=34（size 与 uiksize 别名选择器并存） */
 QPushButton[size="sm"], QPushButton[uiksize="sm"] {{
     min-height: {sm}px; max-height: {sm}px;
     padding: 0 {t['space.2']}px; font-size: {t['font.sm']}px;
@@ -794,9 +794,10 @@ QPushButton[size="lg"], QPushButton[uiksize="lg"] {{
 }}
 
 /* 形状：round 为胶囊圆角，circle 为正圆（配合组件固定宽=高）。
-   圆角必须取「档位高度的一半」才是真正的胶囊 / 正圆。Qt 的 QSS 在
-   border-radius 超过控件高度一半时**不会收敛**，而是整块退回方角绘制，
-   所以写死 16/20px 会让 md(28px) 与 lg(34px) 两档的 shape 完全失效。 */
+   Qt 的 border-radius 以**内容盒**（min/max-height，20/26/32）为参照，
+   超过内容盒半高会整块退回方角；因此取内容盒半高 10/13/16px。
+   不要按总高 22/28/34 取 11/14/17px，也不要写死 16/20px——那会越过
+   内容盒半高的上限，shape 可能直接失效。 */
 QPushButton[shape="round"] {{ border-radius: {md // 2}px; }}
 QPushButton[shape="round"][size="sm"], QPushButton[shape="round"][uiksize="sm"] {{ border-radius: {sm // 2}px; }}
 QPushButton[shape="round"][size="lg"], QPushButton[shape="round"][uiksize="lg"] {{ border-radius: {lg // 2}px; }}
@@ -868,7 +869,7 @@ QToolButton[size="md"], QToolButton[uiksize="md"] {{
 QToolButton[size="lg"], QToolButton[uiksize="lg"] {{
     min-height: {lg}px; max-height: {lg}px; font-size: {t['font.lg']}px;
 }}
-/* 同 QPushButton：圆角取档位高度的一半，超过半高 Qt 会整块退回方角 */
+/* 同 QPushButton：圆角取内容盒半高，超过内容盒半高 Qt 会整块退回方角 */
 QToolButton[shape="circle"] {{ border-radius: {md // 2}px; }}
 QToolButton[shape="circle"][size="sm"], QToolButton[shape="circle"][uiksize="sm"] {{ border-radius: {sm // 2}px; }}
 QToolButton[shape="circle"][size="lg"], QToolButton[shape="circle"][uiksize="lg"] {{ border-radius: {lg // 2}px; }}
@@ -879,7 +880,7 @@ QToolButton[shape="round"][size="lg"], QToolButton[shape="round"][uiksize="lg"] 
 
 
 def _qss_inputs(c, t, img) -> str:
-    """输入控件：高度体系 sm=24 / md=32 / lg=40，focus 主色边框。"""
+    """输入控件：高度体系 sm=22 / md=28 / lg=34，focus 主色边框。"""
     sm, md, lg = _CONTENT_BOX["sm"], _CONTENT_BOX["md"], _CONTENT_BOX["lg"]
     ssm, smd, slg = _SPIN_BOX["sm"], _SPIN_BOX["md"], _SPIN_BOX["lg"]
     return f"""

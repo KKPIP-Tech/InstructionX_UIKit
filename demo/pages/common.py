@@ -111,7 +111,7 @@ def hint_label(text: str, role: str = "secondary", max_w: int = 0) -> QLabel:
         text: 文本。
         role: ``secondary`` / ``tertiary`` / ``hint``。
         max_w: >0 时按该像素宽度**预折行**并锁定高度（版心固定、不会被布局压扁）；
-            0 则启用 wordWrap 随容器自适应宽度（适合卡���内宽度不确定的说明）。
+            0 则启用 wordWrap 随容器自适应宽度（适合卡片内宽度不确定的说明）。
     """
     if max_w > 0:
         lab = _multiline_label(text, max_w)

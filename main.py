@@ -7,7 +7,7 @@
     python main.py
 
 流程：创建 QApplication → ThemeManager.instance().apply(app) 应用主题 →
-显示 MainWindow（1280x800）。顶部条可随时切换亮 / 暗主题，无需重启。
+显示 MainWindow（1440x900）。顶部条可随时切换亮 / 暗主题，无需重启。
 """
 
 import sys
@@ -35,7 +35,7 @@ def main() -> int:
     QQuickWindow.setGraphicsApi(QSGRendererInterface.GraphicsApi.OpenGL)
     app = QApplication(sys.argv)
     ThemeManager.instance().apply(app)  # 生成并设置全局 QSS（默认亮色）
-    # MainWindow 构造时已 resize 1280x800，此处不再重复设置
+    # MainWindow 构造时已 resize 1440x900，此处不再重复设置
     window = MainWindow()
     window.show()
     return app.exec()

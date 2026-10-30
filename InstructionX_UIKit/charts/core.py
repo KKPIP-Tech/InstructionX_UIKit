@@ -115,8 +115,8 @@ def register_component(name: str, cls) -> None:
 
 
 #: 默认调色板令牌键（CHART_SPEC §2）。每项 (主键, 回退键)：
-#: tokens 当前未定义 "color.warning.hover"（亮/暗均缺），缺失时回退主色，
-#: 不回退会 KeyError；若后续 tokens 补齐该键，自动优先取用。
+#: 回退机制保留给旧版令牌集（如早期 LIGHT/DARK 缺 "color.warning.hover"）；
+#: 当前 tokens 已补齐该键，正常路径直接取主键，不再触发回退。
 _PALETTE_KEYS = (
     ("color.primary", None),
     ("color.success", None),
