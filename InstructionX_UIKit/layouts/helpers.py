@@ -11,7 +11,7 @@
 """
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QPainter
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QFrame,
     QLabel,
@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..theme import T, ThemeManager
+from ..theme import T, ThemeManager, set_font
 
 __all__ = [
     "TokenColorChip",
@@ -50,11 +50,25 @@ class TokenColorChip(QWidget):
 
 
 def apply_token_font(widget, size_key="font.md", weight_key="font.weight.regular"):
-    """按令牌设置控件字阶与字重。"""
-    font = QFont(widget.font())
-    font.setPixelSize(T(size_key))
-    font.setWeight(QFont.Weight(T(weight_key)))
-    widget.setFont(font)
+    """按令牌设置控件字阶与字重。
+
+    必须走 ``theme.set_font()`` 的实例级 QSS：全局 ``QWidget { font-size }``
+    的优先级高于 ``widget.setFont()``，直接用 ``setFont`` 会被静默覆盖，
+    13 个布局的 hero / display / title 字阶会全部塌回正文 13px
+    （见 ``docs/COMPONENT-DESIGN-CONTRACT.md`` §6）。
+
+    参数:
+        widget: 目标控件。
+        size_key: 字阶令牌键，如 ``"font.title.lg"``；也接受 ``"title.lg"``。
+        weight_key: 字重令牌键，如 ``"font.weight.semibold"``；也接受 ``"semibold"``。
+    """
+    scale = str(size_key)
+    if scale.startswith("font."):
+        scale = scale[len("font."):]
+    weight = str(weight_key)
+    if weight.startswith("font.weight."):
+        weight = weight[len("font.weight."):]
+    set_font(widget, scale, weight)
 
 
 def empty_placeholder(text="在此放置内容", parent=None) -> QWidget:

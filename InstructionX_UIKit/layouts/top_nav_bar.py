@@ -118,7 +118,7 @@ class TopNavBar(QWidget):
             self.user_button = QPushButton(user_text)
             set_property(self.user_button, "variant", "primary")
             set_property(self.user_button, "shape", "circle")
-            self.user_button.setFixedSize(32, 32)  # 与输入控件 md 高度（32px）对齐
+            self.user_button.setFixedSize(28, 28)  # 与输入控件 md 高度（28px）对齐
             lay.addWidget(self.user_button)
         return bar
 

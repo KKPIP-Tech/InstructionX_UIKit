@@ -19,7 +19,7 @@
     app.exec()
 """
 
-from .theme import ThemeManager, T, apply_shadow, build_qss, set_property
+from .theme import ThemeManager, T, apply_shadow, build_qss, set_font, set_property
 from .tokens import (
     LIGHT,
     DARK,
@@ -41,6 +41,7 @@ __all__ = [
     "T",
     "build_qss",
     "apply_shadow",
+    "set_font",
     "set_property",
     # tokens
     "LIGHT",
