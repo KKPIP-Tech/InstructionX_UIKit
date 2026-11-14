@@ -2292,6 +2292,9 @@ class _StoryStepPanel(QFrame):
         self._cache = None          # 全不透明内容缓存位图（paintEvent 外抓取）
         self._capture_pending = False
         self._capturing = False     # 缓存抓取触发的离屏重入戳记
+        self._capture_timer = QTimer(self)
+        self._capture_timer.setSingleShot(True)
+        self._capture_timer.timeout.connect(self._capture)
         # 主题切换后 QSS 颜色变化，缓存需失效重抓；绑定方法随控件销毁
         # 自动断连（与 _theme_refresh 同一机制）
         ThemeManager.instance().theme_changed.connect(self._invalidate_cache)
@@ -2320,7 +2323,7 @@ class _StoryStepPanel(QFrame):
         if self._capture_pending:
             return
         self._capture_pending = True
-        QTimer.singleShot(0, self._capture)
+        self._capture_timer.start(0)
 
     def _capture(self):
         """在 paintEvent 外把自身（含 QSS 与子控件）渲染进缓存位图。"""
@@ -2388,6 +2391,9 @@ class ScrollStoryArea(QScrollArea):
         self._layout.setSpacing(int(T("space.6")))
         self.setWidget(self._container)
         self._overlay = _StoryOverlay(self)
+        self._update_timer = QTimer(self)
+        self._update_timer.setSingleShot(True)
+        self._update_timer.timeout.connect(self._update_story)
         self.verticalScrollBar().valueChanged.connect(lambda _v: self._update_story())
         _theme_refresh(self)
 
@@ -2409,7 +2415,7 @@ class ScrollStoryArea(QScrollArea):
         lay.addWidget(body_label)
         self._layout.addWidget(panel)
         self._steps.append(panel)
-        QTimer.singleShot(0, self._update_story)
+        self._update_timer.start(0)
         return panel
 
     def stepCount(self) -> int:
