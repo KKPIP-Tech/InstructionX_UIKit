@@ -12,7 +12,7 @@ from PySide6.QtQml import qmlRegisterType
 from PySide6.QtQuick import QQuickView
 from PySide6.QtWidgets import QApplication, QWidget
 
-from .node_widget import PinHandle
+from .node_widget import NodeWidget, PinHandle
 from .scene_item import BlueprintSceneItem
 from .viewport import _ViewportMixin
 
@@ -140,6 +140,12 @@ class _RhiViewport(_ViewportMixin, QWidget):
         target = self._mouse_target or self._target_at(event.position())
         if not _shiboken_is_valid(target):
             target = self._canvas
+        if event.type() == QEvent.Type.MouseButtonPress:
+            if (isinstance(target, (NodeWidget, PinHandle))
+                    or target.focusPolicy() == Qt.NoFocus):
+                self._canvas.setFocus(Qt.MouseFocusReason)
+            else:
+                target.setFocus(Qt.MouseFocusReason)
         translated = self._mouse_event(target, event)
         accepted = QCoreApplication.sendEvent(target, translated)
         if event.type() == QEvent.Type.MouseButtonRelease:
