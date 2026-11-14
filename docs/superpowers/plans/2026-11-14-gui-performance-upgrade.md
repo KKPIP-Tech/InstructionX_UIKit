@@ -1,5 +1,7 @@
 # InstructionX_UIKit GUI 性能升级实施计划
 
+> **当前实现说明（2026-11-15）：** 本文保留最初实施步骤作为历史记录。所有者后续已明确要求移除旧 OpenGL 兼容后端，Chart 与 Blueprint 默认使用自动选择平台 API 的 `QQuickView + Scene Graph + RHI`。因此本文涉及的 GL 保留、GL 预热、`gl_series.py`、VBO 和 `quick` 实验开关描述不再代表当前代码；最新结构见 `2026-11-14-scene-graph-chart-design.md`，实际通过／失败状态见 `2026-11-14-gui-performance-acceptance.md`。当前 4K 性能门槛仍未通过，不得按历史步骤宣称完成。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在不重写 UIKit、不改变既有公开 API 与既有视觉设计的前提下，修复窗口交互、图表数据链路和普通组件的同步热点；只有局部 Scene Graph 后端经完整验收稳定优于修复后的 QWidget 基线时才启用。

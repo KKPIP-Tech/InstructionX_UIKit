@@ -57,7 +57,16 @@ SOFTWARE.
 | numpy | BSD-3-Clause | <https://numpy.org/> | 图表引擎的大规模数据管线 |
 | Mermaid | MIT | <https://github.com/mermaid-js/mermaid> | MarkdownView 的 Mermaid 图表渲染（内置 `mermaid.min.js`） |
 
-## 3. 维护约定
+## 3. 测量工具（不随包分发）
+
+- 项目：Intel PresentMon
+- 来源与版本：[GameTechDev/PresentMon v2.6.0](https://github.com/GameTechDev/PresentMon/releases/tag/v2.6.0)
+- 许可证：MIT（以官方 `LICENSE.txt` 为准）
+- 用途：仅在 `temp/tools/` 作为真实呈现测量工具，不属于 UIKit 运行时依赖，不提交二进制。
+- 完整性：发布 SHA-256 为 `b2a706bc6ad475749e3b7e3409263aa1e6906d45bdcf993f6dbc0f660188f1af`，本地文件哈希一致，签名者为 Intel Corporation。
+- 权限说明：ETW 需要管理权限或 Performance Log Users 组权限；当前未获权限，未提权，未将 PresentMon 结果用于验收。
+
+## 4. 维护约定
 
 - 新增图标、字体、示例代码或其他第三方资产时，在本文件补充来源、版本、许可证和用途。
 - 若第三方资产要求保留版权声明，必须同时保留其完整许可证文本。
