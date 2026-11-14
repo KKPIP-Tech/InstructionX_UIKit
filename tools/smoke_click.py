@@ -24,7 +24,7 @@ if str(ROOT) not in sys.path:
 
 import traceback  # noqa: E402
 
-from PySide6.QtCore import QPoint, Qt  # noqa: E402
+from PySide6.QtCore import QEvent, QPoint, Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
@@ -141,12 +141,17 @@ def main() -> int:
     if stray:
         failures.append(f"事件循环中出现 {len(stray)} 处未捕获异常")
 
+    app.processEvents()
+    app.sendPostedEvents(None, QEvent.DeferredDelete)
+    app.processEvents()
     if failures:
         print("\n[FAIL]")
         for f in failures:
             print("  -", f)
+        app.quit()
         return 1
     print("\n[PASS] 交互冒烟测试全部通过")
+    app.quit()
     return 0
 
 
