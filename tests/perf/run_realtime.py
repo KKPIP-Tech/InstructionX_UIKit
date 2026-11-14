@@ -49,7 +49,6 @@ def build_complex_window():
             options.append({
                 "type": "line", "name": f"图 {chart_index + 1}/系列 {series_index + 1}",
                 "data": values, "showSymbol": False,
-                "gpuDirect": bool(os.environ.get("UIKIT_PERF_GPU_DIRECT")),
             })
         chart.set_option({
             "animation": False,
@@ -191,30 +190,18 @@ def main():
     parser.add_argument("--seconds", type=float, default=60)
     parser.add_argument("--rounds", type=int, default=5)
     parser.add_argument("--warmup", type=float, default=5)
-    parser.add_argument("--source", type=Path, help="仅测量用源码快照目录，不是 worktree")
-    parser.add_argument("--source-sha")
     parser.add_argument("--label", default="candidate")
     parser.add_argument("--tag", default="formal")
     parser.add_argument("--only", choices=["complex", "charts", "single-chart", "blueprint", "chat", "no-chat"],
                         default="complex")
     parser.add_argument("--enforce", action="store_true")
-    parser.add_argument("--gpu-direct", action="store_true")
-    parser.add_argument("--backend", choices=["gl", "raster", "quick"])
+    parser.add_argument("--backend", choices=["rhi", "raster"], default="rhi")
     args = parser.parse_args()
     if args.seconds <= 0 or args.rounds < 1 or args.warmup < 0:
         parser.error("seconds/rounds/warmup 参数无效")
-    if args.backend:
-        os.environ["UIKIT_CHART_BACKEND"] = args.backend
-    else:
-        os.environ.pop("UIKIT_CHART_BACKEND", None)
-    if args.backend == "quick":
-        from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
-        QQuickWindow.setGraphicsApi(QSGRendererInterface.GraphicsApi.OpenGL)
-    if args.gpu_direct:
-        os.environ["UIKIT_PERF_GPU_DIRECT"] = "1"
-    else:
-        os.environ.pop("UIKIT_PERF_GPU_DIRECT", None)
-    source = (args.source or ROOT).resolve()
+    os.environ["UIKIT_CHART_BACKEND"] = args.backend
+    os.environ.pop("UIKIT_PERF_GPU_DIRECT", None)
+    source = ROOT
     sys.path.insert(0, str(source))
     os.environ.pop("QT_QPA_PLATFORM", None)
 
@@ -257,23 +244,37 @@ def main():
         "failures": [],
         "rounds": [],
     }
+    if args.backend == "raster":
+        state["failures"].append("raster 仅用于参考，不能用绘制事件冒充真实交换帧")
     for name, viewport in viewports.items():
-        if not hasattr(viewport, "frameSwapped"):
+        if hasattr(viewport, "frameSwapped"):
+            viewport.frameSwapped.connect(
+                lambda name=name: state["frames"][name].append(time.perf_counter())
+                if state["recording"] else None)
+        elif args.enforce:
             state["failures"].append(f"{name} 不支持 frameSwapped")
-            continue
-        viewport.frameSwapped.connect(
-            lambda name=name: state["frames"][name].append(time.perf_counter())
-            if state["recording"] else None)
-        original_paint = viewport.paintGL
+        if hasattr(viewport, "_sync_now"):
+            original_sync = viewport._sync_now
 
-        def measured_paint(original=original_paint, name=name):
-            started = time.perf_counter()
-            try:
-                original()
-            finally:
-                state["tasks"].append((name, started, time.perf_counter() - started))
+            def measured_sync(original=original_sync, name=name):
+                started = time.perf_counter()
+                try:
+                    original()
+                finally:
+                    state["tasks"].append((name, started, time.perf_counter() - started))
 
-        viewport.paintGL = measured_paint
+            viewport._sync_now = measured_sync
+        elif hasattr(viewport, "paintEvent"):
+            original_paint = viewport.paintEvent
+
+            def measured_paint(original=original_paint, name=name):
+                started = time.perf_counter()
+                try:
+                    original()
+                finally:
+                    state["tasks"].append((name, started, time.perf_counter() - started))
+
+            viewport.paintEvent = measured_paint
 
     def sample_resource():
         if state["recording"]:
@@ -323,7 +324,7 @@ def main():
     load_timer.start()
     resource_timer.start()
 
-    source_sha = args.source_sha or subprocess.check_output(
+    source_sha = subprocess.check_output(
         ["git", "rev-parse", "uniform_style"], text=True, cwd=ROOT).strip()
     source_dirty = source == ROOT and subprocess.run(
         ["git", "diff", "--quiet", "--", "InstructionX_UIKit", "demo"],
@@ -360,8 +361,11 @@ def main():
             "label": args.label,
             "tag": args.tag,
             "only": args.only,
-            "backend": args.backend or "default",
-            "gpu_direct": args.gpu_direct,
+            "backend": args.backend,
+            "render_loop": os.environ.get("QSG_RENDER_LOOP"),
+            "rhi_apis": {name: viewport.rhi_api()
+                         for name, viewport in viewports.items()
+                         if hasattr(viewport, "rhi_api")},
             "round": round_index + 1,
             "requested_seconds": args.seconds,
             "screen": window.screen().name(),
@@ -378,7 +382,7 @@ def main():
             "long_tasks_ms": [task[2] * 1000 for task in long_tasks],
             "failures": state["failures"],
             "pass": passed,
-            "measurement": "QOpenGLWidget.frameSwapped；不是 PresentMon",
+            "measurement": "QQuickView.frameSwapped + UI 快照同步耗时；不是 PresentMon",
         }
         round_name = f"round_{round_index + 1:02d}"
         (destination / f"{round_name}.json").write_text(
