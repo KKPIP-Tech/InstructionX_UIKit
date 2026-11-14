@@ -87,7 +87,7 @@ def case_host(case, source):
     series_data = []
     blueprint = None
     chat = None
-    if case in ("complex", "gl_off", "opaque", "native"):
+    if case in ("complex", "opaque", "native"):
         complex_window, charts, series_data, blueprint, chat, _slider, _progress = build_complex_window()
         old = host.takeCentralWidget()
         old.deleteLater()
@@ -150,11 +150,13 @@ def case_host(case, source):
 def measure_case(app, case, phase_seconds, source, output, audio):
     import numpy as np
     from PySide6.QtCore import QTimer
-    from PySide6.QtGui import QCursor
-    from PySide6.QtTest import QTest
+    from native_screen import grab_native_window
 
     host, charts, series_data, blueprint, chat = case_host(case, source)
+    host.setWindowFlag(Qt.WindowStaysOnTopHint, True)
     host.show()
+    host.raise_()
+    host.activateWindow()
     deadline = time.monotonic() + 1.0
     while time.monotonic() < deadline:
         app.processEvents()
@@ -171,8 +173,8 @@ def measure_case(app, case, phase_seconds, source, output, audio):
             viewport.frameSwapped.connect(
                 lambda name=name: state["frames"][name].append(time.perf_counter())
                 if state["recording"] else None)
-        if hasattr(viewport, "paintGL"):
-            original = viewport.paintGL
+        if hasattr(viewport, "_sync_now"):
+            original = viewport._sync_now
 
             def measured(original=original, name=name):
                 started = time.perf_counter()
@@ -180,7 +182,17 @@ def measure_case(app, case, phase_seconds, source, output, audio):
                     original()
                 finally:
                     state["tasks"].append((name, started, time.perf_counter() - started))
-            viewport.paintGL = measured
+            viewport._sync_now = measured
+        elif hasattr(viewport, "paintEvent"):
+            original = viewport.paintEvent
+
+            def measured(original=original, name=name):
+                started = time.perf_counter()
+                try:
+                    original()
+                finally:
+                    state["tasks"].append((name, started, time.perf_counter() - started))
+            viewport.paintEvent = measured
 
     def update():
         started = time.perf_counter()
@@ -249,7 +261,21 @@ def measure_case(app, case, phase_seconds, source, output, audio):
             phase_result["interaction_ok"] = geometry_after.size() != origin.size()
         else:
             phase_result["interaction_ok"] = True
-        image = host.grab()
+        phase_result.update({
+            "rhi_apis": {name: viewport.rhi_api()
+                         for name, viewport in viewports.items()
+                         if hasattr(viewport, "rhi_api")},
+            "viewport_types": {name: type(viewport).__name__
+                               for name, viewport in viewports.items()},
+            "render_loop": os.environ.get("QSG_RENDER_LOOP"),
+            "measurement": "QQuickView.frameSwapped；不是 PresentMon",
+            "performance_gate_pass": bool(metrics) and all(
+                metric.get("pass", False) for metric in metrics)
+                and not phase_result["long_tasks_ms"],
+        })
+        phase_result["qt_active"] = host.isActiveWindow()
+        phase_result["capture_policy"] = "置顶测试宿主 + Win32 实际客户区"
+        image = grab_native_window(host.windowHandle())
         image.save(str(output / f"{case}_{phase}.png"))
         results.append(phase_result)
     timer.stop()
@@ -265,48 +291,42 @@ def main():
     parser.add_argument("--phase-seconds", type=float, default=10)
     parser.add_argument("--cases", nargs="*",
                         default=["blank", "form", "chart", "blueprint", "mermaid",
-                                 "gl_off", "opaque", "native"])
+                                 "complex", "opaque", "native"])
     parser.add_argument("--audio", action="store_true")
-    parser.add_argument("--source", type=Path)
-    parser.add_argument("--source-sha")
     parser.add_argument("--label", default="candidate")
     parser.add_argument("--tag", default="matrix")
     args = parser.parse_args()
-    source = (args.source or ROOT).resolve()
+    source = ROOT
     sys.path.insert(0, str(source))
-    if "gl_off" in args.cases:
-        os.environ["UIKIT_CHART_GL"] = "off"
-        os.environ["UIKIT_BLUEPRINT_GL"] = "off"
-    else:
-        os.environ.pop("UIKIT_CHART_GL", None)
-        os.environ.pop("UIKIT_BLUEPRINT_GL", None)
-    from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
+    os.environ.pop("QT_QPA_PLATFORM", None)
+    os.environ.pop("UIKIT_CHART_BACKEND", None)
+    os.environ.pop("QSG_RHI_BACKEND", None)
+    os.environ.pop("QT_QUICK_BACKEND", None)
     from PySide6.QtWidgets import QApplication
     from InstructionX_UIKit.theme import ThemeManager
 
-    QQuickWindow.setGraphicsApi(QSGRendererInterface.GraphicsApi.OpenGL)
     app = QApplication.instance() or QApplication(sys.argv)
     ThemeManager.instance().apply(app)
-    source_sha = args.source_sha or subprocess.check_output(
+    source_sha = subprocess.check_output(
         ["git", "rev-parse", "uniform_style"], text=True, cwd=ROOT).strip()
+    source_dirty = subprocess.run(
+        ["git", "diff", "--quiet", source_sha, "--", "InstructionX_UIKit", "demo"],
+        cwd=ROOT).returncode != 0
     destination = ROOT / "temp" / "performance" / source_sha / "window-matrix" / args.tag
     destination.mkdir(parents=True, exist_ok=True)
     audio = AudioProbe(args.audio)
     report = {"source_sha": source_sha, "source_root": str(source),
+              "source_dirty": source_dirty,
               "label": args.label, "seed": SEED,
               "phase_seconds": args.phase_seconds,
               "audio_enabled": args.audio,
               "audio_available": audio.available,
+              "global_graphics_api_forced": False,
+              "native_mouse_verified": False,
               "cases": {}}
     try:
         for case in args.cases:
             print(f"开始 {case}", flush=True)
-            if case == "gl_off":
-                os.environ["UIKIT_CHART_GL"] = "off"
-                os.environ["UIKIT_BLUEPRINT_GL"] = "off"
-            else:
-                os.environ.pop("UIKIT_CHART_GL", None)
-                os.environ.pop("UIKIT_BLUEPRINT_GL", None)
             report["cases"][case] = measure_case(
                 app, case, args.phase_seconds, source, destination, audio)
             (destination / "report.json").write_text(
