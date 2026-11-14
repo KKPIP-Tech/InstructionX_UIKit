@@ -26,6 +26,7 @@ class _RhiViewport(_ViewportMixin, QWidget):
     def __init__(self, canvas):
         super().__init__(canvas)
         global _REGISTERED
+        self._ready = False
         self._init_viewport(canvas)
         self._mouse_target = None
         self._key_dispatching = False
@@ -56,9 +57,11 @@ class _RhiViewport(_ViewportMixin, QWidget):
         self._sync_times = []
         self._state_handle = None
         self.setGeometry(canvas.rect())
+        self._ready = True
 
     def _scene_valid(self):
-        return self._scene is not None and _shiboken_is_valid(self._scene)
+        scene = getattr(self, "_scene", None)
+        return scene is not None and _shiboken_is_valid(scene)
 
     def rhi_api(self):
         if not self._view.isSceneGraphInitialized():
@@ -75,30 +78,41 @@ class _RhiViewport(_ViewportMixin, QWidget):
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
+        if not self._ready:
+            return
         self._bind_host_state()
         self._container.show()
         self._view.show()
         self._sync_timer.start(0)
 
     def hideEvent(self, event):  # noqa: N802
-        self._sync_timer.stop()
+        timer = getattr(self, "_sync_timer", None)
+        if timer is not None:
+            timer.stop()
         if self._scene_valid():
             self._scene.clear()
-        self._container.hide()
+        container = getattr(self, "_container", None)
+        if container is not None:
+            container.hide()
         super().hideEvent(event)
 
     def closeEvent(self, event):  # noqa: N802
-        self._sync_timer.stop()
+        timer = getattr(self, "_sync_timer", None)
+        if timer is not None:
+            timer.stop()
         self._mouse_target = None
-        if self._state_handle is not None:
+        handle = getattr(self, "_state_handle", None)
+        if handle is not None:
             try:
-                self._state_handle.windowStateChanged.disconnect(self._on_window_state)
+                handle.windowStateChanged.disconnect(self._on_window_state)
             except (RuntimeError, TypeError):
                 pass
             self._state_handle = None
         if self._scene_valid():
             self._scene.clear()
-        self._view.close()
+        view = getattr(self, "_view", None)
+        if view is not None:
+            view.close()
         super().closeEvent(event)
 
     def _bind_host_state(self):
@@ -140,6 +154,8 @@ class _RhiViewport(_ViewportMixin, QWidget):
         return sum(samples) / len(samples) * 1000 if samples else 0.0
 
     def update(self, *_args):
+        if not self._ready:
+            return
         if self._canvas._ui_active and self.isVisible():
             self._sync_timer.start(0)
 
@@ -222,7 +238,7 @@ class _RhiViewport(_ViewportMixin, QWidget):
             target, QHelpEvent(event.type(), local, global_position))
 
     def eventFilter(self, obj, event):  # noqa: N802
-        if obj not in (self._container, self._view):
+        if not self._ready or obj not in (self._container, self._view):
             return super().eventFilter(obj, event)
         if event.type() in (
                 QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove,
