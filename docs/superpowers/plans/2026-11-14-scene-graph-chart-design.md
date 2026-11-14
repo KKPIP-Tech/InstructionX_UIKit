@@ -8,7 +8,7 @@
 
 ## 结构与所有权
 
-- `InstructionX_UIKit/_rhi_texture.py`：`RhiTextureItem` 共享纹理节点、不可变帧结构、透明纹理清理和最多三帧引用。清空时保留并复用纹理节点，避免旧帧残留。
+- `InstructionX_UIKit/_rhi_texture.py`：`RhiTextureItem` 共享纹理节点、不可变帧结构、透明纹理清理和最多三帧引用。清空时保留并复用纹理节点，避免旧帧残留。节点使用 `ownsTexture=False` 时，`_retain_frame()` 必须对超龄纹理显式调用 `deleteLater()`；`_release_textures()` 在控件销毁时清理剩余纹理，不能只缩短 Python 引用队列而不删除 Qt 对象。
 - `charts/rhi_viewport.py`：Chart 的原生容器、事件转发、焦点、最小化／隐藏恢复与同步计时。`scene_snapshot.py` 在 GUI 线程调用既有 `_paint_contents()`，完整保留静态轴、全部系列、组件、主题、tooltip、动画和 resize 预览。
 - `blueprint/rhi_viewport.py`：节点／引脚／自定义体命中、键盘焦点和菜单路由。`scene_snapshot.py` 按既有顺序绘制背景、边、节点位图与可见自定义体；手势代理在结束后恢复真实子控件。
 - `rhi_scene.qml` 仅承载对应 Scene Item。`updatePaintNode()` 只更新纹理与节点，不解析 option、采样、读取主题或调用 QPainter。
