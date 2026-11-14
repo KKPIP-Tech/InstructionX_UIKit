@@ -332,10 +332,10 @@ def build_mvp(x0, x1, y0, y1, plot=None, viewport=None):
               视口内的位置，而不是铺满整个 NDC。
         viewport: 可选 ``(w, h)``（逻辑像素），与 ``plot`` 搭配使用。
 
-    变换（y 轴翻转：Qt 屏幕 y 向下、GL NDC y 向上）::
+    变换到 OpenGL NDC（正 Y 朝上）::
 
         ndc_x = (data_x - x0) / (x1 - x0) * 2 - 1
-        ndc_y = 1 - (data_y - y0) / (y1 - y0) * 2
+        ndc_y = (data_y - y0) / (y1 - y0) * 2 - 1
 
     再按 ``plot`` 在视口中的占比与中心把 [-1,1] 缩放到该子区域。
     """
@@ -343,8 +343,8 @@ def build_mvp(x0, x1, y0, y1, plot=None, viewport=None):
         return None
     a = 2.0 / (x1 - x0)
     b = -1.0 - x0 * a
-    c = -2.0 / (y1 - y0)
-    d = 1.0 - y0 * c
+    c = 2.0 / (y1 - y0)
+    d = -1.0 - y0 * c
     if plot is not None and viewport is not None:
         w, h = float(viewport[0]), float(viewport[1])
         pw, ph = float(plot[0]), float(plot[1])
@@ -354,10 +354,8 @@ def build_mvp(x0, x1, y0, y1, plot=None, viewport=None):
         sx = pw / w
         sy = ph / h
         cx = (px + pw / 2.0) / w * 2.0 - 1.0
-        # y 中心：先算子区间中心在视口内的比例，再折算到 NDC。注意 Qt 屏幕
-        # y 向下、NDC y 向上，但**数据 → NDC 的翻转已在 c/d 里做过**，此处
-        # 只需按同向比例折算（写成 1-… 会多翻一次，实测中心点偏到 0.0667
-        # 而非 0）。
+        # y 中心：Qt 屏幕坐标向下，NDC 向上，因此这里只转换绘图区
+        # 在视口中的位置；数据轴方向由上方 c/d 保持为正向。
         cy = 1.0 - (py + ph / 2.0) / h * 2.0
         a, b = a * sx, b * sx + cx
         c, d = c * sy, d * sy + cy
