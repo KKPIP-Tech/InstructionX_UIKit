@@ -21,6 +21,7 @@
 - 与 :class:`RingBuffer` 配合：生产者只管写，消费者按节奏取。
 """
 
+import math
 import threading
 import time
 
@@ -292,6 +293,9 @@ class StreamSession:
         self.auto_scale = bool(auto_scale)
         self._series_key = series
         self._alive = True
+        self._active = True
+        self._last_axis_sync = None
+        self._last_axis_range = None
         #: 上一次入图的实际计算耗时（秒），见 :meth:`_on_tick`
         self.last_apply_seconds = 0.0
         #: 相邻两次真正入图的间隔（秒），见 :meth:`_on_tick`
@@ -319,6 +323,9 @@ class StreamSession:
         batch = self.coalescer.take()
         if batch is None:
             return                      # 本帧无新数据：不重绘
+        if not self._active:
+            self.chart._perf.count("stream_hidden_skip")
+            return
         data = self.ring.read()
         if data is None:
             return
@@ -356,6 +363,56 @@ class StreamSession:
             return self.last_apply_interval
         return sum(self._apply_intervals) / len(self._apply_intervals)
 
+    def set_active(self, active: bool) -> None:
+        """切换页面激活状态；恢复后只使用有界缓冲中的最新窗口。"""
+        active = bool(active)
+        if active == self._active:
+            return
+        self._active = active
+        if active:
+            self._last_axis_sync = None
+            data = self.ring.read()
+            if data is not None:
+                self._apply(data)
+
+    def _fixed_y_axis(self) -> bool:
+        coord = self.chart.primary_coord()
+        axis = getattr(coord, "y_axis", None)
+        if axis is None or str(getattr(axis, "type", "")) != "value":
+            return False
+        if self._last_axis_range is not None:
+            low, high = self._last_axis_range
+            try:
+                if float(axis.min) == low and float(axis.max) == high:
+                    return False
+            except (TypeError, ValueError):
+                pass
+
+        def valid(value):
+            try:
+                return math.isfinite(float(value))
+            except (TypeError, ValueError):
+                return False
+
+        return valid(axis.min) and valid(axis.max)
+
+    def _auto_axis_range(self, values):
+        """计算带 5% 边距的有限值范围；无有效值时返回 None。"""
+        if _np is not None:
+            array = _np.asarray(values, dtype=_np.float64)
+            finite = array[_np.isfinite(array)]
+            if finite.size == 0:
+                return None
+            low, high = float(finite.min()), float(finite.max())
+        else:
+            finite = [float(value) for value in values
+                      if math.isfinite(float(value))]
+            if not finite:
+                return None
+            low, high = min(finite), max(finite)
+        padding = (high - low) * 0.05 or 1.0
+        return low - padding, high + padding
+
     def _apply(self, data) -> None:
         """把缓冲内容写入系列并请求重绘（保持既有调用语义）。
 
@@ -376,6 +433,21 @@ class StreamSession:
         idx = self._resolve_series_index()
         if idx < 0:
             return
+        atomic = getattr(chart, "_apply_stream_data", None)
+        if callable(atomic):
+            if self.auto_scale and len(vals) and not self._fixed_y_axis():
+                now = time.monotonic()
+                if self._last_axis_sync is None \
+                        or now - self._last_axis_sync >= 0.125:
+                    y_range = self._auto_axis_range(vals)
+                    if y_range is not None and y_range != self._last_axis_range:
+                        if atomic(vals, series=idx, y_range=y_range):
+                            self._last_axis_range = y_range
+                    else:
+                        atomic(vals, series=idx, refresh_axes=False)
+                    self._last_axis_sync = now
+                    return
+            return atomic(vals, series=idx, refresh_axes=False)
         # 优先走流式专用入口：只换数据、不重建 option / 渲染器。实测 2 万点
         # 窗口每帧可省掉 ``_rebuild`` 6.83 ms 与两次多余重排（合计十余毫秒），
         # 这是 90 fps 预算内的关键一步。入口不可用时（旧版 Kit / 自定义图表）
