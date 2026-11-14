@@ -8,7 +8,7 @@ import os
 # 原生嵌入采用 GUI 线程调度，避免输入和窗口生命周期与渲染线程互相等待。
 os.environ.setdefault("QSG_RENDER_LOOP", "basic")
 
-from PySide6.QtCore import QRectF
+from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QImage
 from PySide6.QtQuick import QSGNode, QQuickItem, QSGSimpleTextureNode, QSGTexture
 
@@ -31,6 +31,7 @@ class RhiTextureItem(QQuickItem):
         self._frames = deque(maxlen=3)
         self._texture = None
         self._texture_key = None
+        self._blank_texture = None
         self._node = None
         self.setFlag(QQuickItem.ItemHasContents, True)
 
@@ -43,20 +44,26 @@ class RhiTextureItem(QQuickItem):
 
     def clear(self):
         self._snapshot = None
-        self._frames.clear()
-        self._texture = None
         self._texture_key = None
-        self._node = None
         self.update()
 
     def updatePaintNode(self, root, _info):  # noqa: N802
         snapshot = self._snapshot
         if snapshot is None:
-            self._frames.clear()
-            self._texture = None
-            self._texture_key = None
-            self._node = None
-            return None
+            if self._blank_texture is None:
+                image = QImage(1, 1, QImage.Format_RGBA8888)
+                image.fill(Qt.transparent)
+                self._blank_texture = self.window().createTextureFromImage(image)
+            if root is None:
+                root = QSGSimpleTextureNode()
+            root.setFiltering(QSGTexture.Nearest)
+            root.setOwnsTexture(False)
+            root.setTexture(self._blank_texture)
+            root.setRect(QRectF(0, 0, self.width(), self.height()))
+            root.markDirty(QSGNode.DirtyMaterial)
+            self._node = root
+            self._frames.append((root, self._blank_texture))
+            return root
         if self._texture is None or self._texture_key != snapshot.version:
             texture = self.window().createTextureFromImage(snapshot.image)
             if texture is None:
