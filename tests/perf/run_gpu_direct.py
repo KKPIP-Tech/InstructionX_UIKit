@@ -1,50 +1,53 @@
 # -*- coding: utf-8 -*-
-"""真实窗口 gpuDirect 几何、上传、绘制与资源验证（不作为 FPS 证据）。"""
+"""真实窗口原 gpuDirect 选项的 RHI 兼容、像素与资源验证；不作为 FPS 证据。"""
 
 import argparse
 import json
 import os
+import platform
 import subprocess
 import sys
 import traceback
 from pathlib import Path
 
-os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
+os.environ.pop("QSG_RHI_BACKEND", None)
+os.environ.pop("QT_QUICK_BACKEND", None)
 
 import numpy as np
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QImage, QPainter
+from PySide6.QtQuick import QSGRendererInterface
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from InstructionX_UIKit.charts import ChartWidget
-from InstructionX_UIKit.charts.viewport import _GLViewport, _RasterViewport, gl_available
+from InstructionX_UIKit.charts.viewport import _RasterViewport
 from InstructionX_UIKit.theme import ThemeManager
 
 SEED = 20261114
-_FAILURES = []
 
 
-def check(condition, message, details=None):
-    if condition:
-        print(f"  [通过] {message}", flush=True)
-    else:
-        _FAILURES.append(message)
-        print(f"  [失败] {message}: {details}", flush=True)
+def reference(chart, image_format=QImage.Format_RGBA8888):
+    dpr = chart.devicePixelRatioF()
+    image = QImage(round(chart.width() * dpr), round(chart.height() * dpr), image_format)
+    image.setDevicePixelRatio(dpr)
+    image.fill(0)
+    painter = QPainter(image)
+    try:
+        chart._paint_contents(painter)
+    finally:
+        painter.end()
+    return image
 
 
-def pump(milliseconds):
-    QTest.qWait(milliseconds)
-
-
-def curve_geometry(chart, image, values):
+def pixel_geometry(chart, image, rgb=None):
     image = image.convertToFormat(QImage.Format_RGBA8888)
     width, height = image.width(), image.height()
-    pixels = np.frombuffer(image.constBits(), dtype=np.uint8).reshape(
-        height, width, 4)
+    pixels = np.frombuffer(image.constBits(), dtype=np.uint8).reshape(height, width, 4)
     color = chart.series_renderers[0].color()
-    target = np.array([color.red(), color.green(), color.blue()])
+    target = np.array(rgb if rgb is not None else (color.red(), color.green(), color.blue()))
     mask = np.all(np.abs(pixels[:, :, :3].astype(np.int16) - target) <= 4, axis=2)
     plot = chart.primary_coord().plot
     dpr = image.devicePixelRatio()
@@ -57,185 +60,171 @@ def curve_geometry(chart, image, values):
     mask[:, :left] = False
     mask[:, right:] = False
     ys, xs = np.where(mask)
-    if not len(xs):
-        return {"count": 0, "physical": [width, height]}
-    samples = []
-    coord = chart.primary_coord()
-    for index in list(range(0, len(values), 1571)) + [len(values) - 1]:
-        point = coord.map_point(float(index), float(values[index]))
-        x = int(round(point.x() * dpr))
-        y = int(round(point.y() * dpr))
-        radius = 6
-        hit = bool(mask[max(0, y - radius):y + radius + 1,
-                        max(0, x - radius):x + radius + 1].any())
-        samples.append({"index": index, "expected": [x, y], "hit": hit})
     return {
         "count": int(len(xs)),
-        "x_span": int(xs.max() - xs.min()),
-        "y_span": int(ys.max() - ys.min()),
-        "bbox": [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())],
-        "plot_physical": [left, top, right, bottom],
+        "x_span": int(xs.max() - xs.min()) if len(xs) else 0,
+        "y_span": int(ys.max() - ys.min()) if len(ys) else 0,
+        "minimum_x_span": plot.width() * dpr * 0.7,
+        "minimum_y_span": plot.height() * dpr * 0.5,
         "physical": [width, height],
-        "sampled_points": samples,
-    }
-
-
-def option(values, **series):
-    item = {"type": "line", "name": "GPU 验证", "data": values,
-            "gpuDirect": True, "showSymbol": False}
-    item.update(series)
-    return {
-        "animation": False,
-        "xAxis": {"type": "value"},
-        "yAxis": {"type": "value"},
-        "series": [item],
     }
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--raster", action="store_true")
+    parser.add_argument("--raster", action="store_true", help="离屏软件参考，不是真实 RHI 验收")
     args = parser.parse_args()
     if args.raster:
-        os.environ["UIKIT_CHART_GL"] = "off"
-    app = QApplication(sys.argv)
+        os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        os.environ["UIKIT_CHART_BACKEND"] = "raster"
+    else:
+        os.environ.pop("QT_QPA_PLATFORM", None)
+    app = QApplication.instance() or QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
     ThemeManager.instance().apply(app)
-    output_dir = ROOT / "tests" / "shots" / "gpu_direct"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(SEED)
     values = np.sin(np.arange(50_000, dtype=np.float64) * 0.001)
+    values += rng.normal(0, 0.01, len(values))
     chart = ChartWidget()
     chart.resize(800, 500)
     chart.move(100, 80)
-    chart.set_option(option(values))
+    chart.set_option({
+        "animation": False,
+        "xAxis": {"type": "value"},
+        "yAxis": {"type": "value"},
+        "series": [{"type": "line", "name": "RHI 兼容验证", "data": values,
+                    "gpuDirect": True, "gpuVersion": 7, "showSymbol": False}],
+    })
     chart.anim.stop()
     chart.anim.set_progress(1.0)
     chart.show()
-    pump(400)
+    QTest.qWait(600)
     viewport = chart._viewport
     renderer = chart.series_renderers[0]
+    source_sha = subprocess.check_output(
+        ["git", "rev-parse", "uniform_style"], text=True, cwd=ROOT).strip()
+    output = ROOT / "tests" / "shots" / "gpu_direct"
+    output.mkdir(parents=True, exist_ok=True)
     report = {
-        "source_sha": subprocess.check_output(
-            ["git", "rev-parse", "uniform_style"], text=True).strip(),
-        "note": "真实窗口 GL 几何与状态，不是实际呈现 FPS",
+        "source_sha": source_sha,
+        "note": "RHI 兼容与像素验证，不是实际呈现 FPS",
         "platform": app.platformName(),
         "screen": chart.screen().name(),
         "dpr": viewport.devicePixelRatioF(),
         "refresh_rate": chart.screen().refreshRate(),
-        "exposed": viewport.window().windowHandle().isExposed(),
-        "backend": type(viewport).__name__,
-        "gl_available": gl_available(),
         "viewport": type(viewport).__name__,
+        "native_mouse_verified": False,
+        "failures": [],
     }
-    image = viewport.grab().toImage() if args.raster else viewport.grabFramebuffer()
-    image.save(str(output_dir / ("raster.png" if args.raster else "gpu.png")))
-    report["geometry"] = curve_geometry(chart, image, values)
-    check(all(point["hit"] for point in report["geometry"].get("sampled_points", [])),
-          "逐点经过坐标系给出的预期屏幕位置",
-          [point for point in report["geometry"].get("sampled_points", [])
-           if not point["hit"]])
-    check(report["exposed"], "视口真实暴露且未被移出屏幕")
-    check(report["geometry"]["count"] > 100, "绘图区有曲线像素", report["geometry"])
-    check(report["geometry"].get("x_span", 0) > 500,
-          "曲线横坐标覆盖主要绘图区", report["geometry"])
-    check(report["geometry"].get("y_span", 0) > 180,
-          "曲线纵坐标覆盖主要绘图区", report["geometry"])
-    if args.raster:
-        check(isinstance(viewport, _RasterViewport), "明确使用软件视口", report["backend"])
-    else:
-        check(isinstance(viewport, _GLViewport), "明确使用真实 GL 视口", report["backend"])
-        pipeline = viewport._gpu_pipes.get(id(renderer))
-        check(pipeline is not None, "实际创建逐系列 GL 管线")
-        if pipeline is not None:
-            report["vertex_count"] = pipeline.vertex_count
-            report["upload_count"] = pipeline.upload_count
-            report["uploaded_bytes"] = pipeline.uploaded_bytes
-            check(pipeline.vertex_count == len(values), "VBO 顶点数等于原始数据点数",
-                  pipeline.vertex_count)
-            check(pipeline.upload_count >= 1, "确实发生 VBO 上传", pipeline.upload_count)
-            check(pipeline.uploaded_bytes == len(values) * 2 * 4,
-                  "上传字节数与 float32[n,2] 一致", pipeline.uploaded_bytes)
-            draw_results = []
-            draw_options = []
-            claim_results = []
-            original_draw = pipeline.draw
 
-            def record_draw(*draw_args, **draw_kwargs):
-                claim_results.append(chart.gpu_claims(renderer))
-                result = original_draw(*draw_args, **draw_kwargs)
-                draw_results.append(result)
-                draw_options.append({**draw_kwargs, "color": draw_args[2]})
-                return result
+    def check(condition, message, details=None):
+        if condition:
+            print(f"  [通过] {message}", flush=True)
+        else:
+            report["failures"].append({"check": message, "details": details})
+            print(f"  [失败] {message}: {details}", flush=True)
 
-            pipeline.draw = record_draw
-            chart.update()
-            pump(100)
-            check(draw_results and all(draw_results), "GPU draw 实际成功", draw_results)
-            check(claim_results and all(claim_results),
-                  "绘制期间由真实 GPU 直绘系列认领", claim_results)
-            first_uploads = pipeline.upload_count
-            chart.update()
-            pump(80)
-            check(pipeline.upload_count == first_uploads, "数据不变不重复上传",
-                  pipeline.upload_count)
+    def compare(name):
+        actual = viewport.grab().toImage().convertToFormat(QImage.Format_RGBA8888)
+        image_format = (QImage.Format_ARGB32_Premultiplied if args.raster
+                        else QImage.Format_RGBA8888)
+        expected = reference(chart, image_format).convertToFormat(QImage.Format_RGBA8888)
+        actual.save(str(output / f"{name}_actual.png"))
+        expected.save(str(output / f"{name}_expected.png"))
+        details = {"actual_dpr": actual.devicePixelRatio(),
+                   "expected_dpr": expected.devicePixelRatio(),
+                   "actual_size": [actual.width(), actual.height()],
+                   "expected_size": [expected.width(), expected.height()]}
+        same = actual.size() == expected.size()
+        if same:
+            aa = np.frombuffer(actual.constBits(), dtype=np.uint8).reshape(
+                actual.height(), actual.width(), 4)
+            bb = np.frombuffer(expected.constBits(), dtype=np.uint8).reshape(
+                expected.height(), expected.width(), 4)
+            delta = aa.astype(np.int16) - bb.astype(np.int16)
+            changed = np.any(delta, axis=2)
+            same = not changed.any()
+            details.update(changed=int(changed.sum()), max_delta=int(np.abs(delta).max()))
+        report.setdefault("pixel_comparisons", {})[name] = details
+        check(same, f"{name} 最终图像零像素差异", details)
+
+    try:
+        if args.raster:
+            check(isinstance(viewport, _RasterViewport), "明确使用离屏软件参考")
+        else:
+            check(type(viewport).__name__ == "_RhiViewport", "默认使用 RHI 原生视口")
+            api = viewport._view.graphicsApi()
+            report["rhi_api"] = getattr(api, "name", str(api))
+            report["rhi_backend"] = getattr(viewport._view.rhi().backend(), "name",
+                                           str(viewport._view.rhi().backend()))
+            report["exposed"] = viewport._view.isExposed()
+            check(report["exposed"], "原生视口已真实暴露")
+            if platform.system() == "Windows":
+                check(api == QSGRendererInterface.GraphicsApi.Direct3D11,
+                      "Windows 自动选择 Direct3D 11", report["rhi_api"])
+        check(renderer.gpu_direct and renderer._gpu_direct, "原 gpuDirect 选项保持兼容")
+        check(chart.option()["series"][0]["gpuVersion"] == 7, "显式 gpuVersion 保持原值")
+        check(not chart.gpu_claims(renderer), "不再虚构旧 GL 管线认领")
+        compare("rhi_initial")
+        initial = viewport.grab().toImage()
+        report["geometry"] = pixel_geometry(chart, initial)
+        geometry = report["geometry"]
+        check(geometry["count"] > 100, "绘图区有真实系列像素", geometry)
+        check(geometry["x_span"] >= geometry["minimum_x_span"],
+              "曲线横坐标覆盖主要绘图区", geometry)
+        check(geometry["y_span"] >= geometry["minimum_y_span"],
+              "曲线纵坐标覆盖主要绘图区", geometry)
+        series_key = chart._series_key
+        chart.update()
+        QTest.qWait(100)
+        check(chart._series_key == series_key, "数据不变复用系列光栅缓存")
+        check(chart.static_layer_valid(), "固定轴保留静态层缓存")
+
+        chart.update_option({"series": [{
+            "type": "line", "name": "RHI 兼容验证", "data": values,
+            "gpuDirect": True, "gpuVersion": 8, "showSymbol": False,
+            "lineStyle": {"width": 6, "color": "#C08A3E"},
+        }]})
+        chart.anim.stop()
+        chart.anim.set_progress(1.0)
+        QTest.qWait(150)
+        renderer = chart.series_renderers[0]
+        check(renderer.opt["lineStyle"]["width"] == 6, "线宽完整保留")
+        styled = pixel_geometry(chart, viewport.grab().toImage(), (192, 138, 62))
+        check(styled["count"] > 100, "线色在最终 RHI 像素中完整保留", styled)
+        compare("rhi_style")
+        for index in range(12):
             chart.update_option({"series": [{
-                "type": "line", "name": "GPU 验证", "data": values,
-                "gpuDirect": True, "showSymbol": False,
-                "lineStyle": {"width": 6, "color": "#C08A3E"},
+                "type": "line", "name": "RHI 兼容验证", "data": values + index,
+                "gpuDirect": True, "gpuVersion": 9 + index, "showSymbol": False,
             }]})
             chart.anim.stop()
             chart.anim.set_progress(1.0)
-            pump(100)
-            style_pipeline = viewport._gpu_pipes.get(id(chart.series_renderers[0]))
-            original_style_draw = style_pipeline.draw
-
-            def record_style_draw(*draw_args, **draw_kwargs):
-                result = original_style_draw(*draw_args, **draw_kwargs)
-                draw_results.append(result)
-                draw_options.append({**draw_kwargs, "color": draw_args[2]})
-                return result
-
-            style_pipeline.draw = record_style_draw
-            chart.update()
-            pump(150)
-            check(draw_options and draw_options[-1].get("width") == 6,
-                  "lineStyle.width 传入 GL", draw_options[-1:] )
-            expected_color = (192 / 255, 138 / 255, 62 / 255, 1.0)
-            actual_color = draw_options[-1].get("color") if draw_options else None
-            actual_rgba = ((actual_color.redF(), actual_color.greenF(),
-                            actual_color.blueF(), actual_color.alphaF())
-                           if hasattr(actual_color, "redF") else actual_color)
-            check(actual_rgba is not None and np.allclose(actual_rgba, expected_color),
-                  "lineStyle.color 传入 GL", actual_rgba)
-            for index in range(12):
-                chart.update_option({"series": [{
-                    "type": "line", "name": "GPU 验证", "data": values + index,
-                    "gpuDirect": True, "showSymbol": False,
-                }]})
-                chart.anim.stop()
-                chart.anim.set_progress(1.0)
-                pump(30)
-            report["pipelines_after_rebuilds"] = len(viewport._gpu_pipes)
-            check(len(viewport._gpu_pipes) <= 1,
-                  "渲染器重建后旧管线释放", report["pipelines_after_rebuilds"])
-            report["draw_results"] = draw_results
-            report["draw_options"] = [
-                {key: (value.name() if hasattr(value, "name") else value)
-                 for key, value in item.items()} for item in draw_options]
-    chart.close()
-    chart.deleteLater()
-    app.processEvents()
-    destination = ROOT / "temp" / "performance" / report["source_sha"]
-    destination.mkdir(parents=True, exist_ok=True)
-    report["failures"] = _FAILURES
-    path = destination / ("raster-geometry.json" if args.raster else "gpu-direct.json")
-    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"原始报告：{path}", flush=True)
-    return 1 if _FAILURES else 0
+            QTest.qWait(25)
+        check(chart.series_renderers[0].gpu_direct, "反复重建不丢失 gpuDirect")
+        compare("rhi_rebuilt")
+        if not args.raster:
+            check(len(viewport._scene._frames) <= 3, "Scene Graph 帧引用固定有界")
+        chart.close()
+        QTest.qWait(50)
+        if not args.raster:
+            check(not viewport._sync_timer.isActive(), "关闭后停止同步定时器")
+            check(viewport._scene._snapshot is None, "关闭后释放当前快照")
+        report["pass"] = not report["failures"]
+    except Exception as exc:
+        report["pass"] = False
+        report["exception"] = repr(exc)
+        traceback.print_exc()
+    finally:
+        chart.deleteLater()
+        app.processEvents()
+        destination = ROOT / "temp" / "performance" / source_sha
+        destination.mkdir(parents=True, exist_ok=True)
+        path = destination / ("raster-geometry.json" if args.raster else "rhi-direct.json")
+        path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"原始报告：{path}", flush=True)
+    return 0 if report.get("pass") else 1
 
 
 if __name__ == "__main__":
-    try:
-        raise SystemExit(main())
-    except Exception:
-        traceback.print_exc()
-        raise SystemExit(1)
+    raise SystemExit(main())
