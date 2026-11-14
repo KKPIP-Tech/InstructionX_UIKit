@@ -28,6 +28,7 @@ class _RhiViewport(_ViewportMixin, QWidget):
         global _REGISTERED
         self._init_viewport(canvas)
         self._mouse_target = None
+        self._key_dispatching = False
         if not _REGISTERED:
             qmlRegisterType(BlueprintSceneItem, "InstructionX.Blueprint", 1, 0,
                             "BlueprintSceneItem")
@@ -48,7 +49,6 @@ class _RhiViewport(_ViewportMixin, QWidget):
         self._container.installEventFilter(self)
         self._view.installEventFilter(self)
         self.setFocusProxy(self._container)
-        self._canvas.setFocusProxy(self._container)
         self._view.frameSwapped.connect(self.frameSwapped.emit)
         self._sync_timer = QTimer(self)
         self._sync_timer.setSingleShot(True)
@@ -160,11 +160,16 @@ class _RhiViewport(_ViewportMixin, QWidget):
 
     def _send_key(self, event):
         target = QApplication.focusWidget()
-        if target is None or not self.isAncestorOf(target):
+        if (target in (self, self._container)
+                or target is None or not self.isAncestorOf(target)):
             target = self._canvas
         translated = QKeyEvent(event.type(), event.key(), event.modifiers(), event.text(),
                                event.isAutoRepeat(), event.count())
-        accepted = QCoreApplication.sendEvent(target, translated)
+        self._key_dispatching = True
+        try:
+            accepted = QCoreApplication.sendEvent(target, translated)
+        finally:
+            self._key_dispatching = False
         self._canvas.update()
         return accepted
 
@@ -185,6 +190,9 @@ class _RhiViewport(_ViewportMixin, QWidget):
         if event.type() == QEvent.Type.Wheel:
             return self._send_wheel(event)
         if event.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+            if self._key_dispatching:
+                event.accept()
+                return True
             return self._send_key(event)
         if event.type() == QEvent.Type.ToolTip:
             return self._send_tooltip(event)
