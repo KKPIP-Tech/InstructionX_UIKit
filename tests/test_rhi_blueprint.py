@@ -124,5 +124,20 @@ def _():
     canvas.close()
 
 
+@check("构造未完成的 Blueprint 视口可以安全关闭")
+def _():
+    from InstructionX_UIKit.blueprint.rhi_viewport import _RhiViewport
+    from PySide6.QtCore import QEvent
+    from PySide6.QtWidgets import QWidget
+    from PySide6.QtGui import QHideEvent, QCloseEvent
+
+    viewport = _RhiViewport.__new__(_RhiViewport)
+    QWidget.__init__(viewport)
+    viewport.hideEvent(QHideEvent())
+    viewport.closeEvent(QCloseEvent())
+    assert not viewport.eventFilter(viewport, QEvent(QEvent.MouseMove))
+    viewport.deleteLater()
+
+
 if __name__ == "__main__":
     raise SystemExit(1 if _FAILURES else 0)

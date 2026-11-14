@@ -1,28 +1,29 @@
 # -*- coding: utf-8 -*-
-"""局部 Scene Graph 图表的能力门禁与真实窗口几何回归。"""
+"""RHI 图表默认后端、像素几何、透明清理与生命周期回归。"""
 
 import os
 import sys
-import time
 import traceback
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 if os.environ.get("UIKIT_REAL"):
     os.environ.pop("QT_QPA_PLATFORM", None)
+    os.environ.pop("QSG_RHI_BACKEND", None)
 os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests" / "perf"))
 
 import numpy as np
+from PySide6.QtCore import QEvent
+from PySide6.QtGui import QImage, QPainter
 from PySide6.QtWidgets import QApplication
 
-if os.environ.get("UIKIT_REAL"):
-    from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
-    QQuickWindow.setGraphicsApi(QSGRendererInterface.GraphicsApi.OpenGL)
-
 from InstructionX_UIKit.charts import ChartWidget
+from InstructionX_UIKit.charts.scene_snapshot import build_scene_snapshot
 from InstructionX_UIKit.theme import ThemeManager
+from event_scenario import run_event_scenario
 
 app = QApplication.instance() or QApplication(sys.argv)
 ThemeManager.instance().apply(app)
@@ -41,32 +42,15 @@ def check(name):
     return decorate
 
 
-def pump(ms):
-    deadline = time.monotonic() + ms / 1000
-    while time.monotonic() < deadline:
-        app.processEvents()
-        time.sleep(0.004)
-
-
-def wait_until(predicate, timeout=2.0):
-    deadline = time.monotonic() + timeout
-    while not predicate() and time.monotonic() < deadline:
-        pump(10)
-    if not predicate():
-        raise AssertionError("等待 Scene Graph 完成超时")
-
-
-def make_chart(series=None):
+def make_chart():
     values = np.sin(np.arange(1000, dtype=np.float64) * 0.02)
-    item = {"type": "line", "name": "原生实线", "data": values,
-            "showSymbol": False}
-    item.update(series or {})
     chart = ChartWidget()
     chart.set_option({
         "animation": False,
         "xAxis": {"type": "value"},
         "yAxis": {"type": "value"},
-        "series": [item],
+        "series": [{"type": "line", "name": "RHI 实线", "data": values,
+                    "showSymbol": False}],
     })
     chart.anim.stop()
     chart.anim.set_progress(1.0)
@@ -74,124 +58,158 @@ def make_chart(series=None):
     return chart, values
 
 
-@check("仅普通实线进入 Scene Graph 快照")
-def _():
-    from InstructionX_UIKit.charts.scene_snapshot import quick_capability
-
-    chart, _values = make_chart()
-    assert quick_capability(chart), (chart, "普通实线应受支持")
-    for option in ({"smooth": True}, {"step": "middle"}, {"areaStyle": {}},
-                   {"showSymbol": True}, {"lineStyle": {"type": "dashed"}}):
-        chart, _values = make_chart(option)
-        assert not quick_capability(chart), option
-        chart.close()
-    chart, _values = make_chart({"type": "scatter"})
-    assert not quick_capability(chart)
-    chart.close()
+def reference(chart):
+    image = QImage(round(chart.width() * chart.devicePixelRatioF()),
+                   round(chart.height() * chart.devicePixelRatioF()),
+                   QImage.Format_RGBA8888)
+    image.setDevicePixelRatio(chart.devicePixelRatioF())
+    image.fill(0)
+    painter = QPainter(image)
+    try:
+        chart._paint_contents(painter)
+    finally:
+        painter.end()
+    return image.convertToFormat(QImage.Format_RGBA8888)
 
 
-@check("快照只包含当前屏幕几何与样式")
-def _():
-    from InstructionX_UIKit.charts.scene_snapshot import build_scene_snapshot
-
-    chart, _values = make_chart()
-    chart._layout_all()
-    snapshot = build_scene_snapshot(chart, 1.0)
-    assert snapshot.lines
-    first = snapshot.lines[0]
-    assert first.vertices.shape[1] == 2
-    assert first.vertices.dtype == np.float32
-    assert first.width == 2.0
-    assert first.color.name() == chart.series_renderers[0].color().name()
-    assert snapshot.static_image is not None
-    chart.close()
+def wait_for(predicate, timeout_ms=2000):
+    elapsed = 0
+    while not predicate():
+        if elapsed >= timeout_ms:
+            raise AssertionError("等待 RHI 快照与交换帧超时")
+        yield 20
+        elapsed += 20
 
 
-@check("offscreen 精确回退到已有 QWidget 后端")
+@check("offscreen 使用同一绘制体的软件验证视口")
 def _():
     if os.environ.get("UIKIT_REAL"):
         return
-    os.environ["UIKIT_CHART_BACKEND"] = "quick"
     chart, _values = make_chart()
     assert type(chart._viewport).__name__ == "_RasterViewport"
     chart.show()
-    pump(60)
+    app.processEvents()
     assert not chart.grab().isNull()
     chart.close()
-    os.environ.pop("UIKIT_CHART_BACKEND", None)
 
 
-@check("真实 QQuickView 几何与 option 变化回退")
+@check("全部 option 的 RHI 快照与最终图像一致")
 def _():
-    if not os.environ.get("UIKIT_REAL"):
+    if os.environ.get("UIKIT_REAL"):
         return
-    from InstructionX_UIKit.charts.viewport import create_viewport
-
-    os.environ["UIKIT_CHART_BACKEND"] = "quick"
-    chart, values = make_chart()
-    chart.move(80, 60)
-    chart.show()
-    viewport = chart._viewport
-    swaps = []
-    viewport.frameSwapped.connect(lambda: swaps.append(1))
-    wait_until(lambda: len(swaps) >= 2
-               and viewport._scene._clip_node is not None
-               and viewport._scene._clip_node.childCount() == 1)
-    assert type(viewport).__name__ == "_QuickViewport", type(viewport).__name__
-    assert viewport.active_backend() == "quick"
-    image = viewport.grabFramebuffer()
-    image.save(str(ROOT / "tests" / "shots" / "scene_quick.png"))
-    assert image.width() == round(chart.width() * chart.devicePixelRatioF())
-    assert image.height() == round(chart.height() * chart.devicePixelRatioF())
-    renderer = chart.series_renderers[0]
-    color = renderer.color()
-    target = np.array([color.red(), color.green(), color.blue()])
-    pixels = np.frombuffer(image.constBits(), dtype=np.uint8).reshape(
-        image.height(), image.width(), 4)
-    mask = np.all(np.abs(pixels[:, :, :3].astype(np.int16) - target) <= 4, axis=2)
-    coord = chart.primary_coord()
-    misses = []
-    for index in range(0, len(values), 50):
-        point = coord.map_point(float(index), float(values[index]))
-        x = round(point.x() * image.devicePixelRatio())
-        y = round(point.y() * image.devicePixelRatio())
-        if not mask[max(0, y - 5):y + 6, max(0, x - 5):x + 6].any():
-            misses.append(index)
-    assert not misses, misses
-    chart.update_option({"series": [{
-        "type": "line", "name": "回退", "data": values,
-        "showSymbol": False, "smooth": True,
-    }]})
-    chart.anim.stop()
-    chart.anim.set_progress(1.0)
-    viewport.update()
-    pump(120)
-    assert viewport.active_backend() in ("gl", "raster"), viewport.active_backend()
-    assert not viewport.grabFramebuffer().isNull()
+    chart, _values = make_chart()
+    snapshot = build_scene_snapshot(chart, 1.0)
+    assert snapshot.image.convertToFormat(QImage.Format_RGBA8888) == reference(chart)
     chart.close()
-    os.environ.pop("UIKIT_CHART_BACKEND", None)
 
 
-@check("Scene Graph 反复创建销毁无悬空节点")
+@check("真实 D3D11 曲线几何与透明节点恢复")
 def _():
     if not os.environ.get("UIKIT_REAL"):
         return
-    from PySide6.QtCore import QEvent
-    from shiboken6 import isValid
 
-    os.environ["UIKIT_CHART_BACKEND"] = "quick"
-    for _index in range(8):
-        chart, _values = make_chart()
+    def scenario():
+        chart, values = make_chart()
+        chart.move(80, 60)
         chart.show()
+        chart.raise_()
+        chart.activateWindow()
         viewport = chart._viewport
-        wait_until(lambda: viewport._scene._clip_node is not None
-                   and viewport._scene._clip_node.childCount() == 1)
+        frames = []
+        viewport._view.frameSwapped.connect(lambda: frames.append(1))
+        yield from wait_for(
+            lambda: viewport._scene._snapshot is not None
+            and viewport._scene._texture_key == viewport._scene._snapshot.version
+            and bool(frames))
+        assert type(viewport).__name__ == "_RhiViewport", type(viewport).__name__
+        assert os.environ.get("QSG_RENDER_LOOP") == "basic"
+        api = viewport._view.graphicsApi()
+        if sys.platform == "win32":
+            from PySide6.QtQuick import QSGRendererInterface
+            assert api == QSGRendererInterface.GraphicsApi.Direct3D11, api
+        image = viewport.grabFramebuffer().convertToFormat(QImage.Format_RGBA8888)
+        expected = reference(chart)
+        assert image.size() == expected.size() and image == expected
+        renderer = chart.series_renderers[0]
+        color = renderer.color()
+        target = np.array([color.red(), color.green(), color.blue()])
+        pixels = np.frombuffer(image.constBits(), dtype=np.uint8).reshape(
+            image.height(), image.width(), 4)
+        mask = np.all(np.abs(pixels[:, :, :3].astype(np.int16) - target) <= 4, axis=2)
+        coord = chart.primary_coord()
+        misses = []
+        dpr = image.devicePixelRatio()
+        for index in range(0, len(values), 50):
+            point = coord.map_point(float(index), float(values[index]))
+            x, y = round(point.x() * dpr), round(point.y() * dpr)
+            if not mask[max(0, y - 5):y + 6, max(0, x - 5):x + 6].any():
+                misses.append(index)
+        assert not misses, misses
+        output = ROOT / "tests" / "shots"
+        output.mkdir(exist_ok=True)
+        image.save(str(output / "rhi_scene_chart.png"))
+
+        first = viewport._scene._node
+        viewport._scene.clear()
+        yield 100
+        assert viewport._scene._node is first
+        assert viewport._scene._texture_key is None
+        previous_frames = len(frames)
+        viewport._scene.sync(chart, chart.devicePixelRatioF())
+        yield from wait_for(
+            lambda: viewport._scene._snapshot is not None
+            and viewport._scene._texture_key == viewport._scene._snapshot.version
+            and len(frames) > previous_frames)
+        assert viewport._scene._node is first
+        assert viewport._scene._texture_key is not None
+        restored = viewport.grabFramebuffer().convertToFormat(QImage.Format_RGBA8888)
+        assert restored.size() == expected.size() and restored == expected
         chart.close()
         chart.deleteLater()
         app.sendPostedEvents(None, QEvent.DeferredDelete)
-        app.processEvents()
-        assert not isValid(chart)
-    os.environ.pop("UIKIT_CHART_BACKEND", None)
+        yield 0
+
+    assert run_event_scenario(app, scenario()) == 0
+
+
+@check("RHI 视口反复创建销毁无悬空对象")
+def _():
+    if not os.environ.get("UIKIT_REAL"):
+        return
+    from shiboken6 import isValid
+
+    def scenario():
+        for _index in range(8):
+            chart, _values = make_chart()
+            chart.show()
+            viewport = chart._viewport
+            yield from wait_for(
+                lambda: viewport._scene._snapshot is not None
+                and viewport._scene._texture_key == viewport._scene._snapshot.version)
+            assert type(viewport).__name__ == "_RhiViewport"
+            assert not chart._viewport.grabFramebuffer().isNull()
+            chart.close()
+            chart.deleteLater()
+            app.sendPostedEvents(None, QEvent.DeferredDelete)
+            app.processEvents()
+            yield 0
+            assert not isValid(chart)
+
+    assert run_event_scenario(app, scenario()) == 0
+
+
+@check("构造未完成的 Chart 视口可以安全关闭")
+def _():
+    from InstructionX_UIKit.charts.rhi_viewport import _RhiViewport
+    from PySide6.QtWidgets import QWidget
+    from PySide6.QtGui import QHideEvent, QCloseEvent
+
+    viewport = _RhiViewport.__new__(_RhiViewport)
+    QWidget.__init__(viewport)
+    viewport.hideEvent(QHideEvent())
+    viewport.closeEvent(QCloseEvent())
+    assert not viewport.eventFilter(viewport, QEvent(QEvent.MouseMove))
+    viewport.deleteLater()
 
 
 if __name__ == "__main__":

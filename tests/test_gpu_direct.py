@@ -1,26 +1,28 @@
 # -*- coding: utf-8 -*-
-"""gpuDirect 显式版本、能力门禁与逐系列状态回归（离屏，不代表真实 GL 性能）。"""
+"""原 gpuDirect 选项在 RHI 后端的兼容、像素与资源生命周期（离屏）。"""
 
+import os
 import sys
 import traceback
 from pathlib import Path
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT))
 
 import numpy as np
+from PySide6.QtGui import QImage, QPainter
 from PySide6.QtWidgets import QApplication
 
 from InstructionX_UIKit.charts import ChartWidget
-from InstructionX_UIKit.charts.gl_series import GLSeriesPipeline
-from InstructionX_UIKit.charts.viewport import _GLViewport
+from InstructionX_UIKit.charts.scene_item import ChartSceneItem
+from InstructionX_UIKit.charts.scene_snapshot import build_scene_snapshot
 from InstructionX_UIKit.theme import ThemeManager
-import InstructionX_UIKit.charts.series_cartesian as cartesian
 
-_FAILURES = []
 app = QApplication.instance() or QApplication(sys.argv)
 ThemeManager.instance().apply(app)
+_FAILURES = []
 
 
 def check(name):
@@ -39,180 +41,108 @@ def make_renderer(extra=None):
     chart = ChartWidget()
     chart.resize(640, 360)
     series = {"type": "line", "data": np.arange(300, dtype=np.float64),
-              "gpuDirect": True, "showSymbol": False}
+              "gpuDirect": True, "gpuVersion": 1, "showSymbol": False}
     series.update(extra or {})
-    chart.set_option({"xAxis": {"type": "value"},
-                      "yAxis": {"type": "value"}, "series": [series]})
+    chart.set_option({"animation": False, "xAxis": {"type": "value"},
+                      "yAxis": {"type": "value", "min": -10, "max": 310},
+                      "series": [series]})
     chart.anim.stop()
     chart.anim.set_progress(1.0)
+    chart._layout_all(force=True)
     return chart, chart.series_renderers[0]
 
 
-@check("显式版本不变时复用顶点，递增时才重新转换")
+def reference(chart, dpr=1.0):
+    image = QImage(round(chart.width() * dpr), round(chart.height() * dpr),
+                   QImage.Format_RGBA8888)
+    image.setDevicePixelRatio(dpr)
+    image.fill(0)
+    painter = QPainter(image)
+    try:
+        chart._paint_contents(painter)
+    finally:
+        painter.end()
+    return image.convertToFormat(QImage.Format_RGBA8888)
+
+
+@check("gpuDirect 与显式版本在流式更新中原样保留")
 def _():
     chart, renderer = make_renderer()
-    original = cartesian._to_data_vertices
-    calls = []
-
-    def counted(data):
-        calls.append(1)
-        return original(data)
-
-    cartesian._to_data_vertices = counted
-    try:
-        first = renderer.gpu_vertex_data()
-        second = renderer.gpu_vertex_data()
-        assert first["vertices"] is second["vertices"]
-        assert len(calls) == 1, calls
-        renderer.opt["gpuVersion"] = 2
-        third = renderer.gpu_vertex_data()
-        assert third["version"] != second["version"]
-        assert len(calls) == 2, calls
-    finally:
-        cartesian._to_data_vertices = original
+    assert renderer.gpu_direct
+    assert not chart.gpu_claims(renderer)
+    chart.set_gpu_owner([renderer])
+    assert chart.gpu_claims(renderer)
+    chart.set_gpu_owner(None)
+    assert not chart.gpu_claims(renderer)
+    values = np.arange(300, dtype=np.float64) + 10
+    assert chart.set_stream_data(values, series=0)
+    assert chart.series_renderers[0] is renderer
+    assert renderer.gpu_direct
+    option = chart.option()["series"][0]
+    assert option["gpuDirect"] is True
+    assert option["gpuVersion"] == 1
+    assert option["data"] == values.tolist()
     chart.close()
 
 
-@check("未实现的视觉样式禁止 gpuDirect")
+@check("全部视觉样式由 RHI 快照无缺失呈现")
 def _():
-    for extra in ({"smooth": True}, {"step": "middle"},
-                  {"areaStyle": {}}, {"showSymbol": True},
-                  {"lineStyle": {"type": "dashed"}}):
-        chart, renderer = make_renderer(extra)
-        assert renderer.gpu_vertex_data() is None, extra
-        assert renderer.gpu_transform(chart.primary_coord()) is None, extra
+    for extra in ({"smooth": True}, {"step": "middle"}, {"areaStyle": {}},
+                  {"showSymbol": True}, {"lineStyle": {"type": "dashed"}},
+                  {"lineStyle": {"width": 6, "color": "#C08A3E"}}):
+        chart, _renderer = make_renderer(extra)
+        snapshot = build_scene_snapshot(chart, 1.5)
+        assert snapshot.image.convertToFormat(QImage.Format_RGBA8888) == reference(chart, 1.5), extra
         chart.close()
 
 
-@check("上传计数和字节数只记录实际上传")
+@check("固定轴更新保留静态层并生成独立帧版本")
 def _():
-    class Buffer:
-        def __init__(self):
-            self.allocations = []
-
-        def bind(self):
-            return None
-
-        def allocate(self, data, size):
-            self.allocations.append((data, size))
-
-        def release(self):
-            return None
-
-    pipeline = GLSeriesPipeline()
-    pipeline._ready = True
-    pipeline._vbo = Buffer()
-    points = np.array([[0, 0], [1, 1], [2, 2]], dtype=np.float32)
-    assert pipeline.set_vertices(points, version=1)
-    assert not pipeline.set_vertices(points, version=1)
-    assert pipeline.upload_count == 1
-    assert pipeline.uploaded_bytes == points.nbytes
-    assert pipeline.set_vertices(points, version=2)
-    assert pipeline.upload_count == 2
-    assert pipeline.uploaded_bytes == points.nbytes * 2
-    assert pipeline.vertex_count == 3
-
-
-@check("每个系列持有独立管线且同系列复用")
-def _():
-    chart, first = make_renderer()
-    second = first.__class__(chart, dict(first.opt))
-    viewport = _GLViewport(chart)
-
-    class Context:
-        @staticmethod
-        def isValid():
-            return True
-
-    viewport.context = lambda: Context()
-    original = GLSeriesPipeline.ensure
-    GLSeriesPipeline.ensure = lambda self, _context: setattr(self, "_ready", True) or True
-    try:
-        pipe_a = viewport.ensure_gpu_pipeline(first)
-        pipe_b = viewport.ensure_gpu_pipeline(second)
-        assert pipe_a is not pipe_b
-        assert viewport.ensure_gpu_pipeline(first) is pipe_a
-        assert viewport.ensure_gpu_pipeline(second) is pipe_b
-    finally:
-        GLSeriesPipeline.ensure = original
-        viewport.close()
-        chart.close()
-
-
-@check("lineStyle 宽度和颜色原样传入 GPU draw")
-def _():
-    chart, renderer = make_renderer({
-        "lineStyle": {"width": 6, "color": "#C08A3E"},
-    })
-    viewport = _GLViewport(chart)
-
-    class Functions:
-        @staticmethod
-        def glViewport(*_args):
-            return None
-
-    class Context:
-        @staticmethod
-        def functions():
-            return Functions()
-
-    class Pipeline:
-        vertex_count = 3
-
-        def __init__(self):
-            self.calls = []
-
-        def set_vertices(self, _vertices, version=None):
-            return False
-
-        def draw(self, _context, _mvp, color, **options):
-            self.calls.append((color, options))
-            return True
-
-    pipeline = Pipeline()
-    assert viewport._draw_one_gpu_series(Context(), pipeline, renderer, 1.0) is True
-    color, options = pipeline.calls[0]
-    assert options["width"] == 6, options
-    assert color.name() == "#c08a3e", color.name()
-    viewport.close()
+    chart, _renderer = make_renderer()
+    first = build_scene_snapshot(chart, 1.0)
+    assert chart.set_stream_data(np.arange(300, dtype=np.float64) + 1, series=0)
+    build_scene_snapshot(chart, 1.0)
+    static_key = chart._static_key
+    assert chart.set_stream_data(np.arange(300, dtype=np.float64) + 2, series=0)
+    second = build_scene_snapshot(chart, 1.0)
+    assert second.version != first.version
+    assert second.image is not first.image
+    assert chart._static_key == static_key
     chart.close()
 
 
-@check("渲染器移除后释放旧系列管线")
+@check("清空保留可复用节点并仅失效纹理版本")
 def _():
+    chart, _renderer = make_renderer()
+    snapshot = build_scene_snapshot(chart, 1.0)
+    item = ChartSceneItem()
+    node = object()
+    texture = object()
+    item._node = node
+    item._texture = texture
+    item._texture_key = snapshot.version
+    item._snapshot = snapshot
+    item.clear()
+    assert item._snapshot is None
+    assert item._node is node
+    assert item._texture is texture
+    assert item._texture_key is None
+    assert len(item._frames) <= 3
+    chart.close()
+
+
+@check("旧 GL 管线与顶点接口已完全退出")
+def _():
+    assert not (ROOT / "InstructionX_UIKit" / "charts" / "gl_series.py").exists()
     chart, renderer = make_renderer()
-    viewport = _GLViewport(chart)
-
-    class Pipeline:
-        def __init__(self):
-            self.released = False
-
-        def release(self):
-            self.released = True
-
-    stale = Pipeline()
-    viewport._gpu_pipes[123456] = stale
-    renderer._gpu_direct = False
-    viewport._claim_gpu_series(None)
-    assert stale.released
-    assert not viewport._gpu_pipes
-    viewport.close()
+    assert not hasattr(renderer, "gpu_vertex_data")
+    assert not hasattr(renderer, "gpu_transform")
+    source = (ROOT / "InstructionX_UIKit" / "charts" / "viewport.py").read_text(
+        encoding="utf-8")
+    assert "QOpenGLWidget" not in source
+    assert "_GLViewport" not in source
     chart.close()
-
-
-@check("数据正半轴映射到 NDC 上方")
-def _():
-    from PySide6.QtGui import QVector3D
-    from InstructionX_UIKit.charts.gl_series import build_mvp
-
-    matrix = build_mvp(0, 10, -2, 2,
-                       plot=(100, 100, 0, 0), viewport=(100, 100))
-    high = matrix.map(QVector3D(5, 2, 0))
-    low = matrix.map(QVector3D(5, -2, 0))
-    assert high.y() > 0.99, high
-    assert low.y() < -0.99, low
 
 
 if __name__ == "__main__":
-    app.quit()
     raise SystemExit(1 if _FAILURES else 0)
