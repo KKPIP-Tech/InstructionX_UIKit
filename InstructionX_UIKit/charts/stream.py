@@ -428,9 +428,7 @@ class StreamSession:
         **补丁必须带上该系列的完整 option**（渲染器当前的 ``opt`` 加新 data），
         而不是只给 ``{"data": ...}``：``update_option`` 的契约是 **list 值整体
         替换**（见 core._deep_merge），只给 ``data`` 会把 ``type`` / ``name`` /
-        ``lineStyle`` / ``gpuDirect`` 等一并抹掉——实测表现为开启 ``gpuDirect``
-        的流式系列从第二帧起丢失直绘标记（``gpu_vertex_data()`` 返回 None、
-        VBO 顶点数 0），于是每帧白做一次 CPU 光栅化。
+        ``lineStyle`` / ``gpuDirect`` 等调用方选项一并抹掉。RHI 不改变这一语义。
         """
         vals = data
         chart = self.chart
