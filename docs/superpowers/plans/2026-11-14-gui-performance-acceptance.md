@@ -111,8 +111,8 @@
 ### 资源与音频
 
 - 连续操作期间内存、显存、位图、RHI／Scene Graph 资源不得无界增长；隐藏和销毁后资源释放。
-- `RhiTextureItem` 最多保留三帧引用，清空使用透明纹理，旧 OpenGL 管线已删除。
-- 短音频探针记录为 `ActiveState / NoError`，不能代替长时复杂场景或主观听感验收。
+- `RhiTextureItem` 最多保留三帧引用，清空使用透明纹理，旧 OpenGL 管线已删除。曾发现 `ownsTexture=False` 下旧纹理没有显式释放的问题；当前实现已对超龄纹理调用 `deleteLater()`，并在销毁时清理剩余纹理。资源复验以当前 HEAD 的正式测量为准。
+- 4×30 秒复杂场景音频探针记录为 `ActiveState / NoError`，不能代替更长时间运行或主观听感验收。
 - 当前状态：`[未验证]`。
 
 ## 回退与停止条件
