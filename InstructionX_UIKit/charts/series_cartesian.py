@@ -953,6 +953,10 @@ class LineSeriesRenderer(SeriesRenderer):
     def _animated_points(self, anim_t):
         """旧→新插值：长度一致时逐点 lerp；否则返回当前点列。"""
         cur = self._points
+        if anim_t >= 1.0 or not self.chart.anim.is_running():
+            return cur
+        if self.prev_data is not None and len(self.prev_data) != len(self._entries):
+            return cur
         prev_src = self._prev_points
         if self.prev_data is not None and len(self.prev_data) == len(self._entries):
             coord = self.chart.coord_for(self.opt)
