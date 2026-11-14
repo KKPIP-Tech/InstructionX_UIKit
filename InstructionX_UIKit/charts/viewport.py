@@ -271,6 +271,11 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
         ``ensure_gpu_pipeline`` + ``with viewport``（见其 docstring）。
         """
         chart = self._chart
+        live_renderers = {id(renderer) for renderer in chart.series_renderers}
+        for key, pipe in list(self._gpu_pipes.items()):
+            if key not in live_renderers:
+                pipe.release()
+                del self._gpu_pipes[key]
         cands = [r for r in chart.series_renderers
                  if getattr(r, "gpu_direct", False) and r.visible]
         if not cands:
@@ -399,9 +404,15 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
             return
         f = ctx.functions()
         f.glViewport(0, 0, int(w), int(h))
-        color = renderer.color()
-        pipe.draw(ctx, mvp, color, mode="line_strip",
-                  width=float(renderer.opt.get("lineWidth", 2.0) or 2.0))
+        style = renderer.opt.get("lineStyle") or {}
+        color = (QColor(style["color"])
+                 if isinstance(style.get("color"), str) and style["color"]
+                 else renderer.color())
+        try:
+            width = float(style.get("width", 2.0) or 2.0)
+        except (TypeError, ValueError):
+            width = 2.0
+        return pipe.draw(ctx, mvp, color, mode="line_strip", width=width)
 
 
 def create_viewport(chart) -> QWidget:
