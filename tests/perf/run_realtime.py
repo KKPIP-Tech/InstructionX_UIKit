@@ -199,9 +199,17 @@ def main():
                         default="complex")
     parser.add_argument("--enforce", action="store_true")
     parser.add_argument("--gpu-direct", action="store_true")
+    parser.add_argument("--backend", choices=["gl", "raster", "quick"])
     args = parser.parse_args()
     if args.seconds <= 0 or args.rounds < 1 or args.warmup < 0:
         parser.error("seconds/rounds/warmup 参数无效")
+    if args.backend:
+        os.environ["UIKIT_CHART_BACKEND"] = args.backend
+    else:
+        os.environ.pop("UIKIT_CHART_BACKEND", None)
+    if args.backend == "quick":
+        from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
+        QQuickWindow.setGraphicsApi(QSGRendererInterface.GraphicsApi.OpenGL)
     if args.gpu_direct:
         os.environ["UIKIT_PERF_GPU_DIRECT"] = "1"
     else:
@@ -352,6 +360,7 @@ def main():
             "label": args.label,
             "tag": args.tag,
             "only": args.only,
+            "backend": args.backend or "default",
             "gpu_direct": args.gpu_direct,
             "round": round_index + 1,
             "requested_seconds": args.seconds,
