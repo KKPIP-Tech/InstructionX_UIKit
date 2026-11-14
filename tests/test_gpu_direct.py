@@ -200,6 +200,19 @@ def _():
     chart.close()
 
 
+@check("数据正半轴映射到 NDC 上方")
+def _():
+    from PySide6.QtGui import QVector3D
+    from InstructionX_UIKit.charts.gl_series import build_mvp
+
+    matrix = build_mvp(0, 10, -2, 2,
+                       plot=(100, 100, 0, 0), viewport=(100, 100))
+    high = matrix.map(QVector3D(5, 2, 0))
+    low = matrix.map(QVector3D(5, -2, 0))
+    assert high.y() > 0.99, high
+    assert low.y() < -0.99, low
+
+
 if __name__ == "__main__":
     app.quit()
     raise SystemExit(1 if _FAILURES else 0)

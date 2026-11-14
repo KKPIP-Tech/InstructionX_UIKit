@@ -38,7 +38,7 @@ def pump(milliseconds):
     QTest.qWait(milliseconds)
 
 
-def curve_geometry(chart, image):
+def curve_geometry(chart, image, values):
     image = image.convertToFormat(QImage.Format_RGBA8888)
     width, height = image.width(), image.height()
     pixels = np.frombuffer(image.constBits(), dtype=np.uint8).reshape(
@@ -59,6 +59,16 @@ def curve_geometry(chart, image):
     ys, xs = np.where(mask)
     if not len(xs):
         return {"count": 0, "physical": [width, height]}
+    samples = []
+    coord = chart.primary_coord()
+    for index in list(range(0, len(values), 1571)) + [len(values) - 1]:
+        point = coord.map_point(float(index), float(values[index]))
+        x = int(round(point.x() * dpr))
+        y = int(round(point.y() * dpr))
+        radius = 6
+        hit = bool(mask[max(0, y - radius):y + radius + 1,
+                        max(0, x - radius):x + radius + 1].any())
+        samples.append({"index": index, "expected": [x, y], "hit": hit})
     return {
         "count": int(len(xs)),
         "x_span": int(xs.max() - xs.min()),
@@ -66,6 +76,7 @@ def curve_geometry(chart, image):
         "bbox": [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())],
         "plot_physical": [left, top, right, bottom],
         "physical": [width, height],
+        "sampled_points": samples,
     }
 
 
@@ -117,7 +128,11 @@ def main():
     }
     image = viewport.grab().toImage() if args.raster else viewport.grabFramebuffer()
     image.save(str(output_dir / ("raster.png" if args.raster else "gpu.png")))
-    report["geometry"] = curve_geometry(chart, image)
+    report["geometry"] = curve_geometry(chart, image, values)
+    check(all(point["hit"] for point in report["geometry"].get("sampled_points", [])),
+          "逐点经过坐标系给出的预期屏幕位置",
+          [point for point in report["geometry"].get("sampled_points", [])
+           if not point["hit"]])
     check(report["exposed"], "视口真实暴露且未被移出屏幕")
     check(report["geometry"]["count"] > 100, "绘图区有曲线像素", report["geometry"])
     check(report["geometry"].get("x_span", 0) > 500,
