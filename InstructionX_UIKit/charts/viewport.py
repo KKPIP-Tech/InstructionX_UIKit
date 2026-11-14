@@ -416,10 +416,21 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
 
 
 def create_viewport(chart) -> QWidget:
-    """按 GL 可用性为图表创建绘制视口（调用方负责铺满与 show）。"""
+    """按显式后端与 GL 可用性创建视口（调用方负责铺满与 show）。"""
+    backend = os.environ.get("UIKIT_CHART_BACKEND", "").strip().lower()
+    if backend == "quick" and os.environ.get("UIKIT_CHART_GL", "auto").lower() != "off":
+        try:
+            from .quick_viewport import create_quick_viewport
+            viewport = create_quick_viewport(chart)
+            if viewport is not None:
+                return viewport
+        except Exception as exc:
+            logger.warning("Scene Graph 后端不可用，回退原后端: %s", exc)
+    if backend == "raster":
+        return _RasterViewport(chart)
     if gl_available():
         try:
             return _GLViewport(chart)
-        except Exception as exc:  # 防御：构造期异常同样回退
+        except Exception as exc:
             logger.warning("GL 视口创建失败，回退软件渲染: %s", exc)
     return _RasterViewport(chart)
