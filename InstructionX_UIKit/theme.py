@@ -222,10 +222,17 @@ def apply_shadow(widget: QWidget, level: str = "sm") -> None:
         raise ValueError(f"未知阴影级别: {level!r}，应为 sm/md/lg 之一")
     spec = ThemeManager.instance().tokens[f"shadow.{level}"]
     r, g, b, a = spec["color"]
+    color = QColor(r, g, b, a)
+    existing = widget.graphicsEffect()
+    if (isinstance(existing, QGraphicsDropShadowEffect)
+            and existing.blurRadius() == spec["blur"]
+            and existing.offset() == QPointF(*spec["offset"])
+            and existing.color() == color):
+        return
     effect = QGraphicsDropShadowEffect(widget)
     effect.setBlurRadius(spec["blur"])
     effect.setOffset(*spec["offset"])
-    effect.setColor(QColor(r, g, b, a))
+    effect.setColor(color)
     widget.setGraphicsEffect(effect)
 
 
@@ -502,7 +509,6 @@ QWidget[role="code"] {{
     border: 1px solid {c('border.subtle')};
     border-radius: {t['radius.md']}px;
 }}
-QWidget[role="code"] QLabel {{ background-color: transparent; }}
 /* 顶部条：面底色 + 底部分隔 */
 QWidget[role="topbar"] {{
     background-color: {c('bg.base')};
