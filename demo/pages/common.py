@@ -484,7 +484,7 @@ class ColorBlock(QWidget):
         self._key = color_key
         self._on = text_on
         self.setMinimumSize(*size)
-        ThemeManager.instance().theme_changed.connect(lambda *_: self.update())
+        ThemeManager.instance().theme_changed.connect(self.update)
 
     def paintEvent(self, event):  # noqa: N802
         painter = QPainter(self)
