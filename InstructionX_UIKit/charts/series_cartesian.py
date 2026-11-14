@@ -30,6 +30,7 @@ from PySide6.QtGui import (
     QPainter,
     QPainterPath,
     QPen,
+    QPolygonF,
 )
 
 from ..theme import T
@@ -643,7 +644,8 @@ class LineSeriesRenderer(SeriesRenderer):
     - ``areaStyle``: dict 或真值，面积填充（透明渐变），
       ``areaStyle.opacity`` 可调（默认 0.22）；
     - ``step``: "start" | "middle" | "end" 阶梯线；
-    - ``showSymbol``: 是否绘制数据点（默认 True）；
+    - ``showSymbol``: 是否绘制数据点（默认 True）；显式 ``"auto"`` 时超过
+      512 个可见点跳过符号，缺省与显式 True 的强制显示语义不变；
     - ``symbolSize``: 数据点直径 px（默认 6）；
     - ``lineStyle``: {"type": "solid|dashed|dotted", "width": px, "color": ...}；
     - 支持 grid / polar（闭合）/ singleAxis 坐标系；
@@ -660,14 +662,26 @@ class LineSeriesRenderer(SeriesRenderer):
         # 实测已达标（150 万点 5.0 ms / 198 fps），而全分辨率上传有一次性成本。
         self._gpu_direct = bool(opt.get("gpuDirect", False))
         self._gpu_version = None
+        self._gpu_vertices = None
         #: 矢量映射首用自检状态（见 _map_sampled_fast 的护栏说明）
         self._fast_map_checked = False
         self._fast_map_disabled = False
+        self._last_symbol_count = 0
 
     # -- GPU 直绘（供 GL 视口调用） ----------------------------------------
     @property
     def gpu_direct(self) -> bool:
         return self._gpu_direct
+
+    def _gpu_supported(self):
+        if not self._gpu_direct:
+            return False
+        if self.opt.get("smooth") or self.opt.get("step") or "areaStyle" in self.opt:
+            return False
+        if self.opt.get("showSymbol", True) is not False:
+            return False
+        style = self.opt.get("lineStyle") or {}
+        return str(style.get("type") or "solid") in ("solid", "")
 
     def gpu_vertex_data(self):
         """返回 GPU 直绘所需的数据（无需 VBO 时返回 ``None``）。
@@ -1021,10 +1035,32 @@ class LineSeriesRenderer(SeriesRenderer):
             return ax.map(v, coord.plot.bottom(), coord.plot.top())
         return None
 
+    def _line_needs_path(self, polar):
+        return bool(
+            polar
+            or self.opt.get("smooth")
+            or str(self.opt.get("step") or "") in ("start", "middle", "end")
+            or self.opt.get("areaStyle")
+        )
+
+    def _draw_symbols(self, painter, valid, color, anim_t):
+        setting = self.opt.get("showSymbol", True)
+        enabled = len(valid) <= 512 if setting == "auto" else bool(setting)
+        if not enabled:
+            return 0
+        radius = max(1.0, _to_float(self.opt.get("symbolSize"), 6.0) / 2)
+        radius *= max(0.2, anim_t)
+        painter.setPen(QPen(color, 1.5))
+        painter.setBrush(QColor(T("color.bg.elevated")))
+        for point in valid:
+            painter.drawEllipse(point, radius, radius)
+        return len(valid)
+
     # -- 绘制 -------------------------------------------------------------
     def paint(self, p: QPainter, anim_t: float) -> None:
         pts = self._animated_points(anim_t)
         valid = [pt for pt in pts if pt is not None]
+        self._last_symbol_count = 0
         if not valid:
             return
         coord = self.chart.coord_for(self.opt)
@@ -1096,19 +1132,15 @@ class LineSeriesRenderer(SeriesRenderer):
         for seg_pts in segs:
             if len(seg_pts) < 2:
                 continue
+            if not self._line_needs_path(polar):
+                p.drawPolyline(QPolygonF(seg_pts))
+                continue
             path, _ = self._line_path(seg_pts)
             if polar:
                 path.closeSubpath()
             p.drawPath(path)
 
-        # 数据点
-        if bool(self.opt.get("showSymbol", True)):
-            r = max(1.0, _to_float(self.opt.get("symbolSize"), 6.0) / 2)
-            r *= max(0.2, anim_t)
-            p.setPen(QPen(color, 1.5))
-            p.setBrush(QColor(T("color.bg.elevated")))
-            for pt in valid:
-                p.drawEllipse(pt, r, r)
+        self._last_symbol_count = self._draw_symbols(p, valid, color, anim_t)
         p.restore()
 
     # -- 交互 -------------------------------------------------------------
