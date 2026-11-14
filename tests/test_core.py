@@ -9,7 +9,7 @@
 - 令牌键完整性与 SPEC 数值抽查；
 - ThemeManager 单例 / 信号 / set_mode / toggle / apply / tokens / T()；
 - build_qss 选择器覆盖与亮暗参数化；
-- set_property（含 size -> uiksize 别名）与输入控件高度 24/32/40；
+- set_property（含 size -> uiksize 别名）与输入控件高度 22/28/34；
 - apply_shadow 三级阴影；
 - 构造综合窗口，亮 / 暗两主题各 grab() 截图到 tests/shots/；
 - 通过截图像素比对验证主题切换真实生效。
@@ -110,7 +110,7 @@ def _():
 
     # 数值抽查（SPEC §2.1/§2.3/§2.4/§2.5/§2.7）
     spot = {
-        "color.bg.base": ("#FFFFFF", "#15181E"),
+        "color.bg.base": ("#FFFFFF", "#1B1F27"),
         "color.bg.elevated": ("#FFFFFF", "#1F242E"),
         "color.border": ("#E3E6EB", "#2C333F"),
         "color.text.primary": ("#1C2330", "#E7EAF0"),
@@ -127,7 +127,7 @@ def _():
         "color.overlay": ("rgba(28,35,48,0.45)", "rgba(0,0,0,0.55)"),
         "space.0": (0, 0), "space.05": (2, 2), "space.4": (16, 16),
         "space.16": (64, 64),
-        "radius.sm": (4, 4), "radius.md": (6, 6), "radius.pill": (999, 999),
+        "radius.sm": (4, 4), "radius.md": (8, 8), "radius.pill": (999, 999),
         "font.md": (13, 13), "font.hero": (32, 32),
         "font.weight.semibold": (600, 600),
         "font.line_height.body": (1.5, 1.5),
@@ -258,7 +258,7 @@ def _():
         raise AssertionError("滚动条必须为 8px 细样式")
 
 
-@check("set_property 与输入控件高度 sm=24 / md=32 / lg=40")
+@check("set_property 与输入控件高度 sm=22 / md=28 / lg=34")
 def _():
     from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QPushButton, QSpinBox
 
@@ -278,9 +278,10 @@ def _():
         if size is not None:
             set_property(widget, "size", size)
         widget.ensurePolished()
-        return widget.sizeHint().height()
+        widget.adjustSize()
+        return widget.height()
 
-    targets = {"sm": 24, "md": 32, "lg": 40}
+    targets = {"sm": 22, "md": 28, "lg": 34}
     for cls in (QLineEdit, QComboBox, QSpinBox, QPushButton):
         for size, expect in targets.items():
             w = cls() if cls is not QPushButton else cls("按钮")
@@ -288,9 +289,9 @@ def _():
                 w.addItem("选项")
             got = height(w, size)
             assert_eq(got, expect, f"{cls.__name__}[size={size}] 高度")
-        # 默认（无属性）应为 md=32
+        # 默认（无属性）应为 md=28
         got = height(cls() if cls is not QPushButton else cls("按钮"))
-        assert_eq(got, 32, f"{cls.__name__} 默认高度")
+        assert_eq(got, 28, f"{cls.__name__} 默认高度")
 
 
 @check("apply_shadow 三级阴影按令牌生效")
@@ -473,7 +474,7 @@ def _():
         if not path.exists() or path.stat().st_size < 4096:
             raise AssertionError(f"截图缺失或过小: {path}")
 
-    # 像素比对 1：窗口背景应贴近 bg.base（亮 #FFFFFF / 暗 #15181E）
+    # 像素比对 1：窗口背景应贴近 bg.base（亮 #FFFFFF / 暗 #1B1F27）
     def near(px, hex_color, tol=12):
         from PySide6.QtGui import QColor
         qc = QColor(hex_color)

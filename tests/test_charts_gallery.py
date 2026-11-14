@@ -6,8 +6,8 @@
     QT_QPA_PLATFORM=offscreen python tests/test_charts_gallery.py
 
 覆盖：
-- 页面实例化：ChartWidget 数量 >= 24（21 系列演示卡 + 4 坐标系/map +
-  组件综合大图，共 27）；
+- 页面实例化：27 张系列／坐标／组件演示卡各一图，另有一个巨量数据图，
+  共 28 个 ChartWidget；
 - 逐图 set_option 无异常、grab 非空白（抽样像素）；
 - 参数面板修改 2-3 个参数生效（bar 堆叠/柱宽、pie 环形/标签位置、
   gauge 目标值、综合演示标线切换）；
@@ -130,7 +130,8 @@ def _():
     CARDS = PAGE.findChildren(ChartDemoCard)
     charts = PAGE.findChildren(ChartWidget)
     assert_true(len(charts) >= 24, f"ChartWidget 数量 {len(charts)} < 24")
-    assert_eq(len(charts), len(CARDS), "每张演示卡应对应一个 ChartWidget")
+    assert_eq(len(CARDS), 27, "21 系列 + 4 坐标/map + 组件综合 + 组件演示卡")
+    assert_eq(len(charts), len(CARDS) + 1, "演示卡之外还应有一个巨量数据 ChartWidget")
     print(f"    演示卡 {len(CARDS)} 张，ChartWidget {len(charts)} 个")
 
 

@@ -10,7 +10,7 @@
   水平偏差 <= 1px（修复前 QToolButton 水平 Fixed 策略使按钮按 sizeHint
   宽度左对齐，图标偏离栏中心约 4~6px）；展开态恢复「图标 + 文本」，
   布局行为不变。
-- Button(shape="circle") 短文本（"+"）：24/32/40 三档下墨迹 bbox 中心
+- Button(shape="circle") 短文本（"+"）：22/28/34 三档下墨迹 bbox 中心
   与按钮中心水平 + 垂直偏差均 <= 1px，墨迹质心偏差 <= 0.75px
   （修复前行高盒居中使 md 档垂直偏 +1.4px）；round 形状不受影响。
 - Popover / Message / Notification：暗色主题弹出后按预乘 Alpha 渲染
@@ -222,7 +222,7 @@ def _():
 def _measure_ink(btn, edge):
     """返回 (bbox中心偏差x, bbox中心偏差y, 质心偏差x, 质心偏差y, 墨迹像素数)。"""
     img = render_alpha(btn)
-    bg = img.pixelColor(2, edge // 2).getRgb()[:3]  # 圆面底色（左缘内侧）
+    bg = btn._content_color().getRgb()[:3]  # 实际文字前景色，避免把圆角边框算成墨迹
     tot = sx = sy = 0.0
     pts = []
     for y in range(edge):
@@ -249,14 +249,14 @@ def _measure_ink(btn, edge):
     return bcx, bcy, ccx, ccy, len(pts)
 
 
-@check("Button circle '+'：24/32/40 三档墨迹中心偏差 <= 1px（水平+垂直）")
+@check("Button circle '+'：22/28/34 三档墨迹中心偏差 <= 1px（水平+垂直）")
 def _():
     from InstructionX_UIKit.components.button import Button
 
     for mode in ("light", "dark"):
         ThemeManager.instance().set_mode(mode)
         settle(_APP)
-        for size, edge in (("sm", 24), ("md", 32), ("lg", 40)):
+        for size, edge in (("sm", 22), ("md", 28), ("lg", 34)):
             btn = Button("+", variant="primary", shape="circle", size=size)
             btn.setFixedSize(edge, edge)
             btn.show()
@@ -311,7 +311,7 @@ def _():
     from PySide6.QtWidgets import QHBoxLayout
     row_host = QWidget()
     row_lay = QHBoxLayout(row_host)
-    for size, edge in (("sm", 24), ("md", 32), ("lg", 40)):
+    for size, edge in (("sm", 22), ("md", 28), ("lg", 34)):
         b = Button("+", variant="primary", shape="circle", size=size)
         b.setFixedSize(edge, edge)
         row_lay.addWidget(b)
@@ -404,7 +404,7 @@ def _():
     settle(_APP)
     pop._stop_enter_animation()
     settle(_APP, 30)
-    _check_popup_transparent(pop, "Popover", margin=12)
+    _check_popup_transparent(pop, "Popover", margin=0)
     _save_popup_shot(pop, "fixa2_popover_dark.png")
     pop.close()
 
@@ -432,7 +432,7 @@ def _():
     settle(_APP)
     pop2._stop_enter_animation()
     settle(_APP, 30)
-    _check_popup_transparent(pop2, "Popover(light)", margin=12)
+    _check_popup_transparent(pop2, "Popover(light)", margin=0)
     _save_popup_shot(pop2, "fixa2_popover_light.png")
     pop2.close()
 

@@ -102,7 +102,7 @@ def _():
     # size
     s = ts.size("space.4")
     assert isinstance(s, int) and s == 16, "size(space.4) 应为 int 16"
-    assert_eq(ts.size("radius.lg"), 8)
+    assert_eq(ts.size("radius.lg"), 12)
     assert_eq(ts.size("font.md"), 13)
     assert_eq(ts.size("font.line_height.body"), 1.5)  # 行高保持 float
     # font
@@ -183,7 +183,7 @@ def _():
     fired.clear()
     ts.reset_all()
     assert_eq(ts.value("space.4"), 16, "reset_all 应还原 space.4")
-    assert_eq(ts.value("radius.md"), 6, "reset_all 应还原 radius.md")
+    assert_eq(ts.value("radius.md"), 8, "reset_all 应还原 radius.md")
     assert_eq(sorted(fired), ["radius.md", "space.4"], "reset_all 应逐键发射")
     assert_eq(ts.overrides(), {}, "reset_all 后覆盖表应为空")
 

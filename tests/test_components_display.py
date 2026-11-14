@@ -579,7 +579,10 @@ def _():
     desc.set_items([("a", "1"), ("b", "2"), ("c", "3")])
     desc.resize(500, 200)
     desc.show()
-    assert desc._grid.count() == 3
+    expected = [("a", "1"), ("b", "2"), ("c", "3")]
+    assert desc.items() == expected
+    assert desc._grid.items() == expected
+    assert desc.cols() == 2
     desc.hide()
 
 
