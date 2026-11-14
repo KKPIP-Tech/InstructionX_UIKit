@@ -230,7 +230,7 @@ class Popover(QWidget):
         的卡体铺满，不存在可能被合成器显示成色块的半透明区域。
         """
         side = {"top": "bottom", "bottom": "top",
-                "left": "left", "right": "right"}[self._placement]
+                "left": "right", "right": "left"}[self._placement]
         margins = {"left": _BORDER_M, "top": _BORDER_M,
                    "right": _BORDER_M, "bottom": _BORDER_M}
         margins[side] = _BORDER_M + _ARROW_H
