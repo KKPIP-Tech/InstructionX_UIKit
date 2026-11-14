@@ -23,6 +23,8 @@
 import math
 import random
 
+from shiboken6 import isValid as _shiboken_is_valid
+
 from PySide6.QtCore import (
     QAbstractAnimation,
     QEasingCurve,
@@ -1794,7 +1796,7 @@ class ScrollReveal(QScrollArea):
     说明：渐显通过「隐藏子控件（保留布局占位）+ 快照叠加层淡入」实现，
     **不使用 QGraphicsOpacityEffect**（真机 Windows + QSS + 高 DPI 下
     效果常驻 / 整片不绘制的平台坑）；结束后摘除叠加层并显示原控件，
-    最终渲染与平台无关。扫描在控件尚未 show / 视口未就绪时会自动
+    最终渲染与平台无关。显示时安排扫描，可见但视口高度未就绪时
     重试，避免演示卡「先构建后显示」时序下块被错误预隐藏。
     示例::
 
@@ -1810,6 +1812,9 @@ class ScrollReveal(QScrollArea):
         self._revealed = set()
         self._pre_hidden = {}   # 被预隐藏的子控件 → 原 QSizePolicy
         self._scan_retries = 0
+        self._scan_timer = QTimer(self)
+        self._scan_timer.setSingleShot(True)
+        self._scan_timer.timeout.connect(self._scan)
         if content is not None:
             self.setContent(content)
         self.verticalScrollBar().valueChanged.connect(lambda *_: self._scan())
@@ -1826,7 +1831,7 @@ class ScrollReveal(QScrollArea):
         self._pre_hidden.clear()
         self._scan_retries = 0
         self.setWidget(content)
-        QTimer.singleShot(0, self._scan)
+        self._scan_timer.start(0)
 
     def refresh(self):
         """手动触发一次扫描（内容增删后调用）。"""
@@ -1839,19 +1844,24 @@ class ScrollReveal(QScrollArea):
     def showEvent(self, event):
         super().showEvent(event)
         self._scan_retries = 0
-        QTimer.singleShot(0, self._scan)
+        self._scan_timer.start(0)
+
+    def hideEvent(self, event):
+        self._scan_timer.stop()
+        super().hideEvent(event)
 
     def _scan(self):
+        if not _shiboken_is_valid(self):
+            return
         content = self.widget()
-        if content is None:
+        if content is None or not self.isVisible():
             return
         viewport = self.viewport()
-        # 视口未就绪（未 show / 高度异常）时延迟重试——此时 mapTo 坐标
-        # 不可信，预隐藏会把块错误地卡成不可见
-        if not self.isVisible() or viewport.height() < 8:
+        # 可见但高度未就绪时延迟重试，不预隐藏位置不可信的子控件。
+        if viewport.height() < 8:
             if self._scan_retries < 60:
                 self._scan_retries += 1
-                QTimer.singleShot(30, self._scan)
+                self._scan_timer.start(30)
             return
         self._scan_retries = 0
         vh = max(1, viewport.height())
@@ -1973,6 +1983,9 @@ class HorizontalScrollStrip(_HiddenPauseMixin, QScrollArea):
         self._layout.setContentsMargins(12, 6, 12, 6)
         self._layout.setSpacing(int(T("space.3")))
         self.setWidget(self._container)
+        self._measure_timer = QTimer(self)
+        self._measure_timer.setSingleShot(True)
+        self._measure_timer.timeout.connect(self._measure)
         self._ticker = _Ticker(self, self._advance, interval)
         sb = self.horizontalScrollBar()
         sb.valueChanged.connect(self._wrap)
@@ -2026,7 +2039,7 @@ class HorizontalScrollStrip(_HiddenPauseMixin, QScrollArea):
                     if _copy == 0:
                         self._layout.addWidget(entry)
         self._container.adjustSize()
-        QTimer.singleShot(0, self._measure)
+        self._measure_timer.start(0)
 
     def _measure(self):
         margins = self._layout.contentsMargins()
