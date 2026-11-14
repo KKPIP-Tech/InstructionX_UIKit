@@ -29,12 +29,14 @@ pip install -r requirements.txt
 `requirements.txt` 内容：
 
 ```
-PySide6>=6.6
+PySide6>=6.11.1
 PySide6-Addons>=6.6
 qrcode[pil]>=7.4
+matplotlib>=3.11.1
+numpy>=2.0
 ```
 
-仅 PySide6（>=6.6，含 Addons）与 qrcode（二维码组件用）依赖，无其他第三方库。
+依赖仅 PySide6（含 Addons）、qrcode（二维码）、已批准的 matplotlib（LaTeX 公式）与 NumPy（大数据管线），无其他第三方库。
 
 ## 2. 快速开始
 
@@ -1252,6 +1254,12 @@ print(sess.stats)        # {"batches", "points", "frames", "merged", "dropped", 
 from InstructionX_UIKit.charts.stream import RingBuffer, FrameCoalescer
 ```
 
+**页面激活状态：** `ChartWidget`、`BlueprintCanvas` 与 `ChatConversation` 提供
+`on_ui_activated()` / `on_ui_deactivated()`，供页面宿主和插件管理器调用。隐藏或最小化时，
+停止实时入图定时器、图表动画、Blueprint 流动与聊天批处理；恢复时只提交最新数据，
+不补跑隐藏期间的帧。调用方显式启动的动画保留运行状态和进度。`StreamSession.set_active(bool)`
+可单独控制一个流式会话，`close()` 仍负责最终释放。
+
 ### 8.4 GPU 原生直绘（可选，默认关闭）
 
 把折线顶点直接提交显卡（VBO + GLSL，坐标变换在着色器内完成），**绕过 QPainter 的路径
@@ -1291,6 +1299,33 @@ from InstructionX_UIKit.charts.stream import RingBuffer, FrameCoalescer
 即：稳态下同屏多图没有压力；瓶颈只在「同一帧内所有图的数据都变化」。该场景的硬下限是
 每图采样与布局的固定成本，**建议错开更新时机**（例如不同图用不同 `interval`，或分批投递），
 而不是追求单帧内全部刷新。
+
+### 8.6 实验后端、缩放回退与真实验收
+
+`UIKIT_CHART_BACKEND=quick` 可显式启用局部 Scene Graph 实验后端；未设置时继续使用
+原有 raster／GL 路径。它只接受普通实线折线等已验证子集，其他 option 自动回退完整 QWidget
+后端。当前实测未优于现有 GPU 后端，**不得作为默认配置或性能达标依据**。设计与门禁见
+`docs/superpowers/plans/2026-11-14-scene-graph-chart-design.md`。
+
+Chart 与 Blueprint 连续 resize 时先复用旧帧，停顿约 100ms 后只重建一次高清帧；设置
+`UIKIT_RESIZE_PREVIEW=off` 可一键恢复原全质量逐事件路径。`UIKIT_CHART_GL=off` 与
+`UIKIT_BLUEPRINT_GL=off` 分别强制软件视口。
+
+真实验收脚本位于 `tests/perf/`（仅在 `uniform_test` 分支）：
+
+```powershell
+# 3840×2160 复杂场景：预热 5 秒，5 轮各 60 秒，保存 frameSwapped 原始数据
+.venv\Scripts\python.exe tests\perf\run_realtime.py --seconds 60 --rounds 5 --enforce
+
+# A–H 隔离：每种配置的静止、移动、缩放、恢复各 30 秒，并播放低振幅测试音
+.venv\Scripts\python.exe tests\perf\run_window_matrix.py --phase-seconds 30 --audio
+
+# 真实 gpuDirect：实际视口、顶点上传、线宽、颜色、纵轴与旧管线释放
+.venv\Scripts\python.exe tests\perf\run_gpu_direct.py
+```
+
+这些脚本不会把离屏绘制耗时冒充实际 FPS。矩阵使用真实窗口几何 API 测量渲染成本，
+原生鼠标路径需要另行复核；PresentMon 需要 ETW 权限，未获权限时不得声称该项已验证。
 
 ## 9. 蓝图模式（InstructionX_UIKit.blueprint 节点图）
 
