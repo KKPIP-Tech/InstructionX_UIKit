@@ -34,6 +34,7 @@ class RhiTextureItem(QQuickItem):
         self._blank_texture = None
         self._node = None
         self.setFlag(QQuickItem.ItemHasContents, True)
+        self.destroyed.connect(self._release_textures)
 
     def build_snapshot(self, source, dpr):
         raise NotImplementedError
@@ -41,6 +42,39 @@ class RhiTextureItem(QQuickItem):
     def sync(self, source, dpr):
         self._snapshot = self.build_snapshot(source, dpr)
         self.update()
+
+    def _retain_frame(self, texture):
+        expired = self._frames[0] if len(self._frames) == self._frames.maxlen else None
+        self._frames.append((self._node, texture))
+        if expired is None:
+            return
+        old_texture = expired[1]
+        if old_texture is self._blank_texture or old_texture is self._texture:
+            return
+        if any(old_texture is frame[1] for frame in self._frames):
+            return
+        try:
+            old_texture.deleteLater()
+        except RuntimeError:
+            pass
+
+    def _release_textures(self):
+        textures = {id(texture): texture for _node, texture in self._frames
+                    if texture is not None}
+        for texture in (self._texture, self._blank_texture):
+            if texture is not None:
+                textures[id(texture)] = texture
+        self._frames.clear()
+        self._snapshot = None
+        self._texture = None
+        self._texture_key = None
+        self._blank_texture = None
+        self._node = None
+        for texture in textures.values():
+            try:
+                texture.deleteLater()
+            except RuntimeError:
+                pass
 
     def clear(self):
         self._snapshot = None
@@ -62,7 +96,7 @@ class RhiTextureItem(QQuickItem):
             root.setRect(QRectF(0, 0, self.width(), self.height()))
             root.markDirty(QSGNode.DirtyMaterial)
             self._node = root
-            self._frames.append((root, self._blank_texture))
+            self._retain_frame(self._blank_texture)
             return root
         if self._texture is None or self._texture_key != snapshot.version:
             texture = self.window().createTextureFromImage(snapshot.image)
@@ -78,5 +112,5 @@ class RhiTextureItem(QQuickItem):
         root.setRect(QRectF(0, 0, snapshot.width, snapshot.height))
         root.markDirty(QSGNode.DirtyMaterial)
         self._node = root
-        self._frames.append((root, self._texture))
+        self._retain_frame(self._texture)
         return root
