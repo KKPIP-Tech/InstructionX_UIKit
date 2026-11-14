@@ -24,7 +24,7 @@
 - [x] 聊天 chunk 合并、统计降频、最终同步、编辑／删除／清空代次失效、底部跟随与隐藏恢复。
 - [x] Chart／Blueprint／页面宿主的 `on_ui_activated` / `on_ui_deactivated`；恢复最新状态且保留显式动画状态。
 - [x] Markdown 分片一致性、公式、Mermaid 主／降级路径、主题与销毁清理。
-- [ ] CodeEditor／DiffEditor 的完整键盘、IME、焦点、多选、查找替换、补全、悬停与差异交互矩阵。
+- [x] CodeEditor／DiffEditor 的键盘、IME 预编辑与提交、焦点、多选、查找替换、补全、悬停、撤销重做、滚动同步、自动断点、只读与 hunk 交互矩阵。
 
 ## 性能与系统验收
 

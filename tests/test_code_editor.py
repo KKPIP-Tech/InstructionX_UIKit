@@ -191,6 +191,103 @@ def _():
     close_editor(diff)
 
 
+@check("IME 预编辑、输入查询与提交")
+def _():
+    editor = make_editor("abc")
+    preedit = QInputMethodEvent("zhong", [])
+    QApplication.sendEvent(editor.text_area(), preedit)
+    assert editor.text() == "abc", editor.text()
+    rect = editor.text_area().inputMethodQuery(Qt.ImCursorRectangle)
+    assert rect.isValid(), rect
+    commit = QInputMethodEvent()
+    commit.setCommitString("中文")
+    QApplication.sendEvent(editor.text_area(), commit)
+    assert editor.text() == "abc中文", editor.text()
+    editor.close()
+    close_editor(editor)
+
+
+@check("键盘编辑、补全选择与查找栏焦点")
+def _():
+    editor = make_editor("  pri")
+    editor.set_tab_size(2)
+    QTest.keyClick(editor.text_area(), Qt.Key_Tab)
+    assert editor.text() == "  pri  ", editor.text()
+    QTest.keyClick(editor.text_area(), Qt.Key_Backtab, Qt.ShiftModifier)
+    assert editor.text() == "pri  ", editor.text()
+    QTest.keyClick(editor.text_area(), Qt.Key_Home)
+    assert editor.cursor_position() == (1, 1), editor.cursor_position()
+    QTest.keyClick(editor.text_area(), Qt.Key_End)
+    assert editor.cursor_position() == (1, 6), editor.cursor_position()
+    editor.set_text("pri")
+    cursor = editor.text_area().textCursor()
+    cursor.setPosition(3)
+    editor.text_area().setTextCursor(cursor)
+    editor.set_completion_provider(lambda prefix, line, col, language: [
+        {"label": "print", "insert": "print("},
+        {"label": "priority", "insert": "priority"},
+    ])
+    editor._trigger_completion()
+    QTest.keyClick(editor.text_area(), Qt.Key_Down)
+    QTest.keyClick(editor.text_area(), Qt.Key_Return)
+    assert editor.text() == "priority", editor.text()
+    assert editor.completion_popup().isHidden()
+    editor.open_find_bar()
+    assert QApplication.focusWidget() is editor.find_bar().find_edit
+    QTest.keyClick(editor.find_bar().find_edit, Qt.Key_Escape)
+    assert editor.find_bar().isHidden()
+    assert QApplication.focusWidget() is editor.text_area()
+    QTest.keyClicks(editor.text_area(), "X")
+    assert editor.text() == "priorityX", editor.text()
+    QTest.keyClick(editor.text_area(), Qt.Key_Z, Qt.ControlModifier)
+    assert editor.text() == "pri", editor.text()
+    QTest.keyClick(editor.text_area(), Qt.Key_Y, Qt.ControlModifier)
+    assert editor.text() == "priorityX", editor.text()
+    QTest.keyClick(editor.text_area(), Qt.Key_Home)
+    QTest.keyClick(editor.text_area(), Qt.Key_Right, Qt.ShiftModifier)
+    QTest.keyClick(editor.text_area(), Qt.Key_Backspace)
+    assert editor.text() == "riorityX", editor.text()
+    editor.close()
+    close_editor(editor)
+
+
+@check("Diff 自动断点、滚动同步、hunk 导航与只读")
+def _():
+    old = "".join(f"line {index}\n" for index in range(80))
+    new_lines = old.splitlines()
+    new_lines[40] = "changed"
+    diff = DiffEditor()
+    diff.resize(900, 520)
+    diff.set_documents(old, "\n".join(new_lines) + "\n")
+    diff.set_view_mode("side-by-side")
+    diff.show()
+    pump(30)
+    left, right = diff.side_editors()
+    left_bar = left.text_area().verticalScrollBar()
+    right_bar = right.text_area().verticalScrollBar()
+    left_bar.setValue(left_bar.maximum())
+    pump(30)
+    assert right_bar.value() == left_bar.value(), (left_bar.value(), right_bar.value())
+    diff.next_hunk()
+    assert diff.current_hunk() >= 0
+    previous = diff.current_hunk()
+    diff.prev_hunk()
+    assert diff.current_hunk() == previous
+    diff.set_auto_breakpoint(700)
+    diff.set_view_mode("auto")
+    diff.resize(600, 520)
+    pump(30)
+    assert diff.view_mode() == "inline", diff.view_mode()
+    before = diff.new_text()
+    QTest.keyClicks(diff.inline_editor().text_area(), "x")
+    assert diff.new_text() == before
+    diff.resize(900, 520)
+    pump(30)
+    assert diff.view_mode() == "side-by-side", diff.view_mode()
+    diff.close()
+    close_editor(diff)
+
+
 if __name__ == "__main__":
     app.quit()
     raise SystemExit(1 if _FAILURES else 0)
