@@ -1,40 +1,43 @@
-# 需求完整性核对表（供验证代理逐项打勾）
+# 需求完整性与功能验收核对表
 
-## 布局预设（12）
-- [ ] 顶部导航栏 top_nav_bar
-- [ ] 圣杯布局 holy_grail
-- [ ] 卡片网格 card_grid
-- [ ] 单列堆叠 single_column
-- [ ] 侧边栏布局 sidebar_layout
-- [ ] 列表-详情 master_detail
-- [ ] 分栏面板 split_panel
-- [ ] 仪表盘网格 dashboard_grid
-- [ ] 英雄区 hero_section
-- [ ] 居中容器 centered_container
-- [ ] 瀑布流 waterfall
-- [ ] 图文左右 media_left_right
+## 组件与布局
 
-## 动画预设（52）
-property.py（28）：fade_in 淡入淡出 / slide_in 滑入 / zoom_in 放大进场 / spring_pop 弹性弹出 / stagger_in 错落进场 / blur_in 模糊渐显 / mask_reveal 遮罩揭示 / hover_lift 悬停抬升 / button_morph_loading 按钮变形加载 / ripple 点击涟漪 / switch_toggle 开关切换 / pulse 脉冲 / bounce 弹跳 / swing 摇摆 / shake 错误抖动 / flash_highlight 闪烁高亮 / float_loop 漂浮元素 / pulse_glow 脉冲发光 / breathing 呼吸待机 / gradient_flow 流动渐变 / gradient_text_flow 渐变流动文字 / cross_fade 交叉淡化 / page_transition 页面切换 / slide_transition 滑动转场 / container_morph 容器变形 / shared_element 共享元素 / badge_pop 角标提示
-painted.py（24）：SpinnerArc 旋转圈 / LikeBurstButton 点赞爆裂 / MagneticButton 磁吸按钮 / CheckDraw 对勾描绘 / BouncingDots 跳动的点 / SkeletonShimmer 骨架屏 / Shimmer 微光扫过 / ProgressStriped 进度条 / ParallaxArea 视差 / ScrollReveal 滚动渐显 / HorizontalScrollStrip 横向滚动 / StickyHeader 粘性固定 / ScrollProgressBar 滚动进度 / ScrollStoryArea 滚动叙事 / MarqueeLabel 跑马灯 / FluidBackground 流体 / TypewriterLabel 打字机 / TextDecodeLabel 文字解码 / NumberRollLabel 数字滚动 / LetterStaggerLabel 逐字进场 / CardTilt 卡片倾斜 / CubeRotator 立方体旋转 / FlipCard 翻转 / CoverFlow 立体轮播
+- [x] 13 个布局预设：top_nav_bar、holy_grail、card_grid、single_column、sidebar_layout、master_detail、split_panel、dashboard_grid、hero_section、centered_container、waterfall、media_left_right、chat_conversation。
+- [x] 52 个动画预设：28 个属性动画与 24 个自绘动画；原动画回归、固定帧、隐藏停更和资源上界通过。
+- [x] 59 个组件的输入／展示／反馈行为、空态、亮暗主题与真实导航点击。
+- [x] `set_property()` 同值跳过 polish；160 个亮暗页面状态的最终 RGBA 像素零差异。
+- [x] 248 个公开导出、构造签名、基类、方法、属性与信号兼容；允许的新生命周期接口存在。
 
-## 组件（57）
-输入：按钮 Button / 图标按钮 IconButton / 复选框 CheckBox / 单选按钮 RadioButton+RadioGroup / 开关 Switch / 输入框 LineEdit / 多行 TextArea / 数字输入 SpinBox+DoubleSpinBox / 下拉选择 ComboBox / 滑块 Slider / 日期选择 DatePicker / 时间选择 TimePicker / 评分 Rating / 颜色选择 ColorPicker / 自动完成 AutoComplete / 级联选择 Cascader / 穿梭框 Transfer / 上传 UploadWidget / 分段控制器 SegmentedControl / 表单 FormLayout
-展示：头像 Avatar / 徽标数 Badge / 内容卡片 Card / 描述列表 Descriptions / 列表 ListWidget / 表格 Table / 树形控件 Tree / 时间轴 Timeline / 统计数值 Statistic / 日历 Calendar / 走马灯 Carousel / 图片 ImageView / 二维码 QRCodeView / 评论 CommentView / 折叠面板 Collapse / 空状态 Empty / 文字提示 set_tooltip / 气泡卡片 Popover
-反馈：标签页 Tabs / 锚点 Anchor / 面包屑 Breadcrumb / 下拉菜单 DropdownButton / 导航菜单 NavMenu / 页头 PageHeader / 分页 Pagination / 步骤条 Steps / 警告提示 Alert / 对话框 Dialog / 抽屉 Drawer / 通知提醒框 Notification / 全局提示 Message / 气泡确认框 Popconfirm / 结果 ResultView / 骨架屏 Skeleton / 加载中 Spinner / 进度条 ProgressBar+CircleProgress / 漫游式引导 Tour
+## 图表与大数据
 
-## 基础控件覆盖（demo 基础控件页 + 全局 QSS）
-QPushButton/QToolButton/QRadioButton/QCheckBox/QLineEdit/QTextEdit/QPlainTextEdit/QSpinBox/QDoubleSpinBox/QComboBox/QFontComboBox/QDateEdit/QTimeEdit/QDateTimeEdit/QCalendarWidget/QSlider/QScrollBar/QDial/QProgressBar/QLabel/QTextBrowser/QGroupBox/QFrame/QTabWidget/QScrollArea/QStackedWidget/QToolBox/QDockWidget/QListWidget/QTreeWidget/QTableWidget/QMenuBar/QMenu/QToolBar/QStatusBar/QMessageBox/QFileDialog/QColorDialog/QFontDialog/QInputDialog + QtCharts（若可用）
+- [x] 直角坐标、层级关系、极坐标、日历、地图、平行坐标等 21 种系列及图表组件回归。
+- [x] 普通实线批量绘制、显式符号预算、散点原始 dataIndex、采样极值、category 映射与流式原子提交。
+- [x] 真实 GPU 顶点上传、纵轴方向、线宽／颜色、逐系列缓存、旧管线释放和软件回退。
+- [x] resize 预览与高清恢复、父控件不重复绘制、最终图像一致。
+- [x] Scene Graph 能力门禁、offscreen／option 回退、真实几何与反复创建销毁。
+- [ ] Scene Graph 完整交互能力和性能门禁；当前实验后端不达标，默认不启用。
+
+## 生命周期与内容
+
+- [x] ScrollStoryArea、ScrollReveal、横向滚动条和聊天延迟回调销毁后不再访问失效对象。
+- [x] 聊天 chunk 合并、统计降频、最终同步、编辑／删除／清空代次失效、底部跟随与隐藏恢复。
+- [x] Chart／Blueprint／页面宿主的 `on_ui_activated` / `on_ui_deactivated`；恢复最新状态且保留显式动画状态。
+- [x] Markdown 分片一致性、公式、Mermaid 主／降级路径、主题与销毁清理。
+- [ ] CodeEditor／DiffEditor 的完整键盘、IME、焦点、多选、查找替换、补全、悬停与差异交互矩阵。
+
+## 性能与系统验收
+
+- [ ] 真实 3840×2160 复杂场景：预热后至少 5 轮、每轮至少 60 秒；平均 FPS≥60、P95≤16.67ms、P99≤33.33ms，无应用自身≥100ms 长任务。
+- [ ] 拖动、四边／四角缩放、最大化／还原、跨屏和形状变化：每类至少 30 秒且至少 5 轮，均达到同一红线。
+- [ ] 原生鼠标、黑帧、闪烁、假死、音频异常和资源无界增长；原生光标注入与长期资源趋势目前未验收完成。
+- [ ] PresentMon／WPA 权限与原始呈现证据；当前未提权，未将缺失数据标为通过。
+- [ ] 全量 `tests/test_*.py` 与真实启动／交互最终复核。
 
 ## 文档与交付
-- [ ] docs/Design.md（色彩/字体排版/间距/圆角/阴影/断点/动效/状态矩阵/暗色策略）
-- [ ] docs/USAGE.md（安装/快速开始/主题切换/每组件最小示例）
-- [ ] main.py 可运行、亮暗主题切换正常
-- [ ] 全部 tests 退出码 0
 
-## 结构（feat/restructure 重构后）
-- [ ] InstructionX_UIKit/ 为纯 Kit 包：零假数据、零 Demo 逻辑、零 UI 演示操作
-- [ ] 12 个布局全部 API 驱动（items/cards/sections 由调用方传入，空内容显示「在此放置内容」空占位）
-- [ ] 示例数据集中在 demo/pages/layout_samples.py；demo 各演示页含「用法」代码标签
-- [ ] charts 仅保留功能性 DEMO_MAP 内置示意地图（docstring 注明）
-- [ ] README.md（项目根）含目录结构 / 安装 / 快速上手 / Demo 启动 / 测试运行说明
+- [x] `docs/Design.md`：设计令牌与视觉规范。
+- [x] `docs/USAGE.md`：安装、快速开始、主题、组件、布局、动画、图表、后端与生命周期。
+- [x] `README.md`：当前结构、安装、Demo 启动和 `uniform_style`／`uniform_test` 工作流。
+- [x] `THIRD-PARTY.md`：运行时依赖与 PresentMon 测量工具许可、哈希和权限说明。
+- [x] `docs/superpowers/plans/`：性能实施、Scene Graph 设计与验收状态，未验证项不标通过。
+- [ ] 最终 SHA 上从零重跑并交付原始证据、功能矩阵与回滚说明；不合并 `dev`、不发布、不接入 InstructionX 主仓库。
