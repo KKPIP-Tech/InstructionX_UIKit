@@ -3,7 +3,7 @@
 
 from collections import deque
 
-from PySide6.QtQuick import QQuickItem, QSGSimpleTextureNode, QSGTexture
+from PySide6.QtQuick import QSGNode, QQuickItem, QSGSimpleTextureNode, QSGTexture
 
 from .scene_snapshot import build_scene_snapshot
 
@@ -45,11 +45,13 @@ class ChartSceneItem(QQuickItem):
                 return root
             self._texture = texture
             self._texture_key = snapshot.version
-        node = QSGSimpleTextureNode()
-        node.setFiltering(QSGTexture.Nearest)
-        node.setOwnsTexture(False)
-        node.setTexture(self._texture)
-        node.setRect(0, 0, snapshot.width, snapshot.height)
-        self._node = node
-        self._frames.append((node, self._texture))
-        return node
+        if root is None:
+            root = QSGSimpleTextureNode()
+        root.setFiltering(QSGTexture.Nearest)
+        root.setOwnsTexture(False)
+        root.setTexture(self._texture)
+        root.setRect(0, 0, snapshot.width, snapshot.height)
+        root.markDirty(QSGNode.DirtyMaterial)
+        self._node = root
+        self._frames.append((root, self._texture))
+        return root
