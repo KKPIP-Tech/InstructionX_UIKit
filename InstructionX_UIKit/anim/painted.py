@@ -60,6 +60,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .._draw import draw_arc
 from ..theme import T, ThemeManager
 from ..tokens import DURATION, EASING
 from .property import _SnapshotOverlay, _grab_pixmap
@@ -469,10 +470,10 @@ class SpinnerArc(_HiddenPauseMixin, QWidget):
         pen.setWidthF(float(self._lw))
         pen.setCapStyle(Qt.RoundCap)
         p.setPen(pen)
-        p.drawArc(rect, 0, 360 * 16)
+        draw_arc(p, rect, 0.0, 360.0)
         pen.setColor(_qcolor("primary"))
         p.setPen(pen)
-        p.drawArc(rect, int(-self._angle * 16), 110 * 16)
+        draw_arc(p, rect, -self._angle, 110.0)
         p.end()
 
 
@@ -622,7 +623,7 @@ class CheckDraw(_HiddenPauseMixin, QWidget):
             pen.setCapStyle(Qt.RoundCap)
             p.setPen(pen)
             p.setBrush(Qt.NoBrush)
-            p.drawArc(rect, 90 * 16, int(-360 * 16 * circle_phase))
+            draw_arc(p, rect, 90.0, -360.0 * circle_phase)
 
         if check_phase > 0.0:
             # 对勾两点折线：p1 -> p2 -> p3（相对坐标）

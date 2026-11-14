@@ -1,6 +1,6 @@
 # USAGE — InstructionX_UIKit 使用方法
 
-> 本文档覆盖安装、快速开始、主题系统、全部 58 个组件、13 个布局、52 个动画预设、图表引擎与蓝图（节点图）组件的最小可运行示例。
+> 本文档覆盖安装、快速开始、主题系统、全部 59 个组件、13 个布局、52 个动画预设、图表引擎、蓝图（节点图）组件与代码编辑器的最小可运行示例。
 > 所有示例均与仓库真实 API 一致；离屏验证一律使用 `QT_QPA_PLATFORM=offscreen`。
 
 ## 目录
@@ -15,8 +15,10 @@
 - [5. 布局用法](#5-布局用法)
 - [6. 动画用法](#6-动画用法)
 - [7. 图表用法（InstructionX_UIKit.charts 原生引擎）](#7-图表用法instructionx_uikitcharts-原生引擎)
-- [8. 蓝图模式（InstructionX_UIKit.blueprint 节点图）](#8-蓝图模式instructionx_uikitblueprint-节点图)
-- [9. 常见问题](#9-常见问题)
+- [8. 大数据与实时渲染（图表引擎进阶）](#8-大数据与实时渲染图表引擎进阶)
+- [9. 蓝图模式（InstructionX_UIKit.blueprint 节点图）](#9-蓝图模式instructionx_uikitblueprint-节点图)
+- [10. 代码编辑器（InstructionX_UIKit.code_editor，仿 VS Code）](#10-代码编辑器instructionx_uikitcode_editor仿-vs-code)
+- [11. 常见问题](#11-常见问题)
 
 ## 1. 安装
 
@@ -42,7 +44,7 @@ qrcode[pil]>=7.4
 python main.py
 ```
 
-Demo 入口逻辑（main.py）：创建 `QApplication` → `ThemeManager.instance().apply(app)` → 显示 1280x800 的 `MainWindow`，左侧导航含设计令牌 / 布局 / 组件 / 动画全部分页。
+Demo 入口逻辑（main.py）：创建 `QApplication` → `ThemeManager.instance().apply(app)` → 显示 1440x900 的 `MainWindow`，左侧导航含设计令牌 / 布局 / 组件 / 动画全部分页。
 
 ### 2.2 最小应用骨架
 
@@ -90,7 +92,7 @@ from InstructionX_UIKit.theme import T
 
 color = T("color.primary")       # "#3F5E8C"（亮）/ "#7C98C4"（暗）
 gap = T("space.4")               # 16
-radius = T("radius.md")          # 6
+radius = T("radius.md")          # 8
 shadow = T("shadow.md")          # {"blur": 16, "offset": (0, 4), "color": (16, 24, 40, 64)}
 ```
 
@@ -157,6 +159,44 @@ ts.reset_all()                             # 还原全部
   `app.setStyleSheet(...)`，或改用自绘 + 信号订阅的方式。
 
 `T()` 内部即委托 `TokenState`，旧代码无需修改即可感知会话覆盖。
+
+### 3.5 图标（Iconoir）
+
+图标来自 [Iconoir v7.12.1](https://github.com/iconoir-icons/iconoir)（MIT），完整内置 **1,383 Regular + 288 Solid = 1,671 个**，运行时按主题色渲染；QtSvg 不可用时回退到 QPainter 手绘：
+
+```python
+from InstructionX_UIKit import (
+    Icon, get_icon, get_pixmap, icon_svg, icon_names, search_icons,
+    ICON_NAMES, ICONOIR_NAMES, ICONOIR_REGULAR_NAMES, ICONOIR_SOLID_NAMES,
+)
+
+# 可复用的图标对象：修改颜色 / 尺寸 / 描边后重新取图
+icon = Icon("home", size=24)
+icon.set_color("#1677ff").set_stroke_width(2.0)
+button.setIcon(icon.qicon())
+label.setPixmap(icon.pixmap())
+icon.set_color(None)                            # 恢复当前主题次要文本色
+
+get_icon("home", size=16)                       # Iconoir 原名
+get_icon("home", size=20, color="#1677ff",
+         stroke_width=2.0)                      # 尺寸 / 颜色 / 描边宽度
+get_icon("iconoir:stats-report", size=24)       # 直接使用 Iconoir 原名
+get_icon("io:check")                            # io: 是 iconoir: 的简写
+get_icon("heart-solid", size=24)                # Solid 变体
+
+get_pixmap("home", 32, color="#1677ff")          # 自定义控件要 QPixmap 时
+icon_svg("home", color="#1677ff", stroke_width=2.0)  # 内嵌 SVG 源码
+icon_names(solid=False)                         # Regular 1383 个
+icon_names(solid=True)                          # Solid 288 个
+search_icons("arrow")                           # 名称搜索
+
+ICON_NAMES       # 完整 Iconoir 名列表（1,671 个）
+ICONOIR_NAMES    # 完整 Iconoir 名列表（1,671 个）
+```
+
+Demo 左侧「设计令牌 → 图标库」可搜索、按 Regular/Solid 过滤、切换尺寸与描边，并通过调色盘实时设置图标颜色，同时查看 `get_icon` 调用示例。
+
+第三方来源与完整 MIT 许可证见项目根目录 [THIRD-PARTY.md](../THIRD-PARTY.md)。
 
 ## 4. 组件用法
 
@@ -257,6 +297,21 @@ sl = Slider(Qt.Horizontal, minimum=0, maximum=100, value=30)
 sl.set_ticks(10)                                # 刻度间隔
 sl.set_tip_enabled(True)                        # 拖动时显示当前值
 sl.valueChanged.connect(print)
+```
+
+**BudgetSliderGroup**（`budget_slider.py`）—— 多滑块总和上限约束，预算墙夹取与超额再分配。
+
+```python
+from InstructionX_UIKit.components.budget_slider import BudgetSliderGroup, BudgetSpec
+group = BudgetSliderGroup(title="预算分配", cap=120, specs=[
+    BudgetSpec("甲", maximum=40, value=22, suffix=" 万"),
+    BudgetSpec("乙", maximum=40, value=18, suffix=" 万"),
+])
+group.set_specs([BudgetSpec("丙", maximum=50, value=30)])   # 重建全部行
+group.set_cap(120)                            # 收紧合计上限；None 回到 Σmax
+group.valueChanged.connect(lambda index, value: print(index, value))
+group.budgetChanged.connect(lambda total, cap, remaining: print(total, cap, remaining))
+print(group.values(), group.total, group.remaining)
 ```
 
 **DatePicker**（`date_picker.py`）—— 日期选择（自定义日历弹层）。
@@ -1107,11 +1162,141 @@ chart.update_option({"series": [{"data": [130, 120, 150, 160, 170, 240]}]})  # �
 - Demo「图表」页已全面切换到 `InstructionX_UIKit.charts` 演示；`PySide6.QtCharts` 不再是图表页依赖，仅当你已有基于 QtCharts 的旧代码时才需要它，两者可共存互不影响。
 - 引擎契约见仓库 `CHART_SPEC.md`；可经 `register_series` / `register_component` 扩展自定义系列与组件。
 
-## 8. 蓝图模式（InstructionX_UIKit.blueprint 节点图）
+## 8. 大数据与实时渲染（图表引擎进阶）
+
+本节所有能力均为**加法式扩展**：既有 `set_option` / `update_option` 语义与调用方式完全不变，
+只在数据规模或刷新频率需要时才启用。
+
+### 8.1 渲染后端：GPU 与软件双视口
+
+图表绘制由内部视口承载，**运行时自动选择后端，调用方无需修改任何代码**：
+
+- **GPU 后端**：GL 可用时为 `QOpenGLWidget`，坐标轴、曲线与文字由 GL paint engine 承担；
+- **软件后端（自动回退）**：无 GL 环境（含 `QT_QPA_PLATFORM=offscreen` 的测试环境）时
+  使用普通 `QWidget` 视口，**行为与历史版本一致，离屏测试与截图回归不受影响**。
+
+环境变量 `UIKIT_CHART_GL` 控制探测：`auto`（默认）/ `on`（强制尝试，失败仍回退并记 WARNING）/
+`off`（强制软件渲染）。
+
+```python
+# 无需任何代码改动；如需排查后端可用性：
+from InstructionX_UIKit.charts.viewport import gl_available
+print(gl_available())        # offscreen 平台恒为 False
+```
+
+### 8.2 自动降采样与保真承诺
+
+百万级数据**无需调用方做任何处理**：点数超过「绘图区像素宽 × 2」时自动降采样，未超过时
+**不做任何降采样**——全部点按原始分辨率参与绘制，即「保真承诺」。
+
+降采样采用**逐桶保留极值**（每桶取 min/max 所在的原始点，按 x 顺序还原），因此尖峰与
+毛刺不会被抹掉。可验证的判据是：降采样后的**逐像素列 y 极值与全量直绘一致**。
+
+```python
+# 默认自动（minmax）；可显式指定方法或调整阈值系数
+{"type": "line", "name": "信号", "data": ys}
+{"type": "line", "name": "信号", "data": ys, "sampling": "minmax"}   # 显式指定
+{"type": "line", "name": "信号", "data": ys, "samplingSafety": 2.0}  # 阈值系数（上限 4.0）
+```
+
+> **`sampling: None` 不再等于「全分辨率绘制」**。它只表示「不做额外降采样」，
+> 阈值仍取 `绘图区像素宽 × samplingSafety` ——屏幕像素是**不可豁免的下限**。
+> 理由既是画质也是稳定性：绘图区约 1000 像素宽时，150 万点里每列有上千个点落在
+> 同一个像素列上，多出来的点**既看不到也点不到**（悬停命中同样按采样点判定），
+> 而代价是实测 `layout` 2.8 秒、单帧绘制 8.8 秒——事件循环在这段时间完全不响应，
+> Windows 会直接判定 AppHang 并杀掉进程。需要更密的点就把图表画大（4K 下阈值自动
+> 升到 7000+），而不是关掉采样。
+
+**大数组建议直接传 numpy 数组**：此时按**引用**持有、零拷贝，内存不翻倍；传 Python 列表
+则一次性转为紧凑缓冲区。两种方式渲染结果一致。
+
+```python
+import numpy as np
+ys = np.asarray(collect(), dtype=np.float64)
+chart.set_option({"series": [{"type": "line", "name": "信号", "data": ys}]})
+# 注意：传入后请勿原地修改该数组（图表按引用持有）
+```
+
+百万级散点另有 `large` 模式：按像素桶聚合（每桶一个图元、点数越多越不透明），
+把百万图元压到视口像素量级。
+
+```python
+{"type": "scatter", "name": "点云", "data": pts, "large": True}
+```
+
+### 8.3 实时数据接入
+
+采集线程按帧率投递，界面按刷新节奏取数入图，**不阻塞主线程**：
+
+```python
+chart.set_option({"xAxis": {"type": "category", "data": []},
+                  "yAxis": {"type": "value"},
+                  "series": [{"type": "line", "name": "信号", "data": []}]})
+
+sess = chart.stream(series="信号", window=20000)   # 保留最近 2 万点
+sess.write(value)        # 采集线程里高频调用（任意线程安全）
+sess.write([v1, v2, v3])
+sess.close()             # 结束时停止
+
+print(sess.stats)        # {"batches", "points", "frames", "merged", "dropped", "buffered"}
+```
+
+参数：`series`（名称或序号）、`window`（保留点数，决定内存上界）、`interval`（入图节奏，
+默认 1/90 秒）、`auto_scale`（是否自动跟随 y 范围）。
+
+设计要点：写入侧为**无锁单写单读环形缓冲**（先写数据、最后更新长度，故读不到半写状态；
+写满丢最旧且 `dropped` 可观测）；投递频率高于刷新节奏时由**帧合并**聚合，一次入图成批送达
+且不丢点；无新数据时不重绘。底层两个构件也可单独使用：
+
+```python
+from InstructionX_UIKit.charts.stream import RingBuffer, FrameCoalescer
+```
+
+### 8.4 GPU 原生直绘（可选，默认关闭）
+
+把折线顶点直接提交显卡（VBO + GLSL，坐标变换在着色器内完成），**绕过 QPainter 的路径
+构造**：
+
+```python
+{"type": "line", "name": "信号", "data": ys, "gpuDirect": True}
+```
+
+**收益预期要放准**（实测数据）：
+
+| 场景 | QPainter 绘制 | GPU 绘制 |
+|---|---|---|
+| 150 万点，同一条采样后曲线（1000 px 绘图区） | 7.57 ms | 0.342 ms |
+| 小数据（5,000 点） | 4.46 ms | 0.05 ms |
+| 中等数据（200,000 点，无采样） | 137.33 ms | 0.10 ms |
+
+两条路径画的是**同一条采样后曲线**（采样阈值 = 绘图区像素宽，逐像素列极值一致），
+所以表中的倍数就是「路径构造成本」的差距：150 万点下 22 倍，把单帧从 7.57 ms 压到
+0.342 ms。但默认配置的整体帧耗时还包含布局、采样与文字，150 万点稳态已实测
+5.0 ms / 198 fps（在 90 fps 预算内），因此 `gpuDirect` **不是通用提速开关**，默认
+关闭；需要把绘制成本进一步压低时按系列开启。软件回退环境下该选项被静默忽略。
+
+**上限与失效判据**：顶点数超过 `gl_series.GL_MAX_POINTS`（400 万）时**拒绝直绘**，
+由采样路径兜底——实测 150 万与 300 万顶点直绘稳定（稳态单帧 12.1 / 16.2 ms），
+500 万会撞上 VBO 缓存上限。要确认直绘真的生效，请断言
+`GLSeriesPipeline.vertex_count == 数据点数`：只断言「画面非空白」会被采样路径
+兜底而误判（见 AGENTS.md 已知坑）。
+
+### 8.5 同屏多图的性能特征
+
+| 场景 | 帧耗时 | 折合 fps |
+|---|---|---|
+| 16 图同屏稳态（数据未变，缓存命中） | 1.0 ms | 992 |
+| 16 图同屏、**同一帧内全部更新数据** | 89 ms | 11 |
+
+即：稳态下同屏多图没有压力；瓶颈只在「同一帧内所有图的数据都变化」。该场景的硬下限是
+每图采样与布局的固定成本，**建议错开更新时机**（例如不同图用不同 `interval`，或分批投递），
+而不是追求单帧内全部刷新。
+
+## 9. 蓝图模式（InstructionX_UIKit.blueprint 节点图）
 
 类 UE5 Blueprint / ComfyUI 的节点图编辑器：**纯 UI 与交互，不含业务执行逻辑**。扩展性第一——节点类型、引脚类型、菜单、节点体内容全部可注册 / 覆写。完整演示见 Demo「蓝图」页（`demo/pages/blueprint.py`），组件契约见 `BP_SPEC.md`。
 
-### 8.1 核心概念
+### 9.1 核心概念
 
 | 概念 | 类 | 说明 |
 | --- | --- | --- |
@@ -1123,7 +1308,7 @@ chart.update_option({"series": [{"data": [130, 120, 150, 160, 170, 240]}]})  # �
 | 画布 | `BlueprintCanvas` | 平移 / 缩放 / 框选 / 拖线建边 / 创建与右键菜单 / Delete 删除 / 序列化 |
 | 运行指示 | `ExecutionController` | 经 `canvas.execution()` 取得：仅做 UI 状态展示，**不执行业务逻辑** |
 
-### 8.2 快速上手（10 行）
+### 9.2 快速上手（10 行）
 
 ```python
 from PySide6.QtCore import QPointF
@@ -1137,7 +1322,7 @@ graph.add_edge(a.id, "out", b.id, "in")          # 校验通过返回 Edge
 canvas.fit_view()                                # 适应视图
 ```
 
-### 8.3 注册自定义节点（含 body_builder）
+### 9.3 注册自定义节点（含 body_builder）
 
 ```python
 from InstructionX_UIKit.blueprint import register_node_type
@@ -1168,7 +1353,7 @@ register_pin_type("audio", "#E0A030")  # 可选：扩展引脚类型配色
 
 注意：画布为避免与节点拖拽冲突，将节点体设为鼠标透明——`body_builder` 注入的控件在画布内作展示用；交互编辑建议放到侧栏属性面板（Demo 蓝图页用 `demo.pages.playground.ParamForm` 实现，写回同一份 `node.properties` 后 `node.changed.emit()` 刷新外观）。
 
-### 8.4 命名空间隔离（owner）
+### 9.4 命名空间隔离（owner）
 
 多个插件 / 模块可能注册**同名节点类型**（如 `load_image`）但引脚定义不同。注册、查询、创建均可携带 `owner` 关键字参数划定命名空间，同名类型在不同 owner 下共存、互不影响；`owner=None` 为全局命名空间（内置 `start` 等留在全局），**不传 owner 的旧调用行为完全不变**。
 
@@ -1200,7 +1385,7 @@ canvas = BlueprintCanvas(BlueprintGraph(), owner="plugin_a")
 
 完整演示见 Demo「蓝图」页底部「命名空间隔离」小节（`demo/pages/blueprint.py`）。
 
-### 8.5 运行指示 API（ComfyUI 式，纯 UI）
+### 9.5 运行指示 API（ComfyUI 式，纯 UI）
 
 ```python
 ex = canvas.execution()
@@ -1214,7 +1399,7 @@ ex.reset()                        # 全部回 idle，清耗时与路径
 
 Demo 蓝图页的「运行」按 exec 链拓扑序用 QTimer 逐节点模拟（每节点 200–800ms 随机耗时），「单步」逐节点推进——全部只是状态指示，无业务逻辑。
 
-### 8.6 渲染后端（GPU 加速）
+### 9.6 渲染后端（GPU 加速）
 
 画布绘制由内部视口承载，**运行时自动选择后端，调用方无需修改任何代码**：
 
@@ -1232,7 +1417,7 @@ os.environ["UIKIT_BLUEPRINT_GL"] = "off"   # 在 QApplication 创建前设置
 >
 > **无边框半透明顶层窗口**：`FramelessWindowHint` + `WA_TranslucentBackground` 的顶层窗口下，`QOpenGLWidget` 首帧可能把旧的合成结果送上屏幕（FBO 内容完整但节点不显示，任意一次重绘即恢复）。GL 视口已在 `showEvent` 中强制一次重绘规避该问题，调用方无需处理。
 
-### 8.7 序列化
+### 9.7 序列化
 
 ```python
 data = canvas.to_dict()      # {"graph": {...}, "view": {"zoom", "offset"}}
@@ -1242,11 +1427,211 @@ graph.to_dict()              # 仅数据层：{"nodes": [...], "edges": [...]}
 
 全部 JSON 友好（`json.dumps` 可直接序列化），含节点位置、引脚、properties 与画布 zoom/offset。
 
-### 8.8 应用场景
+### 9.8 应用场景
 
 节点图天然适合「可视化拼装 + 数据流」类工具：**PyTorch 模块拼装**（把 Conv / Attention / 融合等模块注册为节点类型，properties 承载超参数，图结构导出为构建脚本）、**着色器 / 材质流水线**（纹理输入、滤镜、混合节点，引脚类型映射数据格式）、**AI 流水线编排**（加载→预处理→推理→后处理→落盘，如 Demo 预置图），以及规则引擎、音视频转码链、ETL 流程等。库只负责编辑与状态展示，真正的执行调度由应用层按图拓扑自行实现。
 
-## 9. 常见问题
+## 10. 代码编辑器（InstructionX_UIKit.code_editor，仿 VS Code）
+
+纯 PySide6 实现（无 WebView / JavaScript），对齐 VS Code 编辑区体验。契约见 `private_docs/CE_SPEC.md`。
+
+### 10.1 快速上手（6 行）
+
+```python
+from InstructionX_UIKit.code_editor import CodeEditor
+
+editor = CodeEditor()
+editor.set_language("python")          # 内置语言名，见 9.2
+editor.set_text("def main():\n    print('hello')\n")
+editor.cursor_position_changed.connect(lambda ln, col: print(f"行 {ln} 列 {col}"))
+editor.text_edited.connect(lambda: print("内容已修改"))
+```
+
+内置语言：`python` / `cpp` / `js` / `ts` / `json` / `html` / `css` / `markdown` / `qss` / `plain`。
+
+> `set_text()` 按「新文档」语义重置断点、诊断、搜索高亮、多选与折叠状态；
+> 切换文件请直接调用它，不要复用旧文档的行级状态。
+
+### 10.2 视图选项
+
+```python
+editor.set_font_family("Cascadia Code")   # 多字体族，回退到 MONO_FAMILY
+editor.set_font_size(13)                  # 像素字号，8-32
+editor.set_tab_size(4)                    # 缩进宽度（按字体度量换算 tab stop）
+editor.set_word_wrap(True)                # 自动换行
+editor.set_minimap_visible(True)          # 右侧小地图（字符级缩略 + 视口框拖动 / 点击跳转）
+editor.set_line_numbers("relative")       # "on" | "off" | "relative"（相对行号，VS Code 同款）
+editor.set_indent_guides(True)            # 缩进参考线
+editor.set_bracket_colorization(True)     # 嵌套括号层级着色
+editor.set_whitespace_visible(True)       # 行尾空白可见
+editor.set_readonly(True)                 # 只读（Diff 视图复用）
+```
+
+### 10.3 光标、选择与导航
+
+```python
+editor.goto_line(42, column=5)
+line, col = editor.cursor_position()      # 1-based
+
+editor.cursor_position_changed.connect(lambda ln, col: ...)
+editor.selection_changed.connect(lambda text: ...)
+editor.text_edited.connect(lambda: ...)
+editor.language_changed.connect(lambda name: ...)
+```
+
+快捷键（可用 `shortcut()` / `set_shortcut()` 读写，`slug` 见 `_DEFAULT_SHORTCUTS`）：
+`find`(Ctrl+F) / `replace`(Ctrl+H) / `goto_line`(Ctrl+G) / `select_next_occurrence`(Ctrl+D) /
+`trigger_completion`(Ctrl+Space) / `redo`(Ctrl+Y)。
+
+> 多光标取舍：`QPlainTextEdit` 仅支持单一 `QTextCursor`，无法渲染多选区，故以 VS Code
+> 核心多选手势 `Ctrl+D`（选中当前词 → 逐个追加下一个匹配为多选区 → 批量编辑）替代 Alt+Click。
+> `multi_selections()` 可读取当前多选区。
+
+```python
+editor.set_shortcuts_enabled(False)       # 整组禁用（宿主自行接管按键时）
+editor.set_shortcut("trigger_completion", "Ctrl+J")
+editor.shortcuts()                        # {"find": "Ctrl+F", ...} 当前全表
+```
+
+### 10.4 查找替换
+
+```python
+editor.open_find_bar(replace=False)   # 顶部右侧浮条：区分大小写 / 全字 / 正则 / 上下一个 / 替换 / 全部替换
+editor.find_count()                   # (当前第几个, 命中总数)
+editor.find_next(); editor.find_prev()
+editor.replace_current(); editor.replace_all()
+editor.close_find_bar()
+```
+
+搜索命中全部高亮（当前命中强化）+ 小地图标记；区域优先级：选区 > 诊断 > 搜索当前命中 > 搜索命中 > 选中词 > 括号匹配 > 自定义层 > 语法。
+
+### 10.5 诊断、断点与折叠
+
+```python
+editor.set_diagnostics([
+    {"line": 47, "column": 5, "length": 14, "severity": "error",
+     "message": "discount 未做边界检查"},
+    {"line": 68, "column": 9, "length": 8, "severity": "warning", "message": "缺省值可能为 None"},
+])
+editor.diagnostics()                  # 读回列表
+editor.diagnostic_lines()             # {line: 最高严重级}
+
+editor.toggle_breakpoint(5)           # 点行号槽左侧同样可切换
+editor.breakpoints()                  # {5, ...}
+editor.breakpoint_toggled.connect(lambda line, on: ...)
+
+editor.fold_all(); editor.unfold_all()
+editor.fold(12); editor.unfold(12)    # 折叠基于缩进的默认折叠器
+editor.fold_points(); editor.folded_lines()
+```
+
+严重级取 `SEVERITY_COLORS` 的键：`error` / `warning` / `info`。宿主可挂任意区域高亮层：
+
+```python
+editor.set_region_highlight("blame", [(3, 8)], "#8A6D3B")   # 自定义 layer 名 + 十六进制色
+```
+
+### 10.6 补全与悬停 provider
+
+补全默认按**当前语言**取候选：语言关键字/内置符号 + 当前文档中出现的标识符
+（Pylance 风格 symbol），**默认不返回代码片段模板**（Python 不会出现 JS 关键字）；
+`plain` / `markdown` 默认没有内置候选；也可完全替换为宿主自己的 provider：
+
+```python
+def complete(prefix: str, line: int, col: int, language: str):
+    # 返回 [{"label": str, "kind": str, "detail": str, "insert": str}, ...]
+    return [it for it in MY_ITEMS.get(language, [])
+            if it["label"].lower().startswith(prefix.lower())]
+
+editor.set_completion_provider(complete)                 # 全局 fallback
+editor.set_completion_provider(complete, language="python")  # 只覆盖 Python
+editor.set_completion_auto_trigger(False)                # 全局关闭自动弹
+
+# 按语言配置：JSON 不自动弹，HTML 不启用补全；其它语言继承全局默认
+editor.set_completion_auto_trigger(False, language="json")
+editor.set_completion_enabled(False, language="html")
+editor.set_completion_document_symbols(False, language="json")  # 只保留关键字，不补文档标识符
+
+# 查询当前语言/指定语言的实际配置
+editor.completion_enabled()               # 当前语言是否启用
+editor.completion_auto_trigger("python")  # Python 是否输入自动触发
+
+# 模块级注册，供所有 CodeEditor 共享
+from InstructionX_UIKit.code_editor import register_completion
+register_completion("mylang", my_provider)  # fn(prefix,line,col,language)
+
+def hover(line: int, col: int):
+    return "<b>calculate_total</b>(items, discount=0.0) -> float"   # 富文本；None 表示不弹
+
+editor.set_hover_provider(hover)           # 延迟约 300ms
+```
+
+旧的 3 参数 provider 仍然兼容：`fn(prefix, line, col)`。
+
+### 10.7 语言注册表与语法色板
+
+```python
+from InstructionX_UIKit.code_editor import (
+    register_language, language_for_file, registered_languages,
+    SYNTAX_LIGHT, SYNTAX_DARK, syntax_palette, create_engine,
+)
+
+language_for_file("app/main.py")     # 'python'（按扩展名）
+registered_languages()               # ['cpp', 'css', ...]
+
+def my_engine(document):             # 自定义语言的 QSyntaxHighlighter 工厂
+    return MyEngine(document)
+
+register_language("mylang", my_engine, [".my", ".myl"])
+```
+
+语法色板是固定低饱和的亮/暗两套（`SYNTAX_LIGHT` / `SYNTAX_DARK`，与界面令牌解耦，
+`theme_changed` 时自动重刷，无需手动重启），这样调整 UI 配色不会破坏代码可读性。
+
+### 10.8 DiffEditor（并排 / 内联 / 自动）
+
+```python
+from InstructionX_UIKit.code_editor import DiffEditor
+
+diff = DiffEditor()
+diff.set_documents(old_text, new_text, language="python",
+                   old_title="原始", new_title="修改后")
+
+diff.set_view_mode("auto")        # "side-by-side" | "inline" | "auto"
+diff.view_mode()                  # auto 下返回实际生效模式
+diff.set_auto_breakpoint(900)     # 容器宽 < 900px 时 auto 自动切内联
+
+diff.hunk_count(); diff.current_hunk()
+diff.next_hunk(); diff.prev_hunk()
+diff.hunk_changed.connect(lambda index, total: ...)
+
+diff.set_char_diff_enabled(True)          # 行内字符级差异高亮
+diff.set_overview_ruler_visible(True)     # 右侧变更概览标尺
+diff.set_revert_enabled(True)             # 显示「还原此块」按钮
+diff.revert_hunk(0); diff.hunk_reverted.connect(lambda index: ...)
+```
+
+并排模式左右两侧共用一条滚动位置（同步滚动），删除行左侧 danger 底、插入行右侧 success 底、
+replace 行左侧 danger 底 / 右侧 success 底（VS Code 风格）；内联模式删除行前缀 `-`、
+插入行前缀 `+`，前缀列自绘。
+
+### 10.9 扩展绘制钩子
+
+```python
+editor.set_paint_hook(lambda painter, text_area: ...)        # 文本区叠加绘制
+editor.set_line_label_provider(lambda line: "覆盖 12x")       # gutter 附加标签
+editor.set_line_marker_provider(lambda line: "coverage")     # gutter 标记图标
+```
+
+### 10.10 主题与嵌入
+
+`CodeEditor` / `DiffEditor` 的全部界面颜色经 `T()` 令牌读取并连接 `theme_changed`
+（语法 token 色板除外，见 10.7），`ThemeManager.instance().set_mode("dark")` 后自动换肤；
+控件背景透明防全局 QSS 污染，
+可直接放进任意布局 / `SplitPanel` / `Tabs`。子控件访问器：
+`text_area()` / `gutter()` / `minimap()` / `find_bar()` / `completion_popup()` / `hover_bubble()` / `highlight_engine()`。
+
+## 11. 常见问题
 
 **Q1：设置了 `size="sm"` 但样式不生效？**
 `size` 是 QWidget 内置 `Q_PROPERTY`，`setProperty("size", "sm")` 会失败且不会成为动态属性。务必使用：

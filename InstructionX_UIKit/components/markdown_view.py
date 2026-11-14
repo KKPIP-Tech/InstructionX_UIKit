@@ -107,8 +107,11 @@ def _mermaid_view_cls():
     except ImportError:
         return None
 
-#: 滚动跟随判定余量（像素）
-_SCROLL_MARGIN = 4
+#: 滚动跟随判定余量（像素）：取 space.1（4），落在 2px 基网格上
+_SCROLL_MARGIN = T("space.1")
+
+#: 块级公式 / 图表相对正文字号的放大系数（display 模式）
+_DISPLAY_SCALE = 1.15
 
 #: 行内 Markdown 敏感字符（出现即需重解析以恢复富样式）
 _INLINE_SIG = set("*_`~$[]()|\\<>&!")
@@ -216,6 +219,34 @@ def _token_body_font() -> QFont:
     return font
 
 
+def _mono_font(px: int = None, weight: str = "regular") -> QFont:
+    """令牌等宽字体（占位图 / 自绘文字共用，字号与字重都走令牌）。
+
+    自绘控件拿不到控件级样式表，只能构造 ``QFont``；因此把
+    「字族 + 字阶 + 字重」的取法收敛到一处，避免各处各写一遍
+    ``setPointSizeF(T("font.md") * 0.75)`` 之后慢慢走样。
+    """
+    font = QFont()
+    font.setFamilies(_families(MONO_FAMILY))
+    font.setPointSizeF((px if px is not None else T("font.md")) * 0.75)
+    font.setWeight(_qfont_weight(weight))
+    return font
+
+
+def _body_font(weight: str = "regular") -> QFont:
+    """令牌正文字体 + 指定字重（自绘文字用；px 字阶，不做 px→pt 换算）。"""
+    font = QFont()
+    font.setFamilies(_families(FONT_FAMILY))
+    font.setPixelSize(T("font.md"))
+    font.setWeight(_qfont_weight(weight))
+    return font
+
+
+def _qfont_weight(name: str) -> QFont.Weight:
+    """``font.weight.*`` 令牌 → ``QFont.Weight``。"""
+    return QFont.Weight(T(f"font.weight.{name}"))
+
+
 #: <body> 标签（大小写不敏感）
 _BODY_TAG_RE = re.compile(r"<body[^>]*>", re.IGNORECASE)
 
@@ -226,6 +257,41 @@ _PRE_RUN_RE = re.compile(r"(?:<pre\b[^>]*>.*?</pre>\s*)+", re.S)
 #: 数据表格标签（Qt 导出的 margin 已烘焙为 0，需按令牌替换）
 _TABLE_TAG_RE = re.compile(r"<table\b[^>]*>")
 
+#: 引用段落：Qt 把 ``> 引用`` 拍平成「左右 margin 相等且非 0」的 ``<p>``
+#: （正常段落是 margin-left:0），据此把引用块从正文里认出来。
+_QUOTE_BLOCK_RE = re.compile(
+    r"<p\b[^>]*margin-left:(\d+)px;[^>]*margin-right:\1px;[^>]*>.*?</p>", re.S)
+
+#: 行内 color 声明（引用块改次级色时按令牌整体替换）
+_COLOR_RE = re.compile(r"color:#[0-9a-fA-F]{6}")
+
+
+def _restyle_quote(match) -> str:
+    """把 Qt 给引用块烘焙的默认缩进换成令牌值，并把文字降到次级色。
+
+    **为什么不能用 CSS 规则**：``QTextDocument.setMarkdown`` 会把
+    ``> 引用`` 拍平成普通 ``<p>``（``blockquote`` 标签根本不存在），
+    所以样式表里的 ``blockquote {...}`` 是死规则；必须走行内属性改写。
+
+    **为什么不加左边条**：Qt 富文本的 CSS 子集不渲染块级
+    ``border-left``，改用 ``td`` 背景色做色条又会让表格列宽按
+    ``width`` 的「相对比例」解析——实测要么得到 120px 的宽条、
+    要么整块表格塌成窄列，两种都比原来的深缩进更糟。契约 §4 的第一
+    条是「先删装饰」：把 Qt 写死的左右各 40px（合计 80px 版心，
+    且不在令牌取值集合内）收敛成令牌缩进，就是这一处最实在的扁平化。
+    """
+    block = match.group(0)
+    if int(match.group(1)) == 0:          # 普通段落（左右 margin 均为 0）
+        return block
+    indent = T("layout.card.pad_x")
+    gap = T("layout.card.gap")
+    secondary = T("color.text.secondary")
+    block = re.sub(r"margin-left:\d+px", f"margin-left:{indent}px", block)
+    block = re.sub(r"margin-right:\d+px", "margin-right:0px", block)
+    block = re.sub(r"margin-top:\d+px", f"margin-top:{gap}px", block)
+    block = re.sub(r"margin-bottom:\d+px", f"margin-bottom:{gap}px", block)
+    return _COLOR_RE.sub(f"color:{secondary}", block)
+
 
 def _polish_block_spacing(html: str) -> str:
     """烘焙代码块与表格的间距 / 内边距（令牌驱动）。
@@ -235,12 +301,18 @@ def _polish_block_spacing(html: str) -> str:
       ``td`` 的 padding / background 是唯一可用的内边距手段；包裹后
       代码块在文档结构上等价于单列表格，增量插入走既有表格路径。
     - 数据表格的 ``margin-top/bottom:0px`` 替换为令牌间距。
+    - 引用块：Qt 把 ``> 引用`` 拍平成「左右各 40px 缩进的 ``<p>``」，
+      既非令牌值又吃掉 80px 版心；按令牌缩进 + 次级文字色重写
+      （用留白分区，不整块染色、不加框）。
+    - 代码块内边距取 ``layout.code.pad``（契约 §2 的代码块令牌），
+      块间间距取 ``layout.card.gap``，与 ``Card`` / ``Collapse``
+      的分区间距同一节奏。
 
     所有样式必须以行内属性烘焙进 HTML：``insertHtml`` 导入片段时不解析
     文档默认样式表（实测），类选择器 CSS 仅对 ``setHtml`` 全量路径生效。
     """
-    gap = T("space.2")
-    pad_v, pad_h = T("space.2"), T("space.3")
+    gap = T("layout.card.gap")
+    pad = T("layout.code.pad")
     bg = T("color.bg.subtle")
 
     def _table_tag(m):
@@ -249,10 +321,11 @@ def _polish_block_spacing(html: str) -> str:
                 .replace("margin-bottom:0px", f"margin-bottom:{gap}px"))
 
     html = _TABLE_TAG_RE.sub(_table_tag, html)
+    html = _QUOTE_BLOCK_RE.sub(_restyle_quote, html)
     codeblock_open = (
         f'<table border="0" width="100%" cellspacing="0" cellpadding="0" '
         f'style="margin-top:{gap}px; margin-bottom:{gap}px;">'
-        f'<tr><td bgcolor="{bg}" style="padding: {pad_v}px {pad_h}px;">')
+        f'<tr><td bgcolor="{bg}" style="padding: {pad}px {pad}px;">')
     return _PRE_RUN_RE.sub(
         lambda m: codeblock_open + m.group(0).rstrip() + "</td></tr></table>",
         html)
@@ -697,7 +770,14 @@ class MarkdownView(QTextBrowser):
 
     # ------------------------------------------------------------------ 渲染
     def _stylesheet(self) -> str:
-        """由当前主题令牌生成文档 CSS。"""
+        """由当前主题令牌生成文档 CSS。
+
+        扁平化取向（契约 §4）：代码块沿用 ``code`` 底色 + 令牌内边距，
+        表格线统一 1px ``color.border``；引用块靠「令牌缩进 + 次级文字色」
+        分区（见 ``_restyle_quote``），不整块染色、不加框。
+        """
+        gap = T("layout.card.gap")
+        pad = T("layout.code.pad")
         return f"""
 body {{ font-family: {FONT_FAMILY}; font-size: {T("font.md")}px;
        color: {T("color.text.primary")}; }}
@@ -707,7 +787,8 @@ h3 {{ font-size: {T("font.title.sm")}px; font-weight: 600; color: {T("color.text
 h4, h5, h6 {{ font-size: {T("font.lg")}px; font-weight: 600; color: {T("color.text.primary")}; }}
 code {{ font-family: {MONO_FAMILY}; color: {T("color.text.primary")}; }}
 pre {{ font-family: {MONO_FAMILY}; color: {T("color.text.primary")}; }}
-blockquote {{ color: {T("color.text.secondary")}; margin-left: {T("space.3")}px; }}
+/* 引用块：Qt 的 setMarkdown 把它拍平成普通 <p>，blockquote 选择器在这里
+   永远不生效；真正的改写见 ``_restyle_quote``（走行内属性烘焙） */
 table {{ border: 1px solid {T("color.border")}; }}
 td, th {{ border: 1px solid {T("color.border")};
          padding: {T("space.1")}px {T("space.2")}px; }}
@@ -720,8 +801,15 @@ a {{ color: {T("color.primary")}; }}
         ``insertHtml`` 导入片段时不解析文档默认样式表，未显式携带字族
         的片段按文档默认字体排版——默认字体与令牌对齐后，增量插入的
         富文本片段与全量渲染（CSS ``body`` 规则）字体一致。
+
+        同时锁定**文档内边距**：``QTextDocument`` 默认 4px（Qt 内部
+        常量，不在任何令牌体系里），会让 MarkdownView 的正文左缘与
+        同级卡片的内边距对不齐；改为 ``layout.inset.pad_x``（8）
+        后，正文左缘与卡内其它文字严格对齐（契约 §3）。
         """
-        self.document().setDefaultFont(_token_body_font())
+        doc = self.document()
+        doc.setDefaultFont(_token_body_font())
+        doc.setDocumentMargin(T("layout.inset.pad_x"))
 
     def _render(self) -> None:
         """全量渲染管线：公式提取 → setMarkdown → toHtml → 公式嵌入 → setHtml。
@@ -783,9 +871,8 @@ a {{ color: {T("color.primary")}; }}
         2x 超采样 + devicePixelRatio，与正式渲染产物排版尺寸一致。
         """
         text = " ".join(latex.split())
-        font = QFont()
-        font.setFamilies(_families(MONO_FAMILY))
-        font.setPointSizeF(T("font.md") * 0.75 * (1.15 if display else 1.0))
+        font = _mono_font(int(T("font.md") * _DISPLAY_SCALE) if display
+                          else T("font.md"))
         fm = QFontMetricsF(font)
         text = fm.elidedText(text, Qt.ElideMiddle, 480)
         w = max(1, math.ceil(fm.horizontalAdvance(text)))
@@ -816,7 +903,7 @@ a {{ color: {T("color.primary")}; }}
         color = T("color.text.primary")
         pt = T("font.md") * 0.75  # px → pt（96dpi 下 1pt ≈ 1.333px）
         for i, (latex, display) in enumerate(maths):
-            eff_pt = pt * (1.15 if display else 1.0)
+            eff_pt = pt * (_DISPLAY_SCALE if display else 1.0)
             key = hub.key_for(latex, color, eff_pt)
             marker = self._math_mark.format(i)
             url = self._math_url(key)
@@ -888,9 +975,7 @@ a {{ color: {T("color.primary")}; }}
         """待渲染 / 渲染失败的图表占位图（等宽字体，2x 超采样）。"""
         text = "Mermaid 图表渲染中…" if not failed else \
             "Mermaid 图表语法不受支持或渲染失败"
-        font = QFont()
-        font.setFamilies(_families(MONO_FAMILY))
-        font.setPointSizeF(T("font.md") * 0.75)
+        font = _mono_font()
         fm = QFontMetricsF(font)
         w = max(1, math.ceil(fm.horizontalAdvance(text)))
         h = max(1, math.ceil(fm.height()))
@@ -1757,8 +1842,6 @@ a {{ color: {T("color.primary")}; }}
         painter = QPainter(self.viewport())
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(QColor(T("color.text.tertiary")))
-        font = painter.font()
-        font.setPixelSize(T("font.md"))
-        painter.setFont(font)
+        painter.setFont(_body_font())
         painter.drawText(self.viewport().rect(), Qt.AlignCenter, self._empty_text)
         painter.end()

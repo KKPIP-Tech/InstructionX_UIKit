@@ -20,9 +20,20 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..theme import T, ThemeManager
+from ..theme import T, ThemeManager, set_font
 
 __all__ = ["FormLayout", "FormItem"]
+
+#: 字段容器内「控件 ↔ 错误提示行」的间距：取 2px 半档（space.05）
+_FIELD_GAP = int(T("space.05"))
+#: 错误提示与字段控件的左缘对齐（契约 §3：标签类元素左缘必须严格一致）。
+#:
+#: 注意这里**不能**用 ``layout.inset.pad_x``：输入控件的文字起点是
+#: 「控件左缘 + 1px 边框 + ``space.3``(12px) 内边距」= 13px，
+#: 而 ``layout.inset.pad_x`` 是 8px —— 两者从来不是同一个令牌，
+#: 按它补会让错误文案恒定偏左 5~6px（实测差 −6px）。
+#: 下面取 ``space.3 + space.05`` = 14px，补齐边框并让两行文字共线。
+_ERROR_PAD_X = int(T("space.3")) + int(T("space.05"))
 
 
 def extract_value(widget):
@@ -173,6 +184,14 @@ class FormLayout(QFormLayout):
         self._items = []
         self._labels = []  # (QLabel, base_text, FormItem)
         self._error_labels = []
+        # 版面度量全部走 layout.* 令牌（契约 §2）：QFormLayout 默认用风格
+        # 里的间距，既不是令牌值，也无法与其他表单对齐。
+        self.setHorizontalSpacing(int(T("layout.field.gap")))   # 标签 ↔ 控件
+        self.setVerticalSpacing(int(T("space.2")))              # 行 ↔ 行
+        # 同一行控件垂直居中（契约 §3），且标签左缘严格一致
+        self.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self.setRowWrapPolicy(QFormLayout.DontWrapRows)
         ThemeManager.instance().theme_changed.connect(self._on_theme_changed)
 
     # ------------------------------------------------------------------
@@ -190,11 +209,12 @@ class FormLayout(QFormLayout):
         label.setTextFormat(Qt.RichText)
         error_label = QLabel("")
         error_label.setVisible(False)
-        error_label.setStyleSheet(self._error_style())
+        error_label.setWordWrap(False)  # 错误文案是短句，禁换行避免撑高行
+        self._style_error_label(error_label)
         field = QWidget()
         v = QVBoxLayout(field)
         v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(2)
+        v.setSpacing(_FIELD_GAP)
         v.addWidget(widget)
         v.addWidget(error_label)
         item = FormItem(label_text, widget, required, validator, parent=self)
@@ -240,7 +260,18 @@ class FormLayout(QFormLayout):
 
     def _error_style(self) -> str:
         return (f"color: {T('color.danger')}; "
-                f"font-size: {T('font.xs')}px;")
+                f"font-size: {T('font.xs')}px; "
+                f"padding-left: {_ERROR_PAD_X}px;")
+
+    def _style_error_label(self, label: QLabel) -> None:
+        """错误提示行样式（颜色 + 字阶 + 左内边距，均取令牌）。
+
+        不能直接用 ``theme.set_font``：它内部是 ``setStyleSheet``，会
+        覆盖掉这里同一次调用里写的颜色与左内边距。故在一处把三个令牌
+        拼成一条实例级 QSS——生效机制与 ``set_font`` 完全一致（都是
+        实例级样式表压过全局 ``QWidget { font-size }`` 基座规则）。
+        """
+        label.setStyleSheet(self._error_style())
 
     def _refresh_label(self, item: FormItem) -> None:
         for label, base, it in self._labels:
@@ -251,4 +282,4 @@ class FormLayout(QFormLayout):
         for label, base, item in self._labels:
             label.setText(self._label_markup(base, item.required))
         for error_label in self._error_labels:
-            error_label.setStyleSheet(self._error_style())
+            self._style_error_label(error_label)

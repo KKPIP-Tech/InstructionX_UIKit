@@ -4,13 +4,25 @@
 带标题 / 额外操作 / 底部槽位的容器卡片，支持 hoverable（悬停主色描边
 高亮，自绘实现，不使用 QGraphicsDropShadowEffect——项目红线）与
 bordered 变体；背景与边框自绘，亮 / 暗主题实时感知。
+
+扁平化约定（与 COMPONENT-DESIGN-CONTRACT §4 对齐）：
+
+- **内部只有一层框**：卡片自身是唯一有边框的层；标题区 / 正文区 /
+  底部区都是透明容器，彼此之间只用留白（间距令牌）分区，不再各自套框。
+- **底部槽用一条 1px 细线分隔**（``color.border``，非 ``border.strong``），
+  这是唯一的内部线条；不使用投影——普通控件禁用投影（§4）。
+- **内边距全部走令牌**：左右 ``layout.card.pad_x``，上 ``layout.card.pad_top``，
+  下 ``layout.card.pad_bottom``；段落间距 ``layout.card.gap``，
+  标题与 extra 之间 ``layout.icon.gap``。
+- **字阶走 ``set_font``**：全局 ``QWidget { font-size }`` 会覆盖 ``setFont``，
+  标题必须用实例级 QSS 才能拿到 ``title.sm`` 字阶（§6）。
 """
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPainter, QPainterPath
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
-from InstructionX_UIKit.theme import T, ThemeManager, set_property
+from InstructionX_UIKit.theme import T, ThemeManager, set_font, set_property
 
 __all__ = ["Card"]
 
@@ -39,42 +51,44 @@ class Card(QFrame):
         self._hovered = False
 
         self._root = QVBoxLayout(self)
-        self._root.setContentsMargins(T("space.4"), T("space.3"), T("space.4"), T("space.3"))
-        self._root.setSpacing(T("space.2"))
+        self._root.setContentsMargins(
+            T("layout.card.pad_x"), T("layout.card.pad_top"),
+            T("layout.card.pad_x"), T("layout.card.pad_bottom"))
+        self._root.setSpacing(T("layout.card.gap"))
 
-        # 标题区：标题 + 右侧 extra 槽
+        # 标题区：标题 + 右侧 extra 槽（透明容器，无独立边框）
         self._header = QWidget(self)
+        set_property(self._header, "role", "plain")
         header = QHBoxLayout(self._header)
         header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(T("space.2"))
+        header.setSpacing(T("layout.icon.gap"))
         self._title_label = QLabel(title, self._header)
-        title_font = self._title_label.font()
-        title_font.setPixelSize(T("font.title.sm"))
-        title_font.setBold(True)
-        self._title_label.setFont(title_font)
+        set_font(self._title_label, "title.sm", "semibold")
         header.addWidget(self._title_label, 1)
         self._extra_slot = QHBoxLayout()
         self._extra_slot.setContentsMargins(0, 0, 0, 0)
+        self._extra_slot.setSpacing(T("layout.icon.gap"))
         header.addLayout(self._extra_slot, 0)
         self._root.addWidget(self._header)
         self._header.setVisible(bool(title))
 
         # 正文区
         self._body = QWidget(self)
+        set_property(self._body, "role", "plain")
         self._body_layout = QVBoxLayout(self._body)
         self._body_layout.setContentsMargins(0, 0, 0, 0)
-        self._body_layout.setSpacing(T("space.2"))
+        self._body_layout.setSpacing(T("layout.card.gap"))
         self._root.addWidget(self._body, 1)
 
-        # 底部槽
+        # 底部槽（上方一条 1px 细线，其余靠留白）
         self._footer = QWidget(self)
+        set_property(self._footer, "role", "plain")
         self._footer_layout = QHBoxLayout(self._footer)
-        self._footer_layout.setContentsMargins(0, T("space.2"), 0, 0)
-        self._footer_layout.setSpacing(T("space.2"))
+        self._footer_layout.setContentsMargins(0, T("layout.card.gap"), 0, 0)
+        self._footer_layout.setSpacing(T("layout.card.gap"))
         self._footer.setVisible(False)
         self._root.addWidget(self._footer)
 
-        set_property(self, "variant", "card")
         ThemeManager.instance().theme_changed.connect(self.update)
 
     # ------------------------------------------------------------------ 槽位
@@ -92,7 +106,7 @@ class Card(QFrame):
             item = self._extra_slot.takeAt(0)
             if item.widget() is not None:
                 item.widget().deleteLater()
-        self._extra_slot.addWidget(widget)
+        self._extra_slot.addWidget(widget, 0, Qt.AlignVCenter)
         self._header.setVisible(True)
 
     def body_layout(self) -> QVBoxLayout:
@@ -104,7 +118,7 @@ class Card(QFrame):
         self._body_layout.addWidget(widget)
 
     def set_footer(self, footer) -> None:
-        """设置底部槽：控件或文本（自动包成弱化标签）。
+        """设置底部槽：控件或文本（自动包成次级色标签）。
 
         替换旧内容，旧控件销毁。
         """
@@ -114,10 +128,13 @@ class Card(QFrame):
                 item.widget().deleteLater()
         if isinstance(footer, str):
             label = QLabel(footer, self._footer)
+            set_font(label, "sm", "regular")
             set_property(label, "role", "secondary")
             footer = label
-        self._footer_layout.addWidget(footer)
+        self._footer_layout.addWidget(footer, 0, Qt.AlignVCenter)
+        self._footer_layout.addStretch(1)
         self._footer.setVisible(True)
+        self.update()
 
     # ------------------------------------------------------------------ 变体
     def set_bordered(self, bordered: bool) -> None:
@@ -150,7 +167,9 @@ class Card(QFrame):
 
     # ------------------------------------------------------------------ 绘制
     def paintEvent(self, event) -> None:
-        super().paintEvent(event)  # 先让样式画 QSS 底色，再覆盖自绘卡片背景
+        # 背景 / 边框 / 底部槽细线全部自绘：全局基座 QSS 给 QFrame 的
+        # 「底色 + 边框」与这里重复一层会形成双框，故先擦掉样式底再画一次，
+        # 保证卡片只有一层圆角矩形轮廓。
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         rect = self.rect().adjusted(0, 0, -1, -1)
@@ -158,13 +177,24 @@ class Card(QFrame):
         path = QPainterPath()
         path.addRoundedRect(rect, radius, radius)
 
-        painter.fillPath(path, QColor(T("color.bg.elevated")))
+        painter.fillPath(path, QColor(T("color.bg.base")))
         if self._bordered:
-            border = T("color.primary") if (self._hoverable and self._hovered) else T("color.border")
-            pen = painter.pen()
-            pen.setColor(QColor(border))
+            border = T("color.primary") if (self._hoverable and self._hovered) \
+                else T("color.border")
+            pen = QPen(QColor(border))
             pen.setWidth(1)
             painter.setPen(pen)
             painter.setBrush(Qt.NoBrush)
             painter.drawPath(path)
+        else:
+            painter.setPen(Qt.NoPen)
+
+        # 底部槽与正文之间：一条 1px 细线（唯一的内部线条）
+        if self._footer.isVisible():
+            line_y = self._footer.y() - T("layout.card.gap") // 2
+            pen = QPen(QColor(T("color.border")))
+            pen.setWidth(1)
+            painter.setPen(pen)
+            radius_in = T("layout.card.pad_x")
+            painter.drawLine(radius_in, line_y, rect.right() - radius_in, line_y)
         painter.end()

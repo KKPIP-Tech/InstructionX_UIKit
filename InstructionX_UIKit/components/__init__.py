@@ -6,6 +6,7 @@ from .auto_complete import AutoComplete
 from .avatar import Avatar
 from .badge import Badge
 from .breadcrumb import Breadcrumb
+from .budget_slider import BudgetSliderGroup, BudgetSpec
 from .button import Button
 from .calendar import Calendar
 from .card import Card
