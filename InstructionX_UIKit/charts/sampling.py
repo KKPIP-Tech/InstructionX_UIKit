@@ -179,6 +179,33 @@ def _bucket_bounds(n: int, threshold: int):
     return out
 
 
+def _blocked_numpy_extrema(values, bounds, block=64):
+    """分块计算每桶 argmin/argmax，临时内存受块宽限制。"""
+    output = []
+    for offset in range(0, len(bounds), block):
+        part = bounds[offset:offset + block]
+        extrema = [None] * len(part)
+        valid_rows = []
+        width = max(end - start for start, end in part)
+        lows = _np.full((len(part), width), _np.inf)
+        highs = _np.full((len(part), width), -_np.inf)
+        for row, (start, end) in enumerate(part):
+            segment = values[start:end]
+            if _np.isnan(segment).any():
+                extrema[row] = (start + int(_np.argmin(segment)),
+                                start + int(_np.argmax(segment)))
+                continue
+            lows[row, :end - start] = segment
+            highs[row, :end - start] = segment
+            valid_rows.append(row)
+        for row in valid_rows:
+            start, _ = part[row]
+            extrema[row] = (start + int(_np.argmin(lows[row])),
+                            start + int(_np.argmax(highs[row])))
+        output.extend(extrema)
+    return output
+
+
 def bucket_sample(values, threshold: int, x_values=None):
     """逐桶保留极值（min/max 包络）。
 
@@ -217,13 +244,12 @@ def bucket_sample(values, threshold: int, x_values=None):
         v = values
         x = x_values
 
+    extrema = _blocked_numpy_extrema(v, bounds) if use_np else None
     out = []
     ap = out.append
-    for s, e in bounds:
+    for bucket_index, (s, e) in enumerate(bounds):
         if use_np:
-            seg = v[s:e]
-            imin = s + int(_np.argmin(seg))
-            imax = s + int(_np.argmax(seg))
+            imin, imax = extrema[bucket_index]
         else:
             imin = s
             imax = s
@@ -277,6 +303,8 @@ def column_aggregate(values, buckets: int, x_values=None):
             x = x_values.raw if isinstance(x_values, NumericBuffer) else x_values
         try:
             v = _np.asarray(v, dtype=_np.float64)
+            if v.ndim != 1:
+                return None, False
             if x is not None:
                 x = _np.asarray(x, dtype=_np.float64)
         except (TypeError, ValueError):
@@ -292,6 +320,7 @@ def column_aggregate(values, buckets: int, x_values=None):
                 "min": float(seg.min()),
                 "max": float(seg.max()),
                 "count": int(e - s),
+                "index": mid,
                 "x": float(x[mid]) if x is not None else mid,
             })
         return (out, True) if out else (None, False)
@@ -300,10 +329,14 @@ def column_aggregate(values, buckets: int, x_values=None):
     for s, e in bounds:
         if e <= s:
             continue
+        if isinstance(values[s], (list, tuple, dict)):
+            return None, False
         lo = hi = values[s]
         total = 0.0
         for j in range(s, e):
             val = values[j]
+            if isinstance(val, (list, tuple, dict)):
+                return None, False
             total += val
             if val < lo:
                 lo = val
@@ -313,6 +346,7 @@ def column_aggregate(values, buckets: int, x_values=None):
         out.append({
             "value": total / (e - s), "min": lo, "max": hi,
             "count": e - s,
+            "index": mid,
             "x": (x_values[mid] if x_values is not None else mid),
         })
     return (out, True) if out else (None, False)

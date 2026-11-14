@@ -21,7 +21,7 @@
    pill 圆角），保证 ``99+`` 等宽文本完整显示。
 """
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QEvent, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
@@ -125,9 +125,11 @@ class Badge(QWidget):
     def set_widget(self, widget: QWidget) -> None:
         """设置被包裹的子控件（角标锚在其右上角，右半探出宿主右缘）。"""
         if self._child is not None:
+            self._child.removeEventFilter(self)
             self._layout.removeWidget(self._child)
             self._child.setParent(None)
         self._child = widget
+        widget.installEventFilter(self)
         self._layout.addWidget(widget)
         if self._pill is not None:
             # 重新挂到 children 末尾：换绑子控件后角标仍是最后（顶层）子控件
@@ -276,6 +278,12 @@ class Badge(QWidget):
 
     def _on_theme_changed(self, _mode) -> None:
         self._sync_pill()
+
+    def eventFilter(self, watched, event):  # noqa: N802
+        """被包裹子控件完成布局位移后再同步角标位置。"""
+        if watched is self._child and event.type() in (QEvent.Move, QEvent.Resize):
+            self._sync_pill()
+        return super().eventFilter(watched, event)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)

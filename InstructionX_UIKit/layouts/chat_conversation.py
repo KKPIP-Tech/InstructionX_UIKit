@@ -35,7 +35,7 @@
 
 import time
 
-from PySide6.QtCore import QCoreApplication, QEvent, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QPainter
 from PySide6.QtWidgets import (
     QFrame,
@@ -402,6 +402,7 @@ class ChatConversation(QWidget):
         self._actions_always = False  # 操作条常显开关
         self._placeholder = None
         self._follow = True        # 底部跟随状态（用户上翻后暂停）
+        self._follow_pending = False
         self._programmatic_scroll = False
         self._last_max = 0         # 上次滚动范围上限（识别 value 钳制用）
         self._last_value = 0       # 上次滚动位置（钳制判据的兜底基线）
@@ -435,6 +436,8 @@ class ChatConversation(QWidget):
         # 用户滚动状态 → 底部跟随开关
         self._scroll.verticalScrollBar().valueChanged.connect(
             self._on_scroll_value)
+        self._scroll.verticalScrollBar().rangeChanged.connect(
+            self._on_scroll_range)
 
         # 底部输入区（可选）
         self.input_edit = None
@@ -836,23 +839,22 @@ class ChatConversation(QWidget):
         self._last_value = value
         self._follow = value >= maximum - _SCROLL_MARGIN
 
+    def _on_scroll_range(self, _minimum, _maximum) -> None:
+        """滚动范围变化后合并到底部跟随，不重入事件循环。"""
+        if self._follow:
+            self._follow_after_doc_change()
+
     def _follow_after_doc_change(self) -> None:
-        """气泡文档尺寸变化（流式追加 / 公式图片就绪）后继续底部跟随。
-
-        文档变高时滚动范围在事件循环中才更新：若跟随状态开启，先
-        等布局落定（processEvents）再滚到底，修复「公式图片到达使
-        气泡长高后视口不再跟随」的问题。
-        """
-        if not self._follow:
+        """文档尺寸或滚动范围变化后合并为一次延迟跟随。"""
+        if not self._follow or self._follow_pending:
             return
+        self._follow_pending = True
+        QTimer.singleShot(0, self._flush_follow_once)
 
-        def _flush_and_follow():
-            # 布局与滚动范围更新可能需要多轮事件处理才落定
-            for _ in range(4):
-                QCoreApplication.processEvents()
+    def _flush_follow_once(self) -> None:
+        self._follow_pending = False
+        if self._follow:
             self._follow_scroll()
-
-        QTimer.singleShot(0, _flush_and_follow)
 
     def _on_send(self) -> None:
         text = self.input_edit.toPlainText().strip()

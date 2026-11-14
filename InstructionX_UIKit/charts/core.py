@@ -47,6 +47,7 @@ from PySide6.QtWidgets import QWidget
 
 from ..theme import T, ThemeManager
 from ..tokens import DURATION, EASING
+from .._metrics import MetricRing
 from ._utils import warn_once
 from .data import NumericBuffer, is_array_like as _is_array_like, to_buffer
 from .sampling import (
@@ -842,6 +843,7 @@ class ChartWidget(QWidget):
         super().__init__(parent)
         self.setMouseTracking(True)
         self.setMinimumSize(200, 150)
+        self._perf = MetricRing()
         self._option = {}
         self._series = []        # [SeriesRenderer]
         self._coords = []        # [Coord]
@@ -890,6 +892,21 @@ class ChartWidget(QWidget):
         except (RuntimeError, TypeError):
             pass
 
+    def _perf_snapshot(self):
+        """返回有界诊断指标，不用于替代系统实际呈现统计。"""
+        result = self._perf.snapshot()
+        viewport = self._viewport
+        dpr = float(viewport.devicePixelRatioF())
+        result.update({
+            "backend": type(viewport).__name__,
+            "dpr": dpr,
+            "physical_width": round(viewport.width() * dpr),
+            "physical_height": round(viewport.height() * dpr),
+            "raw_points": sum(len(r.data_view()) for r in self._series),
+            "screen_points": sum(len(r._points) for r in self._series),
+        })
+        return result
+
     # ------------------------------------------------------------------ API
     def set_option(self, option: dict) -> None:
         """全量设置 option（dict，schema 见 CHART_SPEC §4）并播放入场动画。
@@ -899,6 +916,7 @@ class ChartWidget(QWidget):
         这样 ``copy.deepcopy`` 永远不会遍历百万级数组——实测 150 万点由
         约 2.1 s 降至毫秒级。其余结构照旧深拷贝，语义与历史一致。
         """
+        started = time.perf_counter()
         if not isinstance(option, dict):
             self._option = {}
         else:
@@ -909,6 +927,7 @@ class ChartWidget(QWidget):
         self._rebuild()
         self.anim.start()
         self.update()
+        self._perf.add("option_update_ms", time.perf_counter() - started)
 
     def update_option(self, option: dict) -> None:
         """合并更新 option 并播放旧→新数据插值动画。
@@ -923,6 +942,7 @@ class ChartWidget(QWidget):
         大数组优化：新数据在合并时就地包装为缓冲区（``_deep_merge``），
         旧数据以只读视图注入 ``prev_data``，均不复制。
         """
+        started = time.perf_counter()
         if not isinstance(option, dict):
             return
         prev_list = [_prev_view(r) for r in self._series]
@@ -940,6 +960,7 @@ class ChartWidget(QWidget):
             r.prev_data = prev
         self.anim.start()
         self.update()
+        self._perf.add("option_update_ms", time.perf_counter() - started)
 
     def option(self) -> dict:
         """当前 option（深拷贝快照，公共 API 契约）。
@@ -1112,6 +1133,7 @@ class ChartWidget(QWidget):
     # ------------------------------------------------------------- 内部构建
     def _rebuild(self) -> None:
         """按当前 option 重建组件 / 坐标系 / 系列渲染器（并使布局缓存失效）。"""
+        started = time.perf_counter()
         opt = self._option
         self._layout_key = None
         self.title.set_option(opt.get("title") or {})
@@ -1185,6 +1207,7 @@ class ChartWidget(QWidget):
             items.append((r.name, self.color_for_series(r)))
         self.legend.set_items(items)
         self._layout_all(force=True)
+        self._perf.add("_rebuild_ms", time.perf_counter() - started)
 
     def _make_coord(self, cls, kind: str):
         """构造单个坐标系：失败降级为 None 并记录一次（不拖垮整图）。"""
@@ -1318,45 +1341,53 @@ class ChartWidget(QWidget):
 
         返回是否成功写入（系列序号越界 / 数据不可用时为 ``False``）。
         """
+        return self._apply_stream_data(values, series)
+
+    def _apply_stream_data(self, values, series=0, y_range=None,
+                           refresh_axes=None) -> bool:
+        """原子提交流式数据与可选轴范围，保留原渲染器和静态缓存。"""
         renderers = self._series
         try:
             idx = int(series)
         except (TypeError, ValueError):
             idx = 0
-        if idx < 0 or idx >= len(renderers):
+        if idx < 0 or idx >= len(renderers) or values is None:
             return False
-        if values is None:
-            return False
-        buf = to_buffer(values)
-        arr = buf if buf is not None else values
-        renderers[idx].opt["data"] = arr
-        # 轴范围必须跟着数据长度走（**不是可省的开销**）：空类目的 category 轴
-        # 没有类目可推，band 数完全依赖「隐式下标范围」（见 axes.GridCoord.
-        # set_series）。跳过这一步时 vmin/vmax 会停在初始的 0/1，band 宽度算成
-        # 0.0005 像素，屏幕 x 飞到 200 万（实测 x 606~2095126，绘图区才
-        # 72~1139），图上只剩一条压在边缘的线。
-        #
-        # 只在**长度变化**时重算：窗口写满后长度恒定，无需每帧扫一遍数据；
-        # 长度变化的那几帧本来就要跟随新范围（轴范围未固定的情形），
-        # 而固定了 ``yAxis.min/max`` 的调用方不受影响。
+        buffer = to_buffer(values)
+        data = buffer if buffer is not None else values
         try:
-            n = len(arr)
-        except TypeError:
-            n = 0
-        if self._stream_len.get(idx) != n:
-            self._stream_len[idx] = n
-            # 同步到内部 option：轴范围推导（各坐标系 set_series）与
-            # ``option()`` 快照都读 ``_option``，只改渲染器的 opt 会让两处
-            # 数据不一致——范围仍按旧数据算，映射随即跑飞。
-            try:
-                self._option["series"][idx]["data"] = arr
-            except (KeyError, IndexError, TypeError):
-                pass
+            length = len(data)
+            series_option = self._option["series"][idx]
+            if not isinstance(series_option, dict):
+                return False
+        except (TypeError, KeyError, IndexError):
+            return False
+        renderers[idx].opt["data"] = data
+        series_option["data"] = data
+        length_changed = self._stream_len.get(idx) != length
+        self._stream_len[idx] = length
+        if length_changed or refresh_axes is True or y_range is not None:
+            if y_range is not None:
+                low, high = y_range
+                axis_option = self._option.get("yAxis")
+                if not isinstance(axis_option, dict):
+                    axis_option = self._option["yAxis"] = {}
+                axis_option["min"] = low
+                axis_option["max"] = high
+                for coord in self._coords:
+                    axis = getattr(coord, "y_axis", None)
+                    if axis is not None:
+                        axis.opt["min"] = low
+                        axis.opt["max"] = high
+                        axis.min = low
+                        axis.max = high
             self._refresh_axes_extent()
-        # 数据变了 → 布局必须重算（采样与映射依赖它），但静态层与 option
-        # 版本都不动：轴范围未变时坐标轴无需重建。
+            self._static_key = None
+            self._series_key = None
         self._layout_key = None
         self._paint_only_dirty = True
+        self.anim.stop()
+        self.anim.set_progress(1.0)
         self.update()
         return True
 
@@ -1384,11 +1415,13 @@ class ChartWidget(QWidget):
         布局缓存：键命中直接返回（悬停 / 无动画重绘零成本）；动画进行中
         不缓存（每帧重算，ChartAnimation 视觉行为与历史一致）。
         """
+        started = time.perf_counter()
         if force:
             self._layout_key = None
         elif not self.anim.is_running():
             key = self._layout_cache_key()
             if key == self._layout_key:
+                self._perf.count("layout_cache_hit")
                 return
             self._layout_key = key
         content = self._content_rect()
@@ -1408,6 +1441,7 @@ class ChartWidget(QWidget):
                 except Exception as exc:
                     warn_once(f"component-layout:{comp.__class__.__name__}",
                               f"组件布局异常（{comp.__class__.__name__}）: {exc!r}")
+        self._perf.add("layout_ms", time.perf_counter() - started)
 
     # ------------------------------------------------------------- Qt 事件
     def update(self, *args) -> None:
