@@ -45,6 +45,9 @@ def capture(args):
                 break
             module = frame.f_globals.get("__name__", "")
             if module == "InstructionX_UIKit.anim.painted" \
+                    or module in ("InstructionX_UIKit.components.spinner",
+                                  "InstructionX_UIKit.components.skeleton",
+                                  "InstructionX_UIKit.components.carousel") \
                     or module.startswith("demo.pages.anim_"):
                 return None
             frame = frame.f_back
