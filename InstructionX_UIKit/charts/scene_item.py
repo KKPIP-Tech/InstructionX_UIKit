@@ -1,57 +1,10 @@
 # -*- coding: utf-8 -*-
-"""只把不可变图像快照同步为 Scene Graph 纹理的 QQuickItem。"""
+"""ChartWidget 的 Scene Graph 纹理项。"""
 
-from collections import deque
-
-from PySide6.QtQuick import QSGNode, QQuickItem, QSGSimpleTextureNode, QSGTexture
-
+from .._rhi_texture import RhiTextureItem
 from .scene_snapshot import build_scene_snapshot
 
 
-class ChartSceneItem(QQuickItem):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._snapshot = None
-        self._frames = deque(maxlen=3)
-        self._texture = None
-        self._texture_key = None
-        self._node = None
-        self._vertex_count = 0
-        self.setFlag(QQuickItem.ItemHasContents, True)
-
-    def sync(self, chart, dpr):
-        self._snapshot = build_scene_snapshot(chart, dpr)
-        self.update()
-
-    def clear(self):
-        self._snapshot = None
-        self._frames.clear()
-        self._texture = None
-        self._texture_key = None
-        self._node = None
-        self.update()
-
-    def updatePaintNode(self, root, _info):  # noqa: N802
-        snapshot = self._snapshot
-        if snapshot is None:
-            self._frames.clear()
-            self._texture = None
-            self._texture_key = None
-            self._node = None
-            return None
-        if self._texture is None or self._texture_key != snapshot.version:
-            texture = self.window().createTextureFromImage(snapshot.image)
-            if texture is None:
-                return root
-            self._texture = texture
-            self._texture_key = snapshot.version
-        if root is None:
-            root = QSGSimpleTextureNode()
-        root.setFiltering(QSGTexture.Nearest)
-        root.setOwnsTexture(False)
-        root.setTexture(self._texture)
-        root.setRect(0, 0, snapshot.width, snapshot.height)
-        root.markDirty(QSGNode.DirtyMaterial)
-        self._node = root
-        self._frames.append((root, self._texture))
-        return root
+class ChartSceneItem(RhiTextureItem):
+    def build_snapshot(self, chart, dpr):
+        return build_scene_snapshot(chart, dpr)
