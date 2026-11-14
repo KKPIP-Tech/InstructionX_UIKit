@@ -24,6 +24,15 @@ __all__ = ["create_page"]
 _DIRECTIONS = ["left", "right", "up", "down"]
 
 
+def _disconnect_theme_on_destroy(widget, connection):
+    def _disconnect():
+        try:
+            ThemeManager.instance().theme_changed.disconnect(connection)
+        except (RuntimeError, TypeError):
+            pass
+    widget.destroyed.connect(_disconnect)
+
+
 class _Stage(QWidget):
     """绝对定位演示舞台：避免布局刷新覆盖 pos / geometry 动画。"""
 
@@ -307,7 +316,8 @@ def _cards() -> list:
 
     gf.setAttribute(Qt.WA_StyledBackground, True)
     _gflow_static()
-    ThemeManager.instance().theme_changed.connect(lambda *_: _gflow_static())
+    connection = ThemeManager.instance().theme_changed.connect(lambda *_: _gflow_static())
+    _disconnect_theme_on_destroy(gf, connection)
 
     def _gflow(o, gf=gf):
         opts = dict(o)
@@ -386,7 +396,8 @@ def _cards() -> list:
         if not mbox_state["on"]:  # 变形进行中由动画逐帧重写样式，不干预
             _mbox_style()
 
-    ThemeManager.instance().theme_changed.connect(_mbox_theme)
+    connection = ThemeManager.instance().theme_changed.connect(_mbox_theme)
+    _disconnect_theme_on_destroy(morph_box, connection)
 
     def _morph_box(o, box=morph_box, state=mbox_state):
         if state["on"]:
