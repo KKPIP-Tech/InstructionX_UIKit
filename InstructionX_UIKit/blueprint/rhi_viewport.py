@@ -78,7 +78,7 @@ class _RhiViewport(_ViewportMixin, QWidget):
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
-        if not self._ready:
+        if not getattr(self, "_ready", False):
             return
         self._bind_host_state()
         self._container.show()
@@ -154,7 +154,7 @@ class _RhiViewport(_ViewportMixin, QWidget):
         return sum(samples) / len(samples) * 1000 if samples else 0.0
 
     def update(self, *_args):
-        if not self._ready:
+        if not getattr(self, "_ready", False):
             return
         if self._canvas._ui_active and self.isVisible():
             self._sync_timer.start(0)
@@ -238,7 +238,7 @@ class _RhiViewport(_ViewportMixin, QWidget):
             target, QHelpEvent(event.type(), local, global_position))
 
     def eventFilter(self, obj, event):  # noqa: N802
-        if not self._ready or obj not in (self._container, self._view):
+        if not getattr(self, "_ready", False) or obj not in (self._container, self._view):
             return super().eventFilter(obj, event)
         if event.type() in (
                 QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove,
