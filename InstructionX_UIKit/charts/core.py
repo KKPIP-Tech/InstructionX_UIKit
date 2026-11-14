@@ -1732,7 +1732,7 @@ class ChartWidget(QWidget):
         self.tooltip.paint(p)
 
     def _series_cacheable(self, t) -> bool:
-        """静态系列可缓存；动画与刚变更的数据直接绘制，避免重复光栅化。"""
+        """静态系列可缓存；RHI 数据帧沿用原有缓存光栅路径保持像素一致。"""
         if self.anim.is_running():
             self._series_was_running = True
             return False
@@ -1743,7 +1743,7 @@ class ChartWidget(QWidget):
             self._paint_only_dirty = False
             self._series_key = None
             self._series_pixmap_cache = None
-            return False
+            return bool(getattr(self, "prefer_raster_series", False))
         del t
         return True
 

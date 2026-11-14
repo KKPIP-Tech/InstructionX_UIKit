@@ -6,7 +6,7 @@ from pathlib import Path
 
 from shiboken6 import isValid as _shiboken_is_valid
 
-from PySide6.QtCore import QEvent, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QCoreApplication, QEvent, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtQml import qmlRegisterType
 from PySide6.QtQuick import QQuickView
@@ -25,6 +25,7 @@ class _RhiViewport(_ViewportMixin, QWidget):
         super().__init__(chart)
         global _REGISTERED
         self._init_viewport(chart)
+        chart.prefer_raster_series = True
         if not _REGISTERED:
             qmlRegisterType(ChartSceneItem, "InstructionX.Charts", 1, 0,
                             "ChartSceneItem")
@@ -108,12 +109,13 @@ class _RhiViewport(_ViewportMixin, QWidget):
         if obj not in (self._container, self._view):
             return super().eventFilter(obj, event)
         chart = self._chart
+        if event.type() == QEvent.Type.Wheel:
+            return QCoreApplication.sendEvent(chart, event)
         handlers = {
             QEvent.Type.MouseButtonPress: chart.mousePressEvent,
             QEvent.Type.MouseMove: chart.mouseMoveEvent,
             QEvent.Type.MouseButtonRelease: chart.mouseReleaseEvent,
             QEvent.Type.MouseButtonDblClick: chart.mouseDoubleClickEvent,
-            QEvent.Type.Wheel: chart.wheelEvent,
             QEvent.Type.KeyPress: chart.keyPressEvent,
             QEvent.Type.KeyRelease: chart.keyReleaseEvent,
             QEvent.Type.Enter: chart.enterEvent,
