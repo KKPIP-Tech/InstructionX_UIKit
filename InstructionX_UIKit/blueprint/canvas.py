@@ -15,9 +15,8 @@
 - 序列化：``to_dict`` / ``from_dict``（含节点位置与画布 zoom/offset）。
 
 节点为真实子控件（``NodeWidget``，挂在内部绘制视口之下）；边、临时线、
-网格、选中发光由视口统一自绘——GL 可用时视口为 ``QOpenGLWidget``
-（GPU 加速），否则为普通 ``QWidget`` 软件回退（见 ``viewport.py``，
-可用 ``UIKIT_BLUEPRINT_GL=off`` 强制软件路径）。
+网格、选中发光与节点外观由 RHI 视口统一承载。离屏平台使用软件视口
+验证相同绘制语义，见 ``viewport.py``。
 """
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSizeF, Qt, QTimer, Signal
@@ -130,7 +129,7 @@ class BlueprintCanvas(QWidget):
         self._flow_timer.setInterval(50)
         self._flow_timer.timeout.connect(self._tick_flow)
 
-        # 滚轮缩放手势标记：手势期间 GL 代理节点位图按纹理缩放（不重建
+        # 滚轮缩放手势标记：手势期间 RHI 代理节点位图按纹理缩放（不重建
         # 缓存），手势结束 150ms 后触发一次全量重建恢复清晰
         self._zooming = False
         self._zoom_settle = QTimer(self)
@@ -150,8 +149,7 @@ class BlueprintCanvas(QWidget):
         self.setMinimumSize(320, 240)
         self.setAttribute(Qt.WA_OpaquePaintEvent, True)
 
-        # 绘制视口：GL 可用时为 QOpenGLWidget（GPU 加速），否则软件回退；
-        # 与画布 1:1 重合（resizeEvent 同步几何），节点控件挂在其下。
+        # RHI 视口与画布 1:1 重合，真实节点控件挂在其下。
         self._viewport = create_viewport(self)
         self._viewport.setGeometry(self.rect())
         self._viewport.show()
@@ -398,7 +396,7 @@ class BlueprintCanvas(QWidget):
         代理时：跳过**全部**节点的逐帧几何落位，仅重绘视口——节点由视口
         按场景坐标实时绘制缓存位图，视觉不受控件几何滞后影响。带可见
         自定义体的节点在手势开始时被临时切换为位图代理
-        （``NodeWidget.begin_gesture_proxy``）：实测 GL 视口上逐帧对
+        （``NodeWidget.begin_gesture_proxy``）：实测 RHI视口上逐帧对
         真实子控件树做落位 + 重绘的合成开销极高（最大化窗口 11 节点
         约 76ms/帧，切换后约 15ms/帧）。被跳过的几何与真实控件在手势
         结束时由 ``_settle_view_gesture`` 统一补偿恢复。
@@ -573,7 +571,7 @@ class BlueprintCanvas(QWidget):
         self._drag_moved = True
         defer = bool(getattr(self._viewport, "supports_node_proxy", False))
         # 受影响边（两端任一在被拖节点上）的旧包围盒仅软件模式的局部
-        # 重绘需要；GL 代理模式整幅重绘，跳过该统计开销
+        # 重绘需要；RHI代理模式整幅重绘，跳过该统计开销
         affected = []
         old_rects = []
         if not defer:
@@ -592,7 +590,7 @@ class BlueprintCanvas(QWidget):
             if w is not None and defer:
                 # 带可见自定义体的被拖节点同样切换手势位图代理（幂等）：
                 # 逐帧 apply_view 对真实子控件树做几何落位 + 重绘叠加
-                # GL 合成开销极高（实测单节点拖动约 140ms/帧）；
+                # RHI合成开销极高（实测单节点拖动约 140ms/帧）；
                 # 代理位图由视口按场景坐标实时绘制，视觉无滞后
                 w.begin_gesture_proxy()
             # 位图代理节点由视口按场景坐标实时绘制，拖动期间无需逐帧落位
