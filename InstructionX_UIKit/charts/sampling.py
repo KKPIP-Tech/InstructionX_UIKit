@@ -277,6 +277,8 @@ def column_aggregate(values, buckets: int, x_values=None):
             x = x_values.raw if isinstance(x_values, NumericBuffer) else x_values
         try:
             v = _np.asarray(v, dtype=_np.float64)
+            if v.ndim != 1:
+                return None, False
             if x is not None:
                 x = _np.asarray(x, dtype=_np.float64)
         except (TypeError, ValueError):
@@ -292,6 +294,7 @@ def column_aggregate(values, buckets: int, x_values=None):
                 "min": float(seg.min()),
                 "max": float(seg.max()),
                 "count": int(e - s),
+                "index": mid,
                 "x": float(x[mid]) if x is not None else mid,
             })
         return (out, True) if out else (None, False)
@@ -300,10 +303,14 @@ def column_aggregate(values, buckets: int, x_values=None):
     for s, e in bounds:
         if e <= s:
             continue
+        if isinstance(values[s], (list, tuple, dict)):
+            return None, False
         lo = hi = values[s]
         total = 0.0
         for j in range(s, e):
             val = values[j]
+            if isinstance(val, (list, tuple, dict)):
+                return None, False
             total += val
             if val < lo:
                 lo = val
@@ -313,6 +320,7 @@ def column_aggregate(values, buckets: int, x_values=None):
         out.append({
             "value": total / (e - s), "min": lo, "max": hi,
             "count": e - s,
+            "index": mid,
             "x": (x_values[mid] if x_values is not None else mid),
         })
     return (out, True) if out else (None, False)

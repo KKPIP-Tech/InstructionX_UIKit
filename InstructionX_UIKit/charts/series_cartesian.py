@@ -703,7 +703,7 @@ class LineSeriesRenderer(SeriesRenderer):
         写成自增计数器，实测导致「同版本上传被跳过」的断言失败）。
         数据对象由 ``self.opt`` 长期持有，故 ``id`` 在渲染器生命周期内稳定。
         """
-        if not self._gpu_direct:
+        if not self._gpu_supported():
             return None
         data = self.data_view()
         try:
@@ -712,10 +712,16 @@ class LineSeriesRenderer(SeriesRenderer):
             return None
         if n < 2 or n > GL_MAX_POINTS or not _can_gpu_vertices(data):
             return None
-        verts = _to_data_vertices(data)
-        if verts is None:
-            return None
-        return {"vertices": verts, "version": (id(data), n)}
+        version = (self.opt.get("gpuVersion", 0), id(data), n)
+        if version != self._gpu_version:
+            verts = _to_data_vertices(data)
+            if verts is None:
+                self._gpu_version = None
+                self._gpu_vertices = None
+                return None
+            self._gpu_vertices = verts
+            self._gpu_version = version
+        return {"vertices": self._gpu_vertices, "version": version}
 
     def gpu_transform(self, coord):
         """GPU 直绘的坐标变换参数（数据坐标区间 → 绘图区像素）。
@@ -723,7 +729,7 @@ class LineSeriesRenderer(SeriesRenderer):
         返回 ``(x0, x1, y0, y1, plot)``；``None`` 表示当前坐标系不支持
         （如 polar/singleAxis 的 x 语义不同）。
         """
-        if not self._gpu_direct or coord is None:
+        if not self._gpu_supported() or coord is None:
             return None
         if not isinstance(coord, GridCoord):
             return None
@@ -889,16 +895,16 @@ class LineSeriesRenderer(SeriesRenderer):
         """采样点 → 屏幕坐标的**向量化**映射；不适用时返回 ``None``。
 
         逐点调 ``coord.map_point`` 每个点约 2.3 µs（实测 818 点 1.9 ms），
-        在「多图同帧更新」场景下是主要开销之一。两条轴都是数值轴时映射是
-        仿射的，可用 numpy 一次算完。
+        在「多图同帧更新」场景下是主要开销之一。数值轴使用仿射映射，
+        category 轴使用与其 ``AxisModel.map`` 完全相同的 band 中心语义，
+        两者均可用 numpy 一次算完。日历坐标等语义不同的路径不走此分支。
 
         必须保持与 ``AxisModel.map`` 完全一致的数值语义：
 
         - 非有限值走 ``axis.map`` 的中性分支（横向取区间中点、纵向取下界）；
-        - 线性映射后按 **int() 截断**（向零取整），与 QPointF 的整数坐标一致。
-
-        category 轴（x 为类别下标）、日历坐标等不走此路径——它们的 x 语义
-        与线性映射不同。
+        - 映射结果保持浮点，不做 ``trunc``，与 ``QPointF`` 的坐标一致；
+        - category 数字下标先按 ``int()`` 向零截断，再减 dataZoom 窗口偏移；
+          空类目使用隐式下标范围计算 band，不能取 ``max(1, 0)``。
         """
         if _np is None or coord is None:
             return None
@@ -908,7 +914,8 @@ class LineSeriesRenderer(SeriesRenderer):
         y_axis = getattr(coord, "y_axis", None)
         if x_axis is None or y_axis is None:
             return None
-        if str(getattr(x_axis, "type", "")) != "value" \
+        x_type = str(getattr(x_axis, "type", ""))
+        if x_type not in ("value", "category") \
                 or str(getattr(y_axis, "type", "")) != "value":
             return None
         plot = getattr(coord, "plot", None)
@@ -923,15 +930,26 @@ class LineSeriesRenderer(SeriesRenderer):
             ymax = float(y_axis.vmax)
         except (TypeError, ValueError):
             return None
-        if not (vmax > vmin) or not (ymax > ymin):
+        if not (ymax > ymin):
             return None
         left, right = plot.left(), plot.right()
         bottom, top = plot.bottom(), plot.top()
         okx = _np.isfinite(ax)
         oky = _np.isfinite(ay)
-        px = _np.where(okx,
-                       (ax - vmin) / (vmax - vmin) * (right - left) + left,
-                       (left + right) / 2.0)
+        if x_type == "category":
+            if not bool(_np.all(okx)):
+                return None
+            indices = _np.trunc(ax) - float(x_axis.window_offset())
+            bands = len(x_axis.categories) if x_axis.categories else vmax - vmin
+            if bands <= 1e-9:
+                return None
+            px = (right - left) / bands * (indices + 0.5) + left
+        else:
+            if not (vmax > vmin):
+                return None
+            px = _np.where(okx,
+                           (ax - vmin) / (vmax - vmin) * (right - left) + left,
+                           (left + right) / 2.0)
         py = _np.where(oky,
                        (ay - ymin) / (ymax - ymin) * (top - bottom) + bottom,
                        bottom)
@@ -1265,8 +1283,7 @@ class ScatterSeriesRenderer(SeriesRenderer):
             except Exception:
                 continue
             dots.append({"pt": pt, "r": 3.0, "value": b["value"],
-                         "index": int(b["x"]) if not isinstance(b["x"], float)
-                         or b["x"].is_integer() else -1,
+                         "index": int(b["index"]),
                          "x": b["x"], "count": b["count"],
                          "min": b["min"], "max": b["max"]})
         return dots or None
@@ -1301,7 +1318,7 @@ class ScatterSeriesRenderer(SeriesRenderer):
         known = [t for t in thirds if t is not None]
         zmin = min(known) if known else 0.0
         zmax = max(known) if known else 1.0
-        for i, item in enumerate(self.data()):
+        for i, item in enumerate(self.data_view()):
             x, y = parse_data_point(item, i)
             if y is None:
                 continue
