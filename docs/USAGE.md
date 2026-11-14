@@ -609,12 +609,7 @@ v = MermaidView("flowchart LR\n    A[开始] --> B[结束]")
 v.render_failed.connect(print)     # 语法错误信号；rendered() 为成功信号（无参数，尺寸经 v.natural_size() 获取）
 ```
 
-注意：`QWebEngineView` 基于 Qt Quick RHI（Windows 默认 Direct3D11）。若同一顶层窗口里还有 `QOpenGLWidget`（如蓝图 GL 视口）或无边框半透明窗口导致合成走 OpenGL，需在 `QApplication` 创建前统一图形 API：
-
-```python
-from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
-QQuickWindow.setGraphicsApi(QSGRendererInterface.GraphicsApi.OpenGL)
-```
+注意：`QWebEngineView`、Chart 与 Blueprint 的 `QQuickView` 共用 Qt Quick RHI，由 Qt 自动选择平台图形 API；当前 Windows 实测为 Direct3D 11。不要在 `QApplication` 前调用 `QQuickWindow.setGraphicsApi()` 强制 OpenGL，也不需要旧版 GL 预热。原生嵌入使用 `QSG_RENDER_LOOP=basic`，避免本机 `QSGRenderThread` 与 GUI 线程互相等待；该设置不固定图形 API。
 
 ### 4.3 导航与反馈
 
@@ -1169,21 +1164,19 @@ chart.update_option({"series": [{"data": [130, 120, 150, 160, 170, 240]}]})  # �
 本节所有能力均为**加法式扩展**：既有 `set_option` / `update_option` 语义与调用方式完全不变，
 只在数据规模或刷新频率需要时才启用。
 
-### 8.1 渲染后端：GPU 与软件双视口
+### 8.1 渲染后端：RHI 与软件视口
 
-图表绘制由内部视口承载，**运行时自动选择后端，调用方无需修改任何代码**：
+图表绘制由内部视口承载，**公共 QWidget API 不变**：
 
-- **GPU 后端**：GL 可用时为 `QOpenGLWidget`，坐标轴、曲线与文字由 GL paint engine 承担；
-- **软件后端（自动回退）**：无 GL 环境（含 `QT_QPA_PLATFORM=offscreen` 的测试环境）时
-  使用普通 `QWidget` 视口，**行为与历史版本一致，离屏测试与截图回归不受影响**。
+- **RHI 默认后端**：真实窗口使用 `QQuickView + Scene Graph + RHI`，由 Qt 自动选择平台图形 API；当前 Windows 实测为 Direct3D 11，不强制 OpenGL。
+- **软件视口**：offscreen／minimal 平台或 RHI 初始化失败时使用普通 QWidget，复用同一绘制体，供功能与像素回归使用。
 
-环境变量 `UIKIT_CHART_GL` 控制探测：`auto`（默认）/ `on`（强制尝试，失败仍回退并记 WARNING）/
-`off`（强制软件渲染）。
+完整系列、坐标轴、组件与 tooltip 在 GUI 线程由 QPainter 生成最终帧，再通过纹理节点呈现；RHI 不等于自动加速 QPainter。诊断时可设置 `UIKIT_CHART_BACKEND=raster` 强制软件参考，但不能把软件计时当作真实交换帧。旧 `UIKIT_CHART_GL`、`gl_available()`、`QOpenGLWidget` 与 VBO / GLSL 管线已移除。
 
 ```python
-# 无需任何代码改动；如需排查后端可用性：
-from InstructionX_UIKit.charts.viewport import gl_available
-print(gl_available())        # offscreen 平台恒为 False
+viewport = chart._viewport       # 私有诊断入口，不属于稳定公共 API
+print(viewport.rhi_api())        # RHI 初始化后为实际 GraphicsApi，例如 Direct3D11
+print(viewport.active_backend()) # "rhi"；软件视口没有该方法
 ```
 
 ### 8.2 自动降采样与保真承诺
@@ -1260,56 +1253,34 @@ from InstructionX_UIKit.charts.stream import RingBuffer, FrameCoalescer
 不补跑隐藏期间的帧。调用方显式启动的动画保留运行状态和进度。`StreamSession.set_active(bool)`
 可单独控制一个流式会话，`close()` 仍负责最终释放。
 
-### 8.4 GPU 原生直绘（可选，默认关闭）
+### 8.4 RHI 快照与 `gpuDirect` 兼容
 
-把折线顶点直接提交显卡（VBO + GLSL，坐标变换在着色器内完成），**绕过 QPainter 的路径
-构造**：
+既有 option 可以保留 `gpuDirect` 与 `gpuVersion`，流式更新不会丢失这些字段，但最终图像统一由完整 QPainter 快照承载。**当前不再创建 VBO / GLSL 管线，该选项不是独立的 GPU 加速开关。**
 
 ```python
 {"type": "line", "name": "信号", "data": ys, "gpuDirect": True}
 ```
 
-**收益预期要放准**（实测数据）：
+`benchmark()` 为兼容旧调用保留返回字段：`cpu_ms` 是 QPainter 参考绘制耗时，`gpu_ms` 当前为 `None`，`gl` 恒为 `False`，`rhi` 报告实际平台后端。`gpu_active` 只表示 RHI 已初始化，不表示存在独立顶点上传；`ok` 只判断参考绘制预算，不能代替真实 FPS。异常几何仍由 `ChartWidget.overload_limited()` 的 400 万点护栏处理，不再引用 `gl_series.GL_MAX_POINTS`。
 
-| 场景 | QPainter 绘制 | GPU 绘制 |
-|---|---|---|
-| 150 万点，同一条采样后曲线（1000 px 绘图区） | 7.57 ms | 0.342 ms |
-| 小数据（5,000 点） | 4.46 ms | 0.05 ms |
-| 中等数据（200,000 点，无采样） | 137.33 ms | 0.10 ms |
+### 8.5 当前性能瓶颈
 
-两条路径画的是**同一条采样后曲线**（采样阈值 = 绘图区像素宽，逐像素列极值一致），
-所以表中的倍数就是「路径构造成本」的差距：150 万点下 22 倍，把单帧从 7.57 ms 压到
-0.342 ms。但默认配置的整体帧耗时还包含布局、采样与文字，150 万点稳态已实测
-5.0 ms / 198 fps（在 90 fps 预算内），因此 `gpuDirect` **不是通用提速开关**，默认
-关闭；需要把绘制成本进一步压低时按系列开启。软件回退环境下该选项被静默忽略。
+RHI 负责平台呈现，但不会自动加速 QPainter 的 CPU 路径光栅化。初步分段测量（候选实现 `f8ddfc3`，不是最终性能验收）：
 
-**上限与失效判据**：顶点数超过 `gl_series.GL_MAX_POINTS`（400 万）时**拒绝直绘**，
-由采样路径兜底——实测 150 万与 300 万顶点直绘稳定（稳态单帧 12.1 / 16.2 ms），
-500 万会撞上 VBO 缓存上限。要确认直绘真的生效，请断言
-`GLSeriesPipeline.vertex_count == 数据点数`：只断言「画面非空白」会被采样路径
-兜底而误判（见 AGENTS.md 已知坑）。
+| 阶段 | 平均耗时 |
+|---|---:|
+| Chart `_series_pixmap` | 约 283.77ms |
+| Chart `_paint_dynamic` | 约 300.78ms |
+| Chart `_layout_all` | 约 17.61ms |
+| RHI `updatePaintNode` | 约 0.0866ms |
 
-### 8.5 同屏多图的性能特征
+普通实线的 `RoundJoin` 与整帧快照是主要成本。真实 3840×2160、八个 2 万点系列的初步短测中，一张 Chart 约 1.19 FPS，另一张仅 1 帧，Blueprint 约 2.39 FPS，且有多个 286–455ms UI 长任务，**当前不满足 60 FPS 门槛**。原生几何、渐变描边和改变笔型均产生像素差异；零像素线程分片最快仍约 154ms，独立进程分片约 62ms，均未作为正式加速路径接入。
 
-| 场景 | 帧耗时 | 折合 fps |
-|---|---|---|
-| 16 图同屏稳态（数据未变，缓存命中） | 1.0 ms | 992 |
-| 16 图同屏、**同一帧内全部更新数据** | 89 ms | 11 |
+### 8.6 RHI、缩放回退与真实验收
 
-即：稳态下同屏多图没有压力；瓶颈只在「同一帧内所有图的数据都变化」。该场景的硬下限是
-每图采样与布局的固定成本，**建议错开更新时机**（例如不同图用不同 `interval`，或分批投递），
-而不是追求单帧内全部刷新。
+Chart 与 Blueprint 默认使用 RHI，不需要 `UIKIT_CHART_BACKEND=quick`，也不存在旧 `UIKIT_CHART_GL` / `UIKIT_BLUEPRINT_GL` 开关。原生嵌入使用 `QSG_RENDER_LOOP=basic` 保护 GUI 线程调度，不固定平台图形 API。
 
-### 8.6 实验后端、缩放回退与真实验收
-
-`UIKIT_CHART_BACKEND=quick` 可显式启用局部 Scene Graph 实验后端；未设置时继续使用
-原有 raster／GL 路径。它只接受普通实线折线等已验证子集，其他 option 自动回退完整 QWidget
-后端。当前实测未优于现有 GPU 后端，**不得作为默认配置或性能达标依据**。设计与门禁见
-`docs/superpowers/plans/2026-11-14-scene-graph-chart-design.md`。
-
-Chart 与 Blueprint 连续 resize 时先复用旧帧，停顿约 100ms 后只重建一次高清帧；设置
-`UIKIT_RESIZE_PREVIEW=off` 可一键恢复原全质量逐事件路径。`UIKIT_CHART_GL=off` 与
-`UIKIT_BLUEPRINT_GL=off` 分别强制软件视口。
+Chart 与 Blueprint 连续 resize 时先复用旧帧，停顿约 100ms 后只重建一次高清帧；设置 `UIKIT_RESIZE_PREVIEW=off` 可恢复全质量逐事件路径。诊断可设置 `UIKIT_CHART_BACKEND=raster`，但软件参考结果不能作为真实呈现通过证据。设计与门禁见 `docs/superpowers/plans/2026-11-14-scene-graph-chart-design.md`。
 
 真实验收脚本位于 `tests/perf/`（仅在 `uniform_test` 分支）：
 
@@ -1317,15 +1288,14 @@ Chart 与 Blueprint 连续 resize 时先复用旧帧，停顿约 100ms 后只重
 # 3840×2160 复杂场景：预热 5 秒，5 轮各 60 秒，保存 frameSwapped 原始数据
 .venv\Scripts\python.exe tests\perf\run_realtime.py --seconds 60 --rounds 5 --enforce
 
-# A–H 隔离：每种配置的静止、移动、缩放、恢复各 30 秒，并播放低振幅测试音
+# A–H 隔离：静止、移动、缩放、恢复各 30 秒，并播放低振幅测试音
 .venv\Scripts\python.exe tests\perf\run_window_matrix.py --phase-seconds 30 --audio
 
-# 真实 gpuDirect：实际视口、顶点上传、线宽、颜色、纵轴与旧管线释放
+# 原 gpuDirect option 的 RHI 兼容、样式、像素与资源生命周期
 .venv\Scripts\python.exe tests\perf\run_gpu_direct.py
 ```
 
-这些脚本不会把离屏绘制耗时冒充实际 FPS。矩阵使用真实窗口几何 API 测量渲染成本，
-原生鼠标路径需要另行复核；PresentMon 需要 ETW 权限，未获权限时不得声称该项已验证。
+这些脚本不会把离屏绘制耗时冒充实际 FPS。窗口矩阵使用真实客户区截图与 `QQuickView.frameSwapped`；程序几何变化不等于原生鼠标验收。当前 Win32 原生指针预检失败，`SetCursorPos` 返回 False 且光标不动，`SendInput` 也没有移动光标，因此原生鼠标仍为未验证。PresentMon 另因 ETW 权限不足而没有数据，不得混用这两项结论。
 
 ## 9. 蓝图模式（InstructionX_UIKit.blueprint 节点图）
 
@@ -1434,23 +1404,13 @@ ex.reset()                        # 全部回 idle，清耗时与路径
 
 Demo 蓝图页的「运行」按 exec 链拓扑序用 QTimer 逐节点模拟（每节点 200–800ms 随机耗时），「单步」逐节点推进——全部只是状态指示，无业务逻辑。
 
-### 9.6 渲染后端（GPU 加速）
+### 9.6 渲染后端（RHI）
 
-画布绘制由内部视口承载，**运行时自动选择后端，调用方无需修改任何代码**：
+画布默认由 `QQuickView + Scene Graph + RHI` 承载，Qt 自动选择平台图形 API；当前 Windows 实测为 Direct3D 11，不强制 OpenGL。offscreen／minimal 或 RHI 初始化失败时使用同一绘制体的 QWidget 软件视口。
 
-- **GL 后端（默认，可用时）**：视口为 `QOpenGLWidget`，背景 / 网格 / 边 / 节点位图合成走 GPU；无可见自定义体（`body_builder`）的节点以缓存位图代理由视口统一绘制，平移 / 缩放 / 拖动期间节点内容零重绘，高分辨率（4K+）与大节点量场景显著流畅。带可见自定义体的节点平时回退为真实控件渲染，但**视图手势（平移 / 滚轮缩放 / 节点拖动）期间同样临时切换为位图代理**——手势开始时抓取含自定义体的整节点冻结位图交由视口绘制，真实子控件暂时隐藏，手势结束（平移或拖动释放 / 缩放停顿 150ms）自动恢复真实控件并补偿几何落位。该优化使带体节点在最大化窗口下的平移帧耗从约 76ms 降至约 15ms、单节点拖动从约 140ms 降至约 15ms（11 节点实测）。
-- **软件后端（自动回退）**：无 GL 环境（含 `QT_QPA_PLATFORM=offscreen` 的测试环境）时使用普通 QWidget 视口，行为与历史版本一致，离屏测试与截图回归不受影响。
+GUI 线程按既有顺序生成背景、边、节点与自定义体的最终快照，再通过纹理节点呈现。无可见自定义体（`body_builder`）的节点使用缓存位图；视图手势期间，带体节点也临时切换为冻结位图代理，结束后恢复真实子控件并补偿几何落位。原生容器负责节点、引脚、自定义体的命中、文本输入焦点、Delete、滚轮和菜单路由，不是只显示一张不可交互图片。
 
-环境变量 `UIKIT_BLUEPRINT_GL` 可控制后端选择：`auto`（默认，自动探测）/ `on`（强制尝试，失败仍回退并记 WARNING）/ `off`（强制软件渲染，可用于排查显示问题）。
-
-```python
-import os
-os.environ["UIKIT_BLUEPRINT_GL"] = "off"   # 在 QApplication 创建前设置
-```
-
-> **注意（GL 后端的 Qt 固有行为）**：`QOpenGLWidget` 加入**已可见**的顶层窗口时，Qt 会重建该窗口的原生句柄，表现为窗口短暂关闭后重开一次。建议像 Demo 的 `MainWindow` 一样，在顶层窗口 `show()` 之前创建 `BlueprintCanvas`（或至少预创建一次蓝图页面）；一次性创建并长期持有画布的应用不受影响。
->
-> **无边框半透明顶层窗口**：`FramelessWindowHint` + `WA_TranslucentBackground` 的顶层窗口下，`QOpenGLWidget` 首帧可能把旧的合成结果送上屏幕（FBO 内容完整但节点不显示，任意一次重绘即恢复）。GL 视口已在 `showEvent` 中强制一次重绘规避该问题，调用方无需处理。
+旧 `UIKIT_BLUEPRINT_GL`、`QOpenGLWidget`、GL 预热和句柄重建说明均已移除。隐藏和最小化会停止同步，恢复时重新生成最新帧；`clear()` 用透明纹理替换旧内容，避免隐藏或销毁后的残影。真实性能仍须按复杂场景验收，不能仅凭 RHI 名称推断已达到帧率目标。
 
 ### 9.7 序列化
 
