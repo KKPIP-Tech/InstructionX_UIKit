@@ -46,7 +46,6 @@ class _RhiViewport(_ViewportMixin, QWidget):
         self._container.installEventFilter(self)
         self._view.installEventFilter(self)
         self.setFocusProxy(self._container)
-        self._chart.setFocusProxy(self._container)
         self._view.frameSwapped.connect(self.frameSwapped.emit)
         self._sync_timer = QTimer(self)
         self._sync_timer.setSingleShot(True)
