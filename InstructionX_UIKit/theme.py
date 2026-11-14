@@ -172,13 +172,15 @@ def T(key: str):
 
 
 def set_property(widget: QWidget, name: str, value) -> None:
-    """设置动态属性并刷新控件样式（unpolish/polish）。
+    """设置动态属性，值变化时刷新控件样式（unpolish/polish）。
 
     参数 ``name="size"`` 时自动映射为 ``"uiksize"``（规避 QWidget 内置
     ``size`` 属性冲突），QSS 中 ``[size=...]`` 与 ``[uiksize=...]`` 选择器
     均已定义。
     """
     real = _SIZE_ALIAS.get(name, name)
+    if widget.property(real) == value:
+        return
     widget.setProperty(real, value)
     style = widget.style()
     style.unpolish(widget)
