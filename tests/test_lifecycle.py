@@ -137,7 +137,7 @@ def _():
 
 @case("销毁窗口后主题通知不访问已删除控件")
 def _():
-    for key in ("tokens", "button"):
+    for key in ("tokens", "button", "anim_property"):
         window = MainWindow()
         window.navigate(key)
         window.show()
