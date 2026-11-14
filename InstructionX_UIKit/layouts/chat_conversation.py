@@ -406,6 +406,9 @@ class ChatConversation(QWidget):
         self._programmatic_scroll = False
         self._last_max = 0         # 上次滚动范围上限（识别 value 钳制用）
         self._last_value = 0       # 上次滚动位置（钳制判据的兜底基线）
+        self._follow_timer = QTimer(self)
+        self._follow_timer.setSingleShot(True)
+        self._follow_timer.timeout.connect(self._flush_follow_once)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -803,7 +806,7 @@ class ChatConversation(QWidget):
         if self._follow:
             # 视口变矮使滚动范围增大后 value 不变、视图悬停在旧位置：
             # 延迟一轮等布局落定后重新吸附底部
-            QTimer.singleShot(0, self._follow_scroll)
+            self._follow_after_doc_change()
 
     def _follow_scroll(self) -> None:
         """滚动条在底部时追加后自动跟随（用户上翻则暂停跟随）。"""
@@ -849,7 +852,7 @@ class ChatConversation(QWidget):
         if not self._follow or self._follow_pending:
             return
         self._follow_pending = True
-        QTimer.singleShot(0, self._flush_follow_once)
+        self._follow_timer.start(0)
 
     def _flush_follow_once(self) -> None:
         self._follow_pending = False
