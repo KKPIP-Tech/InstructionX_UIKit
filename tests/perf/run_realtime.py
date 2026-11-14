@@ -276,6 +276,8 @@ def main():
 
             viewport.paintEvent = measured_paint
 
+    state["persistent_failures"] = list(state["failures"])
+
     def sample_resource():
         if state["recording"]:
             try:
@@ -326,9 +328,13 @@ def main():
 
     source_sha = subprocess.check_output(
         ["git", "rev-parse", "uniform_style"], text=True, cwd=ROOT).strip()
-    source_dirty = source == ROOT and subprocess.run(
-        ["git", "diff", "--quiet", "--", "InstructionX_UIKit", "demo"],
+    source_dirty = subprocess.run(
+        ["git", "diff", "--quiet", source_sha, "--", "InstructionX_UIKit", "demo"],
         cwd=ROOT).returncode != 0
+    if source_dirty and args.enforce:
+        failure = "工作区源码与 uniform_style 候选 SHA 不一致"
+        state["persistent_failures"].append(failure)
+        state["failures"].append(failure)
     destination = ROOT / "temp" / "performance" / source_sha / "realtime" / args.tag
     destination.mkdir(parents=True, exist_ok=True)
     (destination / "script_snapshot.py").write_text(
@@ -417,8 +423,9 @@ def main():
             state["frames"] = {name: [] for name in viewports}
             state["tasks"] = []
             state["resources"] = []
-            state["failures"] = []
+            state["failures"] = list(state["persistent_failures"])
             state["recording"] = True
+            QTimer.singleShot(int(args.seconds * 1000), finish_round)
         else:
             load_timer.stop()
             resource_timer.stop()
