@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """图表、Blueprint 与页面宿主的激活生命周期回归。"""
 
+import contextlib
+import io
 import os
 import sys
 import traceback
@@ -131,6 +133,27 @@ def _():
     window.close()
     window.deleteLater()
     app.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
+@case("销毁窗口后主题通知不访问已删除控件")
+def _():
+    for key in ("tokens", "button"):
+        window = MainWindow()
+        window.navigate(key)
+        window.show()
+        app.processEvents()
+        window.close()
+        window.deleteLater()
+        app.sendPostedEvents(None, QEvent.DeferredDelete)
+    tm = ThemeManager.instance()
+    errors = io.StringIO()
+    with contextlib.redirect_stderr(errors):
+        tm.set_mode("dark")
+        app.processEvents()
+        tm.set_mode("light")
+        app.processEvents()
+    details = errors.getvalue()
+    assert "already deleted" not in details and "RuntimeError" not in details, details[:2000]
 
 
 if __name__ == "__main__":
