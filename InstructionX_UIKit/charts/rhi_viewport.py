@@ -43,6 +43,7 @@ class _RhiViewport(_ViewportMixin, QWidget):
         self._container.setMouseTracking(True)
         self._container.setFocusPolicy(Qt.StrongFocus)
         self._container.installEventFilter(self)
+        self._view.installEventFilter(self)
         self.setFocusProxy(self._container)
         self._chart.setFocusProxy(self._container)
         self._view.frameSwapped.connect(self.frameSwapped.emit)
@@ -104,7 +105,7 @@ class _RhiViewport(_ViewportMixin, QWidget):
             self._sync_timer.start(0)
 
     def eventFilter(self, obj, event):  # noqa: N802
-        if obj is not self._container:
+        if obj not in (self._container, self._view):
             return super().eventFilter(obj, event)
         chart = self._chart
         handlers = {
@@ -123,6 +124,12 @@ class _RhiViewport(_ViewportMixin, QWidget):
         if handler is None:
             return False
         handler(event)
+        if event.type() in (
+                QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove,
+                QEvent.Type.MouseButtonRelease, QEvent.Type.MouseButtonDblClick,
+                QEvent.Type.Enter, QEvent.Type.Leave, QEvent.Type.ContextMenu):
+            event.accept()
+            return True
         return bool(event.isAccepted())
 
     def grab(self):
