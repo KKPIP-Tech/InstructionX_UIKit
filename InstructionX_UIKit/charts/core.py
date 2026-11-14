@@ -1763,14 +1763,10 @@ class ChartWidget(QWidget):
         return best
 
     def paintEvent(self, event) -> None:
-        """本控件自身的绘制（仅在 ``grab()`` / ``render()`` 直接渲染本控件时触发）。
-
-        常规屏幕绘制由 ``_viewport`` 承载（见 viewport.py）；此方法保证
-        ``chart.grab()`` 等路径仍能得到完整内容。
-        """
+        """父控件只铺底色，完整内容由重合的子视口绘制，避免整窗更新时画两遍。"""
         p = QPainter(self)
         try:
-            self._paint_contents(p)
+            p.fillRect(self.rect(), QColor(T("color.bg.base")))
         finally:
             p.end()
 
