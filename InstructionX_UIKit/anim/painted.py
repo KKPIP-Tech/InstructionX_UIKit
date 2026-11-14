@@ -2313,6 +2313,16 @@ class _StoryStepPanel(QFrame):
         super().resizeEvent(event)
         self._invalidate_cache()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._alpha < 0.999 and self._cache is None:
+            self._schedule_capture()
+
+    def hideEvent(self, event):
+        self._capture_timer.stop()
+        self._capture_pending = False
+        super().hideEvent(event)
+
     def _invalidate_cache(self):
         """尺寸 / 主题变化后丢弃缓存并按需安排重抓。"""
         self._cache = None
@@ -2320,7 +2330,7 @@ class _StoryStepPanel(QFrame):
             self._schedule_capture()
 
     def _schedule_capture(self):
-        if self._capture_pending:
+        if self._capture_pending or not self.isVisible():
             return
         self._capture_pending = True
         self._capture_timer.start(0)
@@ -2328,7 +2338,7 @@ class _StoryStepPanel(QFrame):
     def _capture(self):
         """在 paintEvent 外把自身（含 QSS 与子控件）渲染进缓存位图。"""
         self._capture_pending = False
-        if self.width() < 2 or self.height() < 2:
+        if not self.isVisible() or self.width() < 2 or self.height() < 2:
             return
         dpr = max(1.0, float(self.devicePixelRatioF()))
         pm = QPixmap(max(2, int(math.ceil(self.width() * dpr))),
@@ -2538,6 +2548,7 @@ class CardTilt(_HiddenPauseMixin, QWidget):
         if self._content is not None:
             self._content.resize(self.size())
         self._snap_cache = {}
+        self._margin_cache = {}
 
     def mouseMoveEvent(self, event):
         w, h = max(1, self.width()), max(1, self.height())
