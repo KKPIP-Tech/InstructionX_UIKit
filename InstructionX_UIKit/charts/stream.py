@@ -369,11 +369,15 @@ class StreamSession:
         if active == self._active:
             return
         self._active = active
-        if active:
-            self._last_axis_sync = None
-            data = self.ring.read()
-            if data is not None:
-                self._apply(data)
+        if not active:
+            self._timer.stop()
+            return
+        if self._alive:
+            self._timer.start()
+        self._last_axis_sync = None
+        data = self.ring.read()
+        if data is not None:
+            self._apply(data)
 
     def _fixed_y_axis(self) -> bool:
         coord = self.chart.primary_coord()

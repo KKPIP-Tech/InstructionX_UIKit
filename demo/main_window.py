@@ -543,9 +543,18 @@ class MainWindow(QMainWindow):
     def show_page(self, page_key: str, factory):
         """懒加载并切换到指定演示页（公开，供测试遍历调用）。"""
         page = self._load_page(page_key, factory)
+        previous = self._stack._current
+        if previous is not page:
+            deactivate = getattr(previous, "on_ui_deactivated", None)
+            if callable(deactivate):
+                deactivate()
         self._stack.setCurrentWidget(page)
         self._current = page_key
         self._sidebar.set_active(page_key)
+        if previous is not page:
+            activate = getattr(page, "on_ui_activated", None)
+            if callable(activate):
+                activate()
 
     def _load_page(self, page_key: str, factory) -> QWidget:
         """首次访问时创建并缓存页面。"""

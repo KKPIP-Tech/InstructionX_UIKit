@@ -870,6 +870,8 @@ class ChartWidget(QWidget):
         self._series_pixmap_cache = None
         self._series_dpr = 1.0
         self._series_was_running = False
+        self._ui_active = True
+        self._animation_was_running = False
         #: 数据/主题变更后置位：下一帧直接绘制、不为建缓存多渲染一帧
         self._paint_only_dirty = False
         #: GL 后端因点数超安全上限而暂停绘制（由视口置位，见 viewport.py）
@@ -1122,6 +1124,7 @@ class ChartWidget(QWidget):
         # 图表销毁时自动停掉会话定时器，避免悬空定时器继续回调
         self._streams = getattr(self, "_streams", None) or []
         self._streams.append(sess)
+        sess.set_active(self._ui_active and self.isVisible())
         if not getattr(self, "_stream_cleanup_hooked", False):
             self._stream_cleanup_hooked = True
             self.destroyed.connect(self._close_streams)
@@ -1456,6 +1459,9 @@ class ChartWidget(QWidget):
         本控件自身不再绘制：绘制由 ``_viewport`` 承载（GL 可用时为
         QOpenGLWidget，否则软件回退）。构造期视口尚未创建时回落基类。
         """
+        if not getattr(self, "_ui_active", True):
+            self._perf.count("hidden_update")
+            return
         vp = getattr(self, "_viewport", None)
         if vp is not None:
             vp.update(*args)
@@ -1507,15 +1513,39 @@ class ChartWidget(QWidget):
         self._static_key = None
         self._series_key = None
         for session in getattr(self, "_streams", []):
-            session.set_active(True)
+            session.set_active(self._ui_active)
         if running:
             self.anim.start()
             self.anim.set_progress(progress)
         self.update()
 
-    def hideEvent(self, event) -> None:
+    def on_ui_deactivated(self) -> None:
+        self._ui_active = False
+        self._animation_was_running = self.anim.is_running()
+        self._animation_progress = self.anim.t
+        if self._animation_was_running:
+            self.anim._anim.pause()
+        for session in getattr(self, "_streams", []):
+            session.set_active(False)
         self._resize_preview.cancel()
         self._preview_animation = None
+
+    def on_ui_activated(self) -> None:
+        self._ui_active = True
+        for session in getattr(self, "_streams", []):
+            session.set_active(True)
+        if self._animation_was_running:
+            if self.anim._anim.state() == QVariantAnimation.Paused:
+                self.anim._anim.resume()
+            else:
+                self.anim.start()
+            self.anim.set_progress(self._animation_progress)
+        self._animation_was_running = False
+        self._layout_all(force=True)
+        self.update()
+
+    def hideEvent(self, event) -> None:
+        self.on_ui_deactivated()
         super().hideEvent(event)
 
     def showEvent(self, event) -> None:
@@ -1524,6 +1554,7 @@ class ChartWidget(QWidget):
         if vp is not None:
             vp.setGeometry(self.rect())
             vp.raise_()
+        self.on_ui_activated()
 
     def _on_theme_changed(self, _mode) -> None:
         if self._resize_preview.active:
