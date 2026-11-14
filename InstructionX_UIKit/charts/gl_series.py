@@ -116,6 +116,8 @@ class GLSeriesPipeline:
         self._count = 0
         self._version = None
         self._ready = False
+        self._upload_count = 0
+        self._uploaded_bytes = 0
         self.last_error = None
 
     # -- 生命周期 ---------------------------------------------------------
@@ -126,6 +128,14 @@ class GLSeriesPipeline:
     @property
     def vertex_count(self) -> int:
         return self._count
+
+    @property
+    def upload_count(self) -> int:
+        return self._upload_count
+
+    @property
+    def uploaded_bytes(self) -> int:
+        return self._uploaded_bytes
 
     def ensure(self, context) -> bool:
         """编译着色器并创建缓冲（幂等）；失败返回 ``False`` 且后续调用直接跳过。"""
@@ -186,6 +196,8 @@ class GLSeriesPipeline:
         self._count = 0
         self._ready = False
         self._version = None
+        self._upload_count = 0
+        self._uploaded_bytes = 0
 
     # -- 数据 -------------------------------------------------------------
     def set_vertices(self, points, version=None) -> bool:
@@ -213,6 +225,8 @@ class GLSeriesPipeline:
             return False
         self._count = int(arr.shape[0])
         self._version = version
+        self._upload_count += 1
+        self._uploaded_bytes += int(arr.nbytes)
         return True
 
     @staticmethod

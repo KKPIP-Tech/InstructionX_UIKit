@@ -181,7 +181,8 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
     def __init__(self, chart) -> None:
         super().__init__(chart)
         self._init_viewport(chart)
-        self._gpu_pipe = None      # GPU 原生系列管线（惰性创建，随上下文）
+        self._gpu_pipe = None      # 基准测量入口（惰性创建，随上下文）
+        self._gpu_pipes = {}       # 每个系列独立的管线与顶点状态
         #: 最近若干帧的绘制耗时（秒），供调用方判定帧率预算。见 mean_paint_ms。
         self._paint_ms_window = []
         fmt = QSurfaceFormat()
@@ -264,12 +265,12 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
                  if getattr(r, "gpu_direct", False) and r.visible]
         if not cands:
             return None
-        pipe = self.ensure_gpu_pipeline()
-        if pipe is None:
-            return None
         claimed = []
         for r in cands:
             try:
+                pipe = self.ensure_gpu_pipeline(r)
+                if pipe is None:
+                    continue
                 info = r.gpu_vertex_data()
                 if info is None:
                     continue
@@ -283,22 +284,15 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
                 continue
         return claimed or None
 
-    def ensure_gpu_pipeline(self):
-        """确保 GPU 直绘管线可用，返回它或 ``None``（供 benchmark 调用）。
-
-        **为什么需要这个钩子**：管线原本只在 ``paintGL`` 中惰性创建，而位于
-        长页面底部的图表可能长期被 ``QScrollArea`` 裁剪、**从未被绘制**——
-        此时从外部调用 :meth:`ChartWidget.benchmark` 会拿不到管线，读数显示
-        「GPU 不可用」，而实际环境完全支持。本方法让测量不依赖「是否已滚动到
-        可见区域」。
-
-        内部会 makeCurrent；调用方负责在结束后 ``doneCurrent``（见
-        ``__enter__`` / ``__exit__``）。
-        """
+    def ensure_gpu_pipeline(self, renderer=None):
+        """返回系列独立管线；无参调用保留原基准测量入口。"""
         ctx = self.context()
         if ctx is None or not ctx.isValid():
             return None
-        pipe = self._gpu_pipe
+        if renderer is None:
+            pipe = self._gpu_pipe
+        else:
+            pipe = self._gpu_pipes.get(id(renderer))
         if pipe is not None and pipe.ready:
             return pipe
         from .gl_series import GLSeriesPipeline
@@ -306,8 +300,20 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
         if not pipe.ensure(ctx):
             logger.warning("GPU 原生直绘管线建立失败，回退 QPainter 路径")
             return None
-        self._gpu_pipe = pipe
+        if renderer is None:
+            self._gpu_pipe = pipe
+        else:
+            self._gpu_pipes[id(renderer)] = pipe
         return pipe
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        """关闭视口时释放各系列的 GL 资源，允许重新显示后重建。"""
+        for pipe in [self._gpu_pipe, *self._gpu_pipes.values()]:
+            if pipe is not None:
+                pipe.release()
+        self._gpu_pipe = None
+        self._gpu_pipes.clear()
+        super().closeEvent(event)
 
     def __enter__(self):
         """上下文管理：让视口上下文 current（测量 GPU 前必须）。"""
@@ -339,9 +345,6 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
                   if getattr(r, "gpu_direct", False) and r.visible]
         if not series:
             return
-        pipe = self.ensure_gpu_pipeline()
-        if pipe is None:
-            return
         try:
             dpr = float(self.devicePixelRatioF())
         except Exception:  # noqa: BLE001
@@ -349,6 +352,9 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
         chart._layout_all()
         for r in series:
             try:
+                pipe = self.ensure_gpu_pipeline(r)
+                if pipe is None:
+                    continue
                 self._draw_one_gpu_series(ctx, pipe, r, dpr)
             except Exception:  # noqa: BLE001 - 单系列失败不影响整图
                 continue
