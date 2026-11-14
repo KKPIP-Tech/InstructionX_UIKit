@@ -23,13 +23,20 @@ def capture(args):
     os.environ["PYTHONIOENCODING"] = "utf-8"
     sys.path.insert(0, str(source))
 
-    from PySide6.QtCore import QAbstractAnimation, QEvent, QTimer
+    from PySide6.QtCore import QAbstractAnimation, QDate, QDateTime, QEvent, QTime, QTimer
     from PySide6.QtGui import QImage
     from PySide6.QtWidgets import QApplication, QWidget
     from shiboken6 import isValid
 
     app = QApplication.instance() or QApplication(sys.argv)
     original_start = QTimer.start
+    original_time = QTime.currentTime
+    original_date = QDate.currentDate
+    original_datetime = QDateTime.currentDateTime
+    QTime.currentTime = staticmethod(lambda: QTime(2, 10, 8))
+    QDate.currentDate = staticmethod(lambda: QDate(2026, 11, 15))
+    QDateTime.currentDateTime = staticmethod(
+        lambda: QDateTime(QDate(2026, 11, 15), QTime(2, 10, 8)))
 
     def frozen_start(timer, *timer_args):
         frame = inspect.currentframe().f_back
@@ -150,6 +157,9 @@ def capture(args):
         print(f"已保存 {len(records)} 张确定性截图: {output}", flush=True)
     finally:
         QTimer.start = original_start
+        QTime.currentTime = original_time
+        QDate.currentDate = original_date
+        QDateTime.currentDateTime = original_datetime
         if window is not None:
             window.close()
             window.deleteLater()
