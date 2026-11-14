@@ -54,6 +54,7 @@ class _RhiViewport(_ViewportMixin, QWidget):
         self._sync_timer.setSingleShot(True)
         self._sync_timer.timeout.connect(self._sync_now)
         self._sync_times = []
+        self._state_handle = None
         self.setGeometry(canvas.rect())
 
     def _scene_valid(self):
@@ -74,7 +75,9 @@ class _RhiViewport(_ViewportMixin, QWidget):
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
+        self._bind_host_state()
         self._container.show()
+        self._view.show()
         self._sync_timer.start(0)
 
     def hideEvent(self, event):  # noqa: N802
@@ -87,10 +90,42 @@ class _RhiViewport(_ViewportMixin, QWidget):
     def closeEvent(self, event):  # noqa: N802
         self._sync_timer.stop()
         self._mouse_target = None
+        if self._state_handle is not None:
+            try:
+                self._state_handle.windowStateChanged.disconnect(self._on_window_state)
+            except (RuntimeError, TypeError):
+                pass
+            self._state_handle = None
         if self._scene_valid():
             self._scene.clear()
         self._view.close()
         super().closeEvent(event)
+
+    def _bind_host_state(self):
+        window = self._canvas.window()
+        window.winId()
+        handle = window.windowHandle()
+        if handle is self._state_handle:
+            return
+        if self._state_handle is not None:
+            try:
+                self._state_handle.windowStateChanged.disconnect(self._on_window_state)
+            except (RuntimeError, TypeError):
+                pass
+        self._state_handle = handle
+        if handle is not None:
+            handle.windowStateChanged.connect(self._on_window_state)
+
+    def _on_window_state(self, state):
+        if state & Qt.WindowMinimized:
+            self._sync_timer.stop()
+            self._canvas.on_ui_deactivated()
+            self._view.hide()
+            return
+        if self.isVisible():
+            self._view.show()
+            self._canvas.on_ui_activated()
+            self._sync_timer.start(0)
 
     def _sync_now(self):
         if not self._canvas._ui_active or not self.isVisible() or not self._scene_valid():
