@@ -139,6 +139,67 @@ def _():
         chart.close()
 
 
+@check("lineStyle 宽度和颜色原样传入 GPU draw")
+def _():
+    chart, renderer = make_renderer({
+        "lineStyle": {"width": 6, "color": "#C08A3E"},
+    })
+    viewport = _GLViewport(chart)
+
+    class Functions:
+        @staticmethod
+        def glViewport(*_args):
+            return None
+
+    class Context:
+        @staticmethod
+        def functions():
+            return Functions()
+
+    class Pipeline:
+        vertex_count = 3
+
+        def __init__(self):
+            self.calls = []
+
+        def set_vertices(self, _vertices, version=None):
+            return False
+
+        def draw(self, _context, _mvp, color, **options):
+            self.calls.append((color, options))
+            return True
+
+    pipeline = Pipeline()
+    assert viewport._draw_one_gpu_series(Context(), pipeline, renderer, 1.0) is True
+    color, options = pipeline.calls[0]
+    assert options["width"] == 6, options
+    assert color.name() == "#c08a3e", color.name()
+    viewport.close()
+    chart.close()
+
+
+@check("渲染器移除后释放旧系列管线")
+def _():
+    chart, renderer = make_renderer()
+    viewport = _GLViewport(chart)
+
+    class Pipeline:
+        def __init__(self):
+            self.released = False
+
+        def release(self):
+            self.released = True
+
+    stale = Pipeline()
+    viewport._gpu_pipes[123456] = stale
+    renderer._gpu_direct = False
+    viewport._claim_gpu_series(None)
+    assert stale.released
+    assert not viewport._gpu_pipes
+    viewport.close()
+    chart.close()
+
+
 if __name__ == "__main__":
     app.quit()
     raise SystemExit(1 if _FAILURES else 0)
