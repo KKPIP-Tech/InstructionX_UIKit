@@ -86,23 +86,27 @@ class _RhiViewport(_ViewportMixin, QWidget):
         self._sync_timer.start(0)
 
     def hideEvent(self, event):  # noqa: N802
+        if not _shiboken_is_valid(self):
+            return
         timer = getattr(self, "_sync_timer", None)
-        if timer is not None:
+        if timer is not None and _shiboken_is_valid(timer):
             timer.stop()
         if self._scene_valid():
             self._scene.clear()
         container = getattr(self, "_container", None)
-        if container is not None:
+        if container is not None and _shiboken_is_valid(container):
             container.hide()
         super().hideEvent(event)
 
     def closeEvent(self, event):  # noqa: N802
+        if not _shiboken_is_valid(self):
+            return
         timer = getattr(self, "_sync_timer", None)
-        if timer is not None:
+        if timer is not None and _shiboken_is_valid(timer):
             timer.stop()
         self._mouse_target = None
         handle = getattr(self, "_state_handle", None)
-        if handle is not None:
+        if handle is not None and _shiboken_is_valid(handle):
             try:
                 handle.windowStateChanged.disconnect(self._on_window_state)
             except (RuntimeError, TypeError):
@@ -111,7 +115,7 @@ class _RhiViewport(_ViewportMixin, QWidget):
         if self._scene_valid():
             self._scene.clear()
         view = getattr(self, "_view", None)
-        if view is not None:
+        if view is not None and _shiboken_is_valid(view):
             view.close()
         super().closeEvent(event)
 
@@ -238,8 +242,12 @@ class _RhiViewport(_ViewportMixin, QWidget):
             target, QHelpEvent(event.type(), local, global_position))
 
     def eventFilter(self, obj, event):  # noqa: N802
-        if not getattr(self, "_ready", False) or obj not in (self._container, self._view):
+        if not _shiboken_is_valid(self) or not getattr(self, "_ready", False):
+            return False
+        if obj not in (self._container, self._view):
             return super().eventFilter(obj, event)
+        if not _shiboken_is_valid(obj):
+            return False
         if event.type() in (
                 QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove,
                 QEvent.Type.MouseButtonRelease, QEvent.Type.MouseButtonDblClick):
