@@ -125,6 +125,7 @@ class BlueprintCanvas(QWidget):
         # 视图手势（平移 / 滚轮缩放）中跳过的节点几何落位待补偿标记
         self._gesture_deferred = False
 
+        self._ui_active = True
         self._flow_timer = QTimer(self)
         self._flow_timer.setInterval(50)
         self._flow_timer.timeout.connect(self._tick_flow)
@@ -956,10 +957,14 @@ class BlueprintCanvas(QWidget):
     # 流动动画
     # ------------------------------------------------------------------
     def _ensure_flow_timer(self) -> None:
-        if not self._flow_timer.isActive():
+        if (self._ui_active and not self._flow_timer.isActive()
+                and any(ew.flowing for ew in self._edge_widgets.values())):
             self._flow_timer.start()
 
     def _tick_flow(self) -> None:
+        if not self._ui_active:
+            self._flow_timer.stop()
+            return
         any_flowing = False
         rects = []
         for ew in self._edge_widgets.values():
@@ -1047,15 +1052,31 @@ class BlueprintCanvas(QWidget):
         self._settle_view_gesture()
         self._preview_flow = False
 
-    def hideEvent(self, event) -> None:
+    def on_ui_deactivated(self) -> None:
+        self._ui_active = False
+        self._flow_timer.stop()
         self._cancel_resize_preview()
+
+    def on_ui_activated(self) -> None:
+        self._ui_active = True
+        self._ensure_flow_timer()
+        self._update_view()
+
+    def hideEvent(self, event) -> None:
+        self.on_ui_deactivated()
         super().hideEvent(event)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.on_ui_activated()
 
     def update(self, *args) -> None:
         """重绘请求转发到内部绘制视口（保持外部 ``canvas.update()`` 习惯）。
 
         Qt 内部对画布自身的 C++ 级 update 不受影响（画布只兜底填底）。
         """
+        if not getattr(self, "_ui_active", True):
+            return
         vp = getattr(self, "_viewport", None)
         if vp is not None:
             vp.update(*args)
