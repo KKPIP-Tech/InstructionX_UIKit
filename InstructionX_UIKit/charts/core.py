@@ -26,6 +26,7 @@ C4 组件协议（components.py / interact.py）：
 """
 
 import copy
+import os
 import time
 
 from PySide6.QtCore import (
@@ -48,6 +49,7 @@ from PySide6.QtWidgets import QWidget
 from ..theme import T, ThemeManager
 from ..tokens import DURATION, EASING
 from .._metrics import MetricRing
+from .._resize_preview import ResizePreview
 from ._utils import warn_once
 from .data import NumericBuffer, is_array_like as _is_array_like, to_buffer
 from .sampling import (
@@ -872,6 +874,10 @@ class ChartWidget(QWidget):
         self._paint_only_dirty = False
         #: GL 后端因点数超安全上限而暂停绘制（由视口置位，见 viewport.py）
         self._gl_overloaded = False
+        self._preview_capturing = False
+        self._resize_preview = ResizePreview(
+            self, on_settle=self._finish_resize_preview)
+        self._preview_animation = None
         # 绘制视口（CHART_SPEC §7）：GL 可用时为 QOpenGLWidget（GPU 渲染），
         # 否则为普通 QWidget（软件回退，离屏测试走此路径）。本控件自身不再
         # 绘制——paintEvent 仅为 grab()/render() 路径保留。
@@ -1456,13 +1462,61 @@ class ChartWidget(QWidget):
             return
         super().update(*args)
 
+    def _preview_enabled(self):
+        return os.environ.get("UIKIT_RESIZE_PREVIEW", "on").lower() not in (
+            "off", "0", "false", "no")
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         vp = getattr(self, "_viewport", None)
-        if vp is not None:
+        enabled = self._preview_enabled()
+        if self._preview_capturing:
+            if vp is not None:
+                vp.setGeometry(self.rect())
+            return
+        started = False
+        has_content = any(getattr(renderer, "_points", None)
+                          for renderer in self._series)
+        if vp is not None and enabled and not self._resize_preview.active \
+                and has_content:
+            self._preview_capturing = True
+            try:
+                snapshot = vp.grab()
+                vp.setGeometry(self.rect())
+                started = self._resize_preview.begin(snapshot)
+            finally:
+                self._preview_capturing = False
+        elif vp is not None:
             vp.setGeometry(self.rect())
-        self._layout_all()
+        if started:
+            self._preview_animation = (self.anim.is_running(), self.anim.t)
+            self.anim.stop()
+            for session in getattr(self, "_streams", []):
+                session.set_active(False)
+        elif enabled and self._resize_preview.active:
+            self._resize_preview.touch()
+        else:
+            self._layout_all()
         self.update()
+
+    def _finish_resize_preview(self):
+        running, progress = self._preview_animation or (False, 1.0)
+        self._preview_animation = None
+        self.anim.set_progress(progress)
+        self._layout_all(force=True)
+        self._static_key = None
+        self._series_key = None
+        for session in getattr(self, "_streams", []):
+            session.set_active(True)
+        if running:
+            self.anim.start()
+            self.anim.set_progress(progress)
+        self.update()
+
+    def hideEvent(self, event) -> None:
+        self._resize_preview.cancel()
+        self._preview_animation = None
+        super().hideEvent(event)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -1472,6 +1526,8 @@ class ChartWidget(QWidget):
             vp.raise_()
 
     def _on_theme_changed(self, _mode) -> None:
+        if self._resize_preview.active:
+            self._resize_preview.finish()
         # 配色全部经 T() 实时取，重绘即生效；主题可能影响字体度量等布局
         # 输入，保守失效布局缓存与静态层缓存（下一次绘制全量重排一次）
         self._layout_key = None

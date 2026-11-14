@@ -24,7 +24,10 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSizeF, Qt, Q
 from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QWidget
 
+import os
+
 from ..theme import T, ThemeManager
+from .._resize_preview import ResizePreview
 from .edge_widget import (
     EdgeWidget,
     TempWire,
@@ -135,6 +138,11 @@ class BlueprintCanvas(QWidget):
         self._zoom_settle.timeout.connect(self._end_zoom_gesture)
 
         self._execution = ExecutionController(self)
+        self._resize_preview = ResizePreview(
+            self, on_settle=self._finish_resize_preview)
+        self._preview_nodes = {}
+        self._preview_flow = False
+        self._preview_capturing = False
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -974,12 +982,74 @@ class BlueprintCanvas(QWidget):
         p.fillRect(self.rect(), QColor(str(T("color.bg.base"))))
         p.end()
 
+    def _preview_enabled(self):
+        return os.environ.get("UIKIT_RESIZE_PREVIEW", "on").lower() not in (
+            "off", "0", "false", "no")
+
     def resizeEvent(self, event) -> None:
-        """视口几何同步：始终与画布 1:1 重合。"""
+        """缩放期间复用完整旧帧，静止后恢复真实节点与高清绘制。"""
         vp = getattr(self, "_viewport", None)
-        if vp is not None:
+        enabled = self._preview_enabled()
+        if self._preview_capturing:
+            if vp is not None:
+                vp.setGeometry(self.rect())
+            return
+        started = False
+        if vp is not None and enabled and not self._resize_preview.active \
+                and self.graph.nodes():
+            self._preview_capturing = True
+            try:
+                snapshot = vp.grab()
+                vp.setGeometry(self.rect())
+                started = self._resize_preview.begin(snapshot)
+            finally:
+                self._preview_capturing = False
+        elif vp is not None:
             vp.setGeometry(self.rect())
+        if started:
+            self._preview_nodes = {
+                node_id: widget.isVisibleTo(vp)
+                for node_id, widget in self._node_widgets.items()
+            }
+            self._preview_flow = self._flow_timer.isActive()
+            if self._preview_flow:
+                self._flow_timer.stop()
+            if getattr(vp, "supports_node_proxy", False):
+                self._view_changed(gesture=True)
+            else:
+                for widget in self._node_widgets.values():
+                    widget.hide()
+        elif enabled and self._resize_preview.active:
+            self._resize_preview.touch()
+        self.update()
         super().resizeEvent(event)
+
+    def _finish_resize_preview(self):
+        for node_id, visible in self._preview_nodes.items():
+            widget = self._node_widgets.get(node_id)
+            if widget is not None:
+                widget.setVisible(visible)
+        self._preview_nodes = {}
+        self._settle_view_gesture()
+        self._update_view()
+        if self._preview_flow:
+            self._ensure_flow_timer()
+        self._preview_flow = False
+        self.update()
+
+    def _cancel_resize_preview(self):
+        self._resize_preview.cancel()
+        for node_id, visible in self._preview_nodes.items():
+            widget = self._node_widgets.get(node_id)
+            if widget is not None:
+                widget.setVisible(visible)
+        self._preview_nodes = {}
+        self._settle_view_gesture()
+        self._preview_flow = False
+
+    def hideEvent(self, event) -> None:
+        self._cancel_resize_preview()
+        super().hideEvent(event)
 
     def update(self, *args) -> None:
         """重绘请求转发到内部绘制视口（保持外部 ``canvas.update()`` 习惯）。

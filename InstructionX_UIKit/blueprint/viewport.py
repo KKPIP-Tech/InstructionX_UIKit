@@ -137,6 +137,13 @@ class _RasterViewport(_ViewportMixin, QWidget):
         self.setAttribute(Qt.WA_OpaquePaintEvent, True)
 
     def paintEvent(self, event) -> None:  # noqa: N802
+        snapshot = self._canvas._resize_preview.snapshot
+        if snapshot is not None:
+            p = QPainter(self)
+            p.setRenderHint(QPainter.SmoothPixmapTransform)
+            p.drawPixmap(self.rect(), snapshot, snapshot.rect())
+            p.end()
+            return
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         self._canvas._paint_contents(p, event.rect())
@@ -177,6 +184,13 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
         self.update()
 
     def paintGL(self) -> None:  # noqa: N802
+        snapshot = self._canvas._resize_preview.snapshot
+        if snapshot is not None:
+            p = QPainter(self)
+            p.setRenderHint(QPainter.SmoothPixmapTransform)
+            p.drawPixmap(self.rect(), snapshot, snapshot.rect())
+            p.end()
+            return
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         self._canvas._paint_contents(p, None)
