@@ -155,6 +155,11 @@ class _RasterViewport(_ViewportMixin, QWidget):
         p = QPainter(self)
         try:
             chart = self._chart
+            snapshot = chart._resize_preview.snapshot
+            if snapshot is not None:
+                p.setRenderHint(QPainter.SmoothPixmapTransform)
+                p.drawPixmap(self.rect(), snapshot, snapshot.rect())
+                return
             if chart.static_layer_valid(p):
                 if not p.testRenderHint(QPainter.Antialiasing):
                     p.setRenderHint(QPainter.Antialiasing)
@@ -218,6 +223,11 @@ class _GLViewport(_ViewportMixin, QOpenGLWidget):
         p = QPainter(self)
         try:
             chart = self._chart
+            snapshot = chart._resize_preview.snapshot
+            if snapshot is not None:
+                p.setRenderHint(QPainter.SmoothPixmapTransform)
+                p.drawPixmap(self.rect(), snapshot, snapshot.rect())
+                return
             # 兜底护栏：单系列几何点数超上限时不绘制超长路径，改给提示文案
             # （理由与实测数据见 ChartWidget.overload_limited）。
             if chart.overload_limited():
