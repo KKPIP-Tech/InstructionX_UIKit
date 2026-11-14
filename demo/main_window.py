@@ -100,7 +100,7 @@ class _BrandMark(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedSize(26, 26)
-        ThemeManager.instance().theme_changed.connect(lambda *_: self.update())
+        ThemeManager.instance().theme_changed.connect(self.update)
 
     def paintEvent(self, event):  # noqa: N802
         p = QPainter(self)
@@ -128,7 +128,7 @@ class _VersionTag(QWidget):
         f.setPixelSize(T("font.sm"))
         fm = QFontMetricsF(f)
         self.setFixedSize(int(fm.horizontalAdvance(self._text)) + 22, 24)
-        ThemeManager.instance().theme_changed.connect(lambda *_: self.update())
+        ThemeManager.instance().theme_changed.connect(self.update)
 
     def paintEvent(self, event):  # noqa: N802
         p = QPainter(self)
@@ -175,7 +175,7 @@ class _NavItem(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
-        ThemeManager.instance().theme_changed.connect(lambda *_: self._reload_icon())
+        ThemeManager.instance().theme_changed.connect(self._reload_icon)
 
     def _reload_icon(self) -> None:
         """按当前主题重绘图标（QIcon 像素里固化了颜色，需随主题重建）。"""
@@ -351,7 +351,7 @@ class _Sidebar(QWidget):
         edit.textChanged.connect(self._apply_filter)
         lay.addWidget(edit)
         self._search = edit
-        ThemeManager.instance().theme_changed.connect(lambda *_: self._refresh_search_icon())
+        ThemeManager.instance().theme_changed.connect(self._refresh_search_icon)
         return host
 
     def _refresh_search_icon(self) -> None:
