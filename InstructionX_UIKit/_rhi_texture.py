@@ -3,6 +3,10 @@
 
 from collections import deque
 from dataclasses import dataclass
+import os
+
+# 原生嵌入采用 GUI 线程调度，避免输入和窗口生命周期与渲染线程互相等待。
+os.environ.setdefault("QSG_RENDER_LOOP", "basic")
 
 from PySide6.QtCore import QRectF
 from PySide6.QtGui import QImage
