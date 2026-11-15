@@ -114,6 +114,24 @@ def assert_matches(viewport, chart, name, points=()):
         assert int(delta.max()) <= 2, (name, point, delta)
 
 
+def rotated_label_bbox(image, renderer, node, commands):
+    command = next(command for command in commands
+                   if command[0] == "text" and command[1] == node.name)
+    rect = command[2]
+    r0, r1 = renderer._ring(node.level)
+    center = renderer._pt((node.a0 + node.a1) / 2, (r0 + r1) / 2)
+    radius = max(rect.width(), rect.height()) * 0.75 + 4
+    dpr = image.devicePixelRatioF()
+    cropped = image.copy(round((center.x() - radius) * dpr),
+                         round((center.y() - radius) * dpr),
+                         round(radius * 2 * dpr), round(radius * 2 * dpr))
+    pixels = np.frombuffer(cropped.constBits(), dtype=np.uint8).reshape(
+        cropped.height(), cropped.width(), 4)
+    ys, xs = np.where(np.all(pixels[:, :, :3] > 200, axis=2))
+    assert len(xs), node.name
+    return [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
+
+
 def hover(viewport, pos):
     global_pos = viewport.mapToGlobal(QPoint(round(pos.x()), round(pos.y())))
     event = QMouseEvent(QEvent.MouseMove, QPointF(pos), QPointF(pos),
@@ -205,6 +223,14 @@ def _():
             hit = renderer.hit_test(point)
             assert hit is not None and hit["depth"] == node.level
             points.append(point)
+        actual, expected = grab(viewport), reference(chart, viewport.devicePixelRatioF())
+        for node in renderer._nodes:
+            if not node.name:
+                continue
+            actual_label = rotated_label_bbox(actual, renderer, node, model._scene.commands)
+            expected_label = rotated_label_bbox(expected, renderer, node, model._scene.commands)
+            assert all(abs(a - b) <= 2 for a, b in zip(actual_label, expected_label)), (
+                node.name, actual_label, expected_label)
         assert_matches(viewport, chart, "sunburst", points)
         hover(viewport, points[0])
         assert chart.tooltip.active and viewport._tooltip_scene is not None
