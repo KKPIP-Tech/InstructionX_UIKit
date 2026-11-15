@@ -1560,11 +1560,39 @@ a {{ color: {T("color.primary")}; }}
                 and "**" in text and _safe_strong_fragment(self._para_src)
                 and _safe_strong_fragment(text)):
             self._para_src += text
+            source = text[1:]
+            parts = [" "]
+            bold_ranges = []
+            source_pos = 0
+            doc_offset = 1
+            while source_pos < len(source):
+                start = source.find("**", source_pos)
+                if start < 0:
+                    parts.append(source[source_pos:])
+                    break
+                plain = source[source_pos:start]
+                parts.append(plain)
+                doc_offset += len(plain.encode("utf-16-le")) // 2
+                end = source.find("**", start + 2)
+                bold = source[start + 2:end]
+                parts.append(bold)
+                width = len(bold.encode("utf-16-le")) // 2
+                bold_ranges.append((doc_offset, doc_offset + width))
+                doc_offset += width
+                source_pos = end + 2
+            body_format = self._body_format()
+            bold_format = QTextCharFormat(body_format)
+            bold_format.setFontWeight(QFont.Bold)
             cur = self.textCursor()
             cur.movePosition(QTextCursor.End)
-            cur.setCharFormat(self._body_format())
-            cur.insertText(" ")
-            cur.insertHtml(self._parse_html(text[1:])[0])
+            doc_start = cur.position()
+            cur.setCharFormat(body_format)
+            cur.insertText("".join(parts))
+            for first, last in bold_ranges:
+                cur.setPosition(doc_start + first)
+                cur.setPosition(doc_start + last, QTextCursor.KeepAnchor)
+                cur.setCharFormat(bold_format)
+            cur.movePosition(QTextCursor.End)
             self.setTextCursor(cur)
             self._para_trail_space = False
             return
