@@ -168,6 +168,8 @@ def _():
                         "barBorderRadius": 3}],
         })
         horizontal.resize(800, 500)
+        horizontal.anim.stop()
+        horizontal.anim.set_progress(1.0)
         horizontal_view = make_view(horizontal)
         try:
             pump(100)
