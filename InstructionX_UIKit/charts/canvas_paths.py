@@ -40,7 +40,9 @@ def line_paths(points) -> list[QCanvasPath]:
 
 def path_from_qpainter(path: QPainterPath, close=False) -> QCanvasPath:
     """保留 ``QPainterPath`` 的直线与三次贝塞尔命令及点序。"""
-    result = QCanvasPath(path.elementCount())
+    command_count = sum(path.elementAt(index).type != QPainterPath.CurveToDataElement
+                        for index in range(path.elementCount()))
+    result = QCanvasPath(command_count, path.elementCount() * 2)
     for index in range(path.elementCount()):
         element = path.elementAt(index)
         point = QPointF(element.x, element.y)
