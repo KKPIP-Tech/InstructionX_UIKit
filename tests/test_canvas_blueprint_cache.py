@@ -122,10 +122,17 @@ def _():
             for index in range(left[1].commandsSize()):
                 delta = left[1].positionAt(index) - right[1].positionAt(index)
                 assert delta.manhattanLength() < 1e-6
+        edge._dash_offset = 0.0
+        canvas_scene.build_blueprint_flow(canvas)
+        assert len(calls) == 2
+        for _index in range(15):
+            edge.advance_dash()
+        canvas_scene.build_blueprint_flow(canvas)
+        assert len(calls) == 2, "完整周期后的 6.0 必须归一化为 0.0"
         first.pos = QPointF(120, 140)
         app.processEvents()
         canvas_scene.build_blueprint_flow(canvas)
-        assert len(calls) == 2, "节点移动后必须重建新几何"
+        assert len(calls) == 3, "节点移动后必须重建新几何"
     finally:
         canvas_scene.dashed_paths = original
         canvas.close()
