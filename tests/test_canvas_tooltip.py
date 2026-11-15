@@ -94,6 +94,7 @@ def color_count(image, color, rect=None):
 
 @check("item 浮层、axis 标题与标记、空白隐藏")
 def _():
+    previous = ThemeManager.instance().mode
     ThemeManager.instance().apply(app)
     chart = ChartWidget()
     chart.set_option({
@@ -167,6 +168,19 @@ def _():
         axis_image.save(str(destination / "axis.png"))
         assert color_count(axis_image, QColor(T("color.bg.elevated")).getRgb(), scene.box) > 0
         assert color_count(axis_image, QColor(T("color.text.primary")).getRgb(), scene.box) > 0
+        hover(viewport, center)
+        pump(50)
+        viewport._sync_now()
+        assert chart.tooltip.active
+        light_scene = viewport._tooltip_scene
+        ThemeManager.instance().set_mode("dark")
+        viewport._sync_now()
+        scene = viewport._tooltip_scene
+        assert scene is not light_scene
+        dark = grab(viewport)
+        dark.save(str(destination / "dark.png"))
+        assert color_count(dark, QColor(T("color.bg.elevated")).getRgb(), scene.box) > 0
+        assert color_count(dark, QColor(T("color.text.primary")).getRgb(), scene.box) > 0
         leave(viewport)
         pump(50)
         viewport._sync_now()
@@ -174,6 +188,7 @@ def _():
     finally:
         viewport.close()
         chart.close()
+        ThemeManager.instance().set_mode(previous)
         pump(100)
 
 
