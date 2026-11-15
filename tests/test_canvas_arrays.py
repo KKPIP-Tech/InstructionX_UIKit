@@ -56,6 +56,8 @@ def _():
             geometry = renderer._gpu_geometry
             assert geometry is not None and model._screen_geometry is geometry
             assert [path.commandsSize() for path in model._paths] == [len(geometry[0])]
+            renderer._points = []
+            assert chart._perf_snapshot()["screen_points"] == len(geometry[0])
             renderer._ensure_legacy_geometry()
             assert all(abs(point.x() - x) < 1e-9 and abs(point.y() - y) < 1e-9
                        for point, x, y in zip(renderer._points, *geometry))
