@@ -100,6 +100,30 @@ def _():
     host.close()
 
 
+@check("客户区四边四角调用系统缩放")
+def _():
+    host = make_host()
+    calls = []
+    host.gesture._system_resize = lambda handle, edges: calls.append(edges) or True
+    central = host.centralWidget()
+    width, height = central.width(), central.height()
+    cases = [
+        (QPoint(2, height // 2), Qt.LeftEdge),
+        (QPoint(width - 2, height // 2), Qt.RightEdge),
+        (QPoint(width // 2, 2), Qt.TopEdge),
+        (QPoint(width // 2, height - 2), Qt.BottomEdge),
+        (QPoint(2, 2), Qt.LeftEdge | Qt.TopEdge),
+        (QPoint(width - 2, 2), Qt.RightEdge | Qt.TopEdge),
+        (QPoint(2, height - 2), Qt.LeftEdge | Qt.BottomEdge),
+        (QPoint(width - 2, height - 2), Qt.RightEdge | Qt.BottomEdge),
+    ]
+    for point, expected in cases:
+        QTest.mouseClick(central, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.NoModifier, point)
+        assert calls and calls[-1] == expected, (point, expected, calls)
+    host.close()
+
+
 @check("透明宿主与关闭按钮正常")
 def _():
     host = make_host()
