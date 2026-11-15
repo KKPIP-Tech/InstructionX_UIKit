@@ -274,7 +274,8 @@ def _():
         local = viewport._view.mapFromGlobal(global_pos)
         QTest.mouseClick(viewport._view, Qt.LeftButton, Qt.NoModifier, local)
         editor.selectAll()
-        QTest.keyClicks(viewport._view, "64")
+        for char in "64":
+            QTest.keyClick(viewport._view, getattr(Qt, f"Key_{char}"))
         assert editor.text() == "64", editor.text()
         viewport._sync_now()
         assert_matches(viewport, canvas, "custom_body")
