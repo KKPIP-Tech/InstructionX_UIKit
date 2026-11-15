@@ -45,6 +45,7 @@ class _CanvasPaintModel:
         self._background = QRectF(background) if background is not None else None
         self._background_color = QColor(getattr(model, "_background_color", model._color))
         self._label_commands = tuple(getattr(model, "_label_commands", ()))
+        self._scene = getattr(model, "_scene", None)
         self._visible = model._visible
         self._last_symbol_count = 0
         self._draw = getattr(type(model), "_draw").__get__(self, _CanvasPaintModel)
