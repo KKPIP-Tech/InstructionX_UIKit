@@ -217,8 +217,11 @@ class _CanvasSceneHost(QObject):
     def _emit_frames(self):
         for viewport in tuple(self._viewports):
             if viewport.isVisible() and viewport._chart._ui_active:
-                viewport._waiting_for_frame = False
-                viewport._sync_timer.start(0)
+                animation = getattr(viewport._chart, "anim", None)
+                animating = animation is not None and animation.is_running()
+                if viewport._sync_dirty or viewport._continuous_sync or animating:
+                    viewport._waiting_for_frame = False
+                    viewport._sync_timer.start(0)
                 viewport.frameSubmitted.emit()
                 viewport.frameSwapped.emit()
 
@@ -332,6 +335,8 @@ def _scene_host(window):
 class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
     """保持 ChartWidget 公共接口的共享 Scene Graph 内部视口。"""
 
+    _continuous_sync = False
+
     frameSubmitted = Signal()
     frameSwapped = Signal()
 
@@ -349,6 +354,7 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
         self._view = None
         self._item = None
         self.sync_times = []
+        self._sync_dirty = True
         self._waiting_for_frame = False
         self._sync_timer = QTimer(self)
         self._sync_timer.setSingleShot(True)
@@ -453,6 +459,7 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
 
     def setGeometry(self, rect):  # noqa: N802
         super().setGeometry(rect)
+        self._sync_dirty = True
         self._sync_item_geometry()
 
     def resizeEvent(self, event):  # noqa: N802
@@ -487,8 +494,10 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
         self._ready = False
 
     def update(self, *_args):
-        if self._ready and self._chart._ui_active and self.isVisible() \
-                and not self._waiting_for_frame:
+        if not self._ready:
+            return
+        self._sync_dirty = True
+        if self._chart._ui_active and self.isVisible() and not self._waiting_for_frame:
             self._sync_timer.start(0)
 
     def _sync_series_model(self, model):
@@ -506,6 +515,7 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
                 or not _shiboken_is_valid(self._item):
             return
         self._sync_timer.stop()
+        self._sync_dirty = False
         self._waiting_for_frame = True
         started = time.perf_counter()
         try:
