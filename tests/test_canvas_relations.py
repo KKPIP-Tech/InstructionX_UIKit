@@ -201,7 +201,7 @@ def _():
         assert len(model._nodes) == len(renderer._nodes) == 6
         assert {color.alpha() for _path, color in model._bands} == {35}
         assert {color.alpha() for _path, color in model._nodes} == {127}
-        assert all(path.commandsSize() == 6 for path, _color in model._bands)
+        assert all(path.commandsSize() == 5 for path, _color in model._bands)
         assert_matches(viewport, chart, "sankey_half")
         chart.anim.set_progress(1.0)
         viewport._sync_now()
