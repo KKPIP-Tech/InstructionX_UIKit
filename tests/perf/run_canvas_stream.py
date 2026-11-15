@@ -127,10 +127,6 @@ def main():
     QTimer.singleShot(15000, lambda: app.exit(2))
     result = app.exec()
     timer.stop()
-    print("STREAM_DEBUG", [(viewport.isVisible(), viewport.windowHandle().isExposed(),
-                            len(viewport.paint_times), len(viewport.sync_times),
-                            viewport._canvas is None)
-                           for _chart, viewport, _values in charts], flush=True)
     source_sha = subprocess.check_output(["git", "rev-parse", "uniform_style"],
                                          cwd=ROOT, text=True).strip()
     destination = ROOT / "temp" / "performance" / source_sha / "canvas-stream"
