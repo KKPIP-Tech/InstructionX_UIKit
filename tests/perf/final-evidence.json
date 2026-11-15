@@ -1,9 +1,9 @@
 {
-  "source_sha": "5c58fdf6933b85d5e4996e83a82c294c0a268e69",
+  "source_sha": "399af40109b2bf320294b6ba5fd10049bb0d65c7",
   "measured_code_sha": "5c58fdf6933b85d5e4996e83a82c294c0a268e69",
   "source_branch": "uniform_style",
   "test_branch": "uniform_test（以最终清单提交为准）",
-  "generated_at_utc": "2026-11-15T06:10:50.790028+00:00",
+  "generated_at_utc": "2026-11-15T06:17:27.601167+00:00",
   "source_matches_uniform_style": true,
   "overall_acceptance": "未通过：4K 性能红线未满足，原生窗口与 PresentMon 验收受权限阻塞，不能视为验收成品",
   "current_evidence": [
@@ -28,16 +28,16 @@
   ],
   "blocked_evidence": {
     "native_input": {
-      "path": "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\5c58fdf6933b85d5e4996e83a82c294c0a268e69\\native-input\\preflight.json",
+      "path": "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\399af40109b2bf320294b6ba5fd10049bb0d65c7\\native-input\\preflight.json",
       "result": "阻塞",
       "note": "测试窗口无法取得前台；原生窗口正式长测不能继续，不能以合成事件替代",
-      "sha256": "b8a1e43f78acec41051e4a61a3a94015ae1d312fcf42879a2357ef7a35ad7afb"
+      "sha256": "ad22cfc8422ecf17d57eab3298f2d1a3a0a8882aa5af8814b8a1a3c743be9eed"
     },
     "presentmon": {
-      "path": "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\5c58fdf6933b85d5e4996e83a82c294c0a268e69\\presentmon\\preflight.json",
+      "path": "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\399af40109b2bf320294b6ba5fd10049bb0d65c7\\presentmon\\preflight.json",
       "result": "阻塞",
       "note": "需要管理员权限或 Performance Log Users 用户组；未提权，未生成帧数据",
-      "sha256": "00136827f4514258fe8e4c3547aed24451d213c5d2af2422745167ad121fe3a5"
+      "sha256": "2362d83c8af1ee16ff1fd35ef03f99d6c5c2d61566b667cfe366c3f477e8201a"
     }
   },
   "failed_or_unverified": {

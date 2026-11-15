@@ -171,7 +171,7 @@ python tests\test_core.py
 - [docs/Design.md](docs/Design.md) — 设计规范（令牌数值、断点、动效、状态矩阵、暗色策略）
 - [docs/USAGE.md](docs/USAGE.md) — 使用手册，共 11 章：
   - §1–§7 安装 / 快速开始 / 主题系统 / 组件 / 布局 / 动画 / 图表用法
-  - **§8 大数据与实时渲染** — 渲染后端（GPU 与软件双视口）、自动降采样与保真承诺、实时数据接入（`chart.stream()`）、GPU 原生直绘（`gpuDirect`）、同屏多图性能特征
+  - **§8 大数据与实时渲染** — 渲染后端（RHI 与软件双视口）、自动降采样与保真承诺、实时数据接入（`chart.stream()`）、`gpuDirect` option 兼容与统一快照、同屏多图性能特征
   - §9 蓝图模式 · §10 代码编辑器 · §11 常见问题
 - [THIRD-PARTY.md](THIRD-PARTY.md) — 第三方项目来源、许可证与致谢清单（Iconoir 等）
 

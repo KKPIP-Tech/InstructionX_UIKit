@@ -1293,9 +1293,22 @@ Chart 与 Blueprint 连续 resize 时先复用旧帧，停顿约 100ms 后只重
 
 # 原 gpuDirect option 的 RHI 兼容、样式、像素与资源生命周期
 .venv\Scripts\python.exe tests\perf\run_gpu_direct.py
+
+# 前台窗口与原生指针预检
+.venv\Scripts\python.exe tests\perf\check_native_input.py
+
+# 真实标题栏与客户区边框，系统及手动回退各 5×30 秒
+.venv\Scripts\python.exe tests\perf\run_native_gestures.py --regions titlebar window --gestures move left right top bottom top-left top-right bottom-left bottom-right --seconds 30 --rounds 5
+
+# 混合 DPI 跨屏与双击最大化／还原
+.venv\Scripts\python.exe tests\perf\run_native_cross_screen.py --seconds 30 --rounds 5
+.venv\Scripts\python.exe tests\perf\run_native_window_actions.py --seconds 30 --rounds 5
+
+# PresentMon 跟踪启动权限预检（不自动提权）
+.venv\Scripts\python.exe tests\perf\check_presentmon.py
 ```
 
-这些脚本不会把离屏绘制耗时冒充实际 FPS。窗口矩阵使用真实客户区截图与 `QQuickView.frameSwapped`；程序几何变化不等于原生鼠标验收。当前 Win32 原生指针预检失败，`SetCursorPos` 返回 False 且光标不动，`SendInput` 也没有移动光标，因此原生鼠标仍为未验证。PresentMon 另因 ETW 权限不足而没有数据，不得混用这两项结论。
+这些脚本不会把离屏绘制耗时冒充实际 FPS。窗口矩阵使用真实客户区截图与 `QQuickView.frameSwapped`；程序几何变化不等于原生鼠标验收，普通 QWidget 宿主也没有 `QWindow.frameSwapped` 可用于呈现帧率统计。原生移动优先使用 Win32 `SetCursorPos`，失败时回退绝对 `SendInput`，按键仍由 `SendInput` 注入。自有前台 Qt 窗口中的真实移动、按下与释放已验证；系统跨屏已完成 5×30 秒功能长测，每轮 120 次往返。当前后续预检因测试窗口无法取得前台而阻塞，完整原生窗口长测与帧率验收仍未通过。PresentMon 需要管理员权限或 `Performance Log Users` 用户组，当前启动跟踪返回 `access denied`，没有外部呈现数据；预检脚本不会自动提权。
 
 ## 9. 蓝图模式（InstructionX_UIKit.blueprint 节点图）
 
