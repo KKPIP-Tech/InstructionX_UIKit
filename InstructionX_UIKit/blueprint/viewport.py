@@ -2,6 +2,7 @@
 """BlueprintCanvas 的 RHI 视口与离屏软件验证视口。"""
 
 import logging
+import os
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication, QPainter
@@ -69,6 +70,12 @@ def create_viewport(canvas) -> QWidget:
     app = QGuiApplication.instance()
     if app is not None and app.platformName() in _SOFTWARE_PLATFORMS:
         return _RasterViewport(canvas)
+    requested = os.environ.get("UIKIT_BLUEPRINT_BACKEND", "").strip().lower()
+    if requested == "raster":
+        return _RasterViewport(canvas)
+    if requested == "canvas":
+        from .canvas_viewport import CanvasBlueprintViewport
+        return CanvasBlueprintViewport(canvas, parent=canvas)
     try:
         from .rhi_viewport import create_rhi_viewport
         return create_rhi_viewport(canvas)
