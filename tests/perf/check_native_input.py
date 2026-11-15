@@ -29,9 +29,8 @@ def main():
         "scope": "前台 Qt 窗口内的 Win32 原生指针预检，不是窗口操作验收",
         "native_mouse_verified": False, "pass": False,
     }
-    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QWidget
-    from native_input import is_foreground
+    from native_input import activate_window
 
     app = QApplication.instance() or QApplication(sys.argv)
     widget = QWidget()
@@ -39,11 +38,10 @@ def main():
     widget.resize(640, 400)
     widget.move(80, 80)
     widget.show()
-    widget.raise_()
-    widget.activateWindow()
-    QTest.qWait(600)
     try:
-        report["foreground"] = is_foreground(widget)
+        report["foreground"] = activate_window(widget)
+        if not report["foreground"]:
+            raise RuntimeError("原生预检窗口未取得前台")
         user32 = ctypes.WinDLL("user32", use_last_error=True)
         user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
         user32.SetCursorPos.restype = wintypes.BOOL
@@ -76,6 +74,8 @@ def main():
             if report["after"] != before:
                 report["native_mouse_verified"] = False
                 report["pass"] = False
+    except Exception as exc:
+        report["preflight_error"] = repr(exc)
     finally:
         widget.close()
         app.processEvents()

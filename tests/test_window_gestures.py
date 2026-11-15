@@ -124,6 +124,21 @@ def _():
     host.close()
 
 
+@check("标题栏双击最大化与还原")
+def _():
+    host = make_host()
+    origin = host.geometry()
+    QTest.mouseDClick(host._titlebar, Qt.MouseButton.LeftButton,
+                        Qt.KeyboardModifier.NoModifier, QPoint(50, 24))
+    assert host.isMaximized(), host.windowState()
+    QTest.mouseDClick(host._titlebar, Qt.MouseButton.LeftButton,
+                        Qt.KeyboardModifier.NoModifier, QPoint(50, 24))
+    assert not host.isMaximized(), host.windowState()
+    assert host.geometry() == origin, (host.geometry(), origin)
+    assert host.gesture._manual is None
+    host.close()
+
+
 @check("透明宿主与关闭按钮正常")
 def _():
     host = make_host()

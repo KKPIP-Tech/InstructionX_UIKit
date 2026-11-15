@@ -21,7 +21,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 from demo.window_host import WindowHost
 from InstructionX_UIKit.theme import ThemeManager
-from native_input import client_to_physical, cursor_pos, left_button, move_to
+from native_input import activate_window, client_to_physical, cursor_pos, left_button, move_to
 
 
 GESTURES = ("move", "left", "right", "top", "bottom",
@@ -122,8 +122,8 @@ def run_case(app, gesture, mode, seconds, rounds, region="titlebar"):
     host.resize(900, 600)
     host.move(180, 100)
     host.show()
-    host.raise_()
-    host.activateWindow()
+    if not activate_window(host):
+        raise RuntimeError("原生窗口手势宿主未取得前台")
     pump(600)
     original_cursor = cursor_pos()
     results = []

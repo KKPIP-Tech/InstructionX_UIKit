@@ -39,6 +39,8 @@ _USER32.GetSystemMetrics.restype = ctypes.c_int
 _USER32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(_Input), ctypes.c_int]
 _USER32.SendInput.restype = wintypes.UINT
 _USER32.GetForegroundWindow.restype = wintypes.HWND
+_USER32.SetForegroundWindow.argtypes = [wintypes.HWND]
+_USER32.SetForegroundWindow.restype = wintypes.BOOL
 _USER32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
 _USER32.MonitorFromWindow.restype = wintypes.HMONITOR
 _USER32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(_MonitorInfo)]
@@ -101,6 +103,22 @@ def client_to_physical(widget, point):
 
 def is_foreground(widget):
     return _USER32.GetForegroundWindow() == int(widget.window().winId())
+
+
+def activate_window(widget):
+    from PySide6.QtCore import QCoreApplication
+
+    window = widget.window()
+    window.raise_()
+    window.activateWindow()
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        _USER32.SetForegroundWindow(int(window.winId()))
+        QCoreApplication.processEvents()
+        if is_foreground(widget):
+            return True
+        time.sleep(0.02)
+    return False
 
 
 def window_rect(widget):
