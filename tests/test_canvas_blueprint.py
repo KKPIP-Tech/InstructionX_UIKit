@@ -171,7 +171,8 @@ def _():
         viewport._sync_now()
         assert canvas._wire is not None and viewport._overlay_scene is not None
         assert_matches(viewport, canvas, "temporary_wire")
-        canvas._finish_wire(canvas.scene_to_view(QPointF(520, 380)))
+        target = canvas.pin_scene_pos("b", "img", PinDirection.Input)
+        canvas._finish_wire(canvas.scene_to_view(target))
         viewport._sync_now()
         assert len(canvas.graph.edges()) == 2
         first.set_status("running")
@@ -203,7 +204,7 @@ def _():
     graph, canvas = make_canvas()
     viewport = replace_viewport(canvas)
     moved = []
-    canvas.node_moved.connect(moved.append)
+    canvas.node_moved.connect(lambda node_id, pos: moved.append((node_id, pos)))
     try:
         node = graph.node("a")
         original = QPointF(node.pos)
