@@ -57,7 +57,16 @@ SOFTWARE.
 | numpy | BSD-3-Clause | <https://numpy.org/> | 图表引擎的大规模数据管线 |
 | Mermaid | MIT | <https://github.com/mermaid-js/mermaid> | MarkdownView 的 Mermaid 图表渲染（内置 `mermaid.min.js`） |
 
-## 3. 测量工具（不随包分发）
+## 3. Canvas GPU 绘制模块
+
+- 项目：Qt Canvas Painter（`PySide6.QtCanvasPainter`）
+- 来源：<https://doc.qt.io/qt-6/qtcanvaspainter-module.html>，由公开 PySide6 安装包提供，本项目不编写或分发额外原生插件。
+- 当前验证版本：**PySide6 6.11.1**；该模块仍声明为开发中，升级必须重新验证。
+- 许可证：**GPL-3.0-only 或 Qt 商业许可**，本项目按所有者确认选择 **GPLv3**，不得误写为 LGPL。许可说明见 <https://doc.qt.io/qt-6/zh/licensing.html>。
+- 用途：`QCanvasPainterWidget`、`QCanvasPainter`、`QCanvasPath` 与 QRhi 原生图元绘制，用于替代真实窗口中逐帧 QPainter 全帧快照。
+- 内部依赖：Qt 该模块使用 NanoVG；Qt 官方第三方清单见 <https://doc.qt.io/qt-6/licenses-used-in-qt.html>。本项目不单独引入 NanoVG 包。
+
+## 4. 测量工具（不随包分发）
 
 - 项目：Intel PresentMon
 - 来源与版本：[GameTechDev/PresentMon v2.6.0](https://github.com/GameTechDev/PresentMon/releases/tag/v2.6.0)
@@ -66,7 +75,7 @@ SOFTWARE.
 - 完整性：发布 SHA-256 为 `b2a706bc6ad475749e3b7e3409263aa1e6906d45bdcf993f6dbc0f660188f1af`，本地文件哈希一致，签名者为 Intel Corporation。
 - 权限说明：ETW 需要管理权限或 Performance Log Users 组权限；当前未获权限，未提权，未将 PresentMon 结果用于验收。
 
-## 4. 维护约定
+## 5. 维护约定
 
 - 新增图标、字体、示例代码或其他第三方资产时，在本文件补充来源、版本、许可证和用途。
 - 若第三方资产要求保留版权声明，必须同时保留其完整许可证文本。
