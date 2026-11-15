@@ -213,7 +213,7 @@ def _():
             source = band["path"]
             start, target, bottom = (source.elementAt(index) for index in (0, 3, 4))
             point = QPointF((start.x + target.x) / 2,
-                            (start.y + target.y + bottom.y) / 2)
+                            (start.y + 2 * target.y + bottom.y) / 4)
             assert band["path"].contains(point)
             assert not any(node["rect"].contains(point) for node in renderer._nodes)
             expected = next(candidate for candidate in renderer._bands
