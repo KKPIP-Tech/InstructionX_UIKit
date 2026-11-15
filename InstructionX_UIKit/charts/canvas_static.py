@@ -5,7 +5,7 @@ import math
 
 from PySide6.QtCanvasPainter import QCanvasPainter, QCanvasPath
 from PySide6.QtCore import QPointF, QRectF
-from PySide6.QtGui import QColor, QFontMetricsF, QPainterPath, QTransform
+from PySide6.QtGui import QColor, QFontMetricsF, QTransform
 
 from ..theme import T
 from .axes import (
@@ -49,12 +49,7 @@ class CanvasStaticScene:
                 elif kind == "fill":
                     _kind, path, color = command
                     painter.setFillStyle(color)
-                    if isinstance(path, QPainterPath):
-                        painter.beginPath()
-                        painter.addPath(path)
-                        painter.fill()
-                    else:
-                        painter.fill(path)
+                    painter.fill(path)
                 elif kind == "stroke_pen":
                     _kind, path, color, width, cap, join = command
                     painter.setStrokeStyle(color)

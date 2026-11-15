@@ -5,10 +5,10 @@ import math
 
 from PySide6.QtCanvasPainter import QCanvasPainter, QCanvasPath
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QPainterPath, QPainterPathStroker
+from PySide6.QtGui import QColor, QPainterPath
 
 from ..theme import T, ThemeManager
-from ..charts.canvas_paths import line_path, path_from_qpainter
+from ..charts.canvas_paths import dashed_paths, line_path, path_from_qpainter
 from ..charts.canvas_static import CanvasStaticScene, _text
 from .canvas import GRID_DOT_R
 from .edge_widget import bezier_path
@@ -42,13 +42,8 @@ def _circle(commands, center, radius, fill=None, stroke=None, width=1.0):
 
 
 def _dashed(commands, path, color, width, pattern, offset=0.0):
-    stroker = QPainterPathStroker()
-    stroker.setWidth(width)
-    stroker.setCapStyle(Qt.RoundCap)
-    stroker.setJoinStyle(Qt.MiterJoin)
-    stroker.setDashPattern(list(pattern))
-    stroker.setDashOffset(offset)
-    commands.append(("fill", stroker.createStroke(path), QColor(color)))
+    for dash in dashed_paths(path, pattern, offset):
+        _stroke(commands, dash, color, width, cap=QCanvasPainter.LineCap.Round)
 
 
 def blueprint_scene_key(canvas):
@@ -137,11 +132,11 @@ def _edges(commands, canvas, flowing=None):
     for edge in canvas._edge_widgets.values():
         if flowing is not None and edge.flowing != flowing:
             continue
+        path = path_from_qpainter(edge.path())
         if edge.flowing:
             _dashed(commands, edge.path(), QColor(T("color.primary")),
                     2.4, [3.0, 3.0], edge._dash_offset)
             continue
-        path = path_from_qpainter(edge.path())
         color = QColor(T("color.primary")) if edge.selected else edge._color()
         width = 2.8 if edge.selected else (3.2 if edge.hovered else 2.0)
         _stroke(commands, path, color, width, cap=QCanvasPainter.LineCap.Round)
