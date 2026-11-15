@@ -54,6 +54,19 @@ class WindowGestureController(QObject):
         if not _shiboken_is_valid(self) or titlebar is None or window is None \
                 or not _shiboken_is_valid(titlebar) or not _shiboken_is_valid(window):
             return False
+        if watched is titlebar and event.type() == QEvent.MouseButtonDblClick \
+                and event.button() == Qt.MouseButton.LeftButton:
+            position = event.position().toPoint()
+            if titlebar.childAt(position) not in (None, titlebar) \
+                    or self.edges_at(position):
+                return False
+            self._manual = None
+            if window.isMaximized():
+                window.showNormal()
+            else:
+                window.showMaximized()
+            event.accept()
+            return True
         if watched is titlebar and event.type() == QEvent.MouseButtonPress \
                 and event.button() == Qt.MouseButton.LeftButton:
             position = event.position().toPoint()
