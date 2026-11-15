@@ -5,8 +5,10 @@
 """
 
 from PySide6.QtCanvasPainter import QCanvasPath
+from PySide6.QtCore import QPointF
+from PySide6.QtGui import QPainterPath
 
-__all__ = ["line_path", "line_paths"]
+__all__ = ["line_path", "line_paths", "path_from_qpainter"]
 
 
 def line_path(points) -> QCanvasPath:
@@ -34,3 +36,25 @@ def line_paths(points) -> list[QCanvasPath]:
     if segment:
         paths.append(line_path(segment))
     return paths
+
+
+def path_from_qpainter(path: QPainterPath, close=False) -> QCanvasPath:
+    """保留 ``QPainterPath`` 的直线与三次贝塞尔命令及点序。"""
+    command_count = sum(path.elementAt(index).type != QPainterPath.CurveToDataElement
+                        for index in range(path.elementCount()))
+    result = QCanvasPath(command_count, path.elementCount() * 2)
+    for index in range(path.elementCount()):
+        element = path.elementAt(index)
+        point = QPointF(element.x, element.y)
+        if element.type == QPainterPath.MoveToElement:
+            result.moveTo(point)
+        elif element.type == QPainterPath.LineToElement:
+            result.lineTo(point)
+        elif element.type == QPainterPath.CurveToElement:
+            control2 = path.elementAt(index + 1)
+            end = path.elementAt(index + 2)
+            result.bezierCurveTo(point, QPointF(control2.x, control2.y),
+                                 QPointF(end.x, end.y))
+    if close:
+        result.closePath()
+    return result
