@@ -65,7 +65,6 @@ def _():
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QColor, QPainterPathStroker
     from InstructionX_UIKit.blueprint.canvas_scene import _dashed
-    from InstructionX_UIKit.charts.canvas_paths import path_from_qpainter
     path = QPainterPath(QPointF(0, 0))
     path.cubicTo(QPointF(30, -80), QPointF(90, 80), QPointF(140, 0))
     commands = []
@@ -78,12 +77,16 @@ def _():
     stroker.setJoinStyle(Qt.MiterJoin)
     stroker.setDashPattern([3.0, 3.0])
     stroker.setDashOffset(-1.6)
-    expected = path_from_qpainter(stroker.createStroke(path))
+    expected = stroker.createStroke(path)
     actual = commands[0][1]
-    assert actual.commandsSize() == expected.commandsSize()
-    for index in range(actual.commandsSize()):
-        delta = actual.positionAt(index) - expected.positionAt(index)
-        assert delta.manhattanLength() < 1e-6, (index, delta)
+    assert isinstance(actual, QPainterPath)
+    assert actual.elementCount() == expected.elementCount()
+    for index in range(actual.elementCount()):
+        actual_element = actual.elementAt(index)
+        expected_element = expected.elementAt(index)
+        assert actual_element.type == expected_element.type
+        assert abs(actual_element.x - expected_element.x) < 1e-9
+        assert abs(actual_element.y - expected_element.y) < 1e-9
 
 
 if __name__ == "__main__":
