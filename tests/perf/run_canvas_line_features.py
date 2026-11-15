@@ -18,6 +18,7 @@ from PySide6.QtCore import QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import QApplication
 from InstructionX_UIKit.charts import ChartWidget
+from InstructionX_UIKit.charts.axes import GridCoord
 from InstructionX_UIKit.charts.canvas_viewport import CanvasLineViewport
 from InstructionX_UIKit.theme import T, ThemeManager
 from run_canvas_line import alpha_bbox, base_color
@@ -110,8 +111,13 @@ def render_case(app, name, series, dark=False):
     elif name == "area":
         structure_ok = bool(getattr(viewport, "_areas", []))
     elif name in ("polar", "polar_area"):
-        structure_ok = coord.kind == "polar" and bool(viewport._paths) \
-            and (name != "polar_area" or bool(getattr(viewport, "_areas", [])))
+        structure_ok = coord.kind == "polar" and bool(viewport._paths)
+        if name == "polar_area":
+            expected_area, _ = renderer._line_path(renderer._points)
+            expected_area.lineTo(coord.center)
+            expected_area.closeSubpath()
+            structure_ok = structure_ok and bool(getattr(viewport, "_areas", [])) \
+                and viewport._areas[0][0].commandsDataSize() == expected_area.elementCount() * 2
     elif name == "singleAxis":
         structure_ok = coord.kind == "singleAxis" and commands > 0
     elif name == "none":
@@ -135,7 +141,11 @@ def render_case(app, name, series, dark=False):
     expected_ink = int(np.count_nonzero(expected_pixels[:, :, 3]))
     ink_ratio = actual_ink / expected_ink if expected_ink else 0.0
     ink_ratio_ok = ink_ratio >= 0.55 if name in ("area", "polar_area") else True
-    outer = QRectF(coord.plot).adjusted(-8, -8, 8, 8)
+    if isinstance(coord, GridCoord):
+        outer = QRectF(coord.plot)
+    else:
+        outer = QRectF(0, 0, chart.width(), chart.height())
+    outer = outer.adjusted(-8, -8, 8, 8)
     left = max(0, int(outer.left() * dpr))
     top = max(0, int(outer.top() * dpr))
     right = min(actual.width(), int(np.ceil(outer.right() * dpr)))
