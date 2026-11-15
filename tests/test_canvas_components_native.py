@@ -165,7 +165,8 @@ def _():
         assert hit is not None and hit["name"] == "峰值"
         hover(viewport, mark["pos"])
         assert chart.tooltip.active and viewport._tooltip_scene is not None
-        assert_matches(viewport, chart, "marks_graphic", [mark["pos"]])
+        assert_matches(viewport, chart, "marks_graphic",
+                       [QPointF(80, 80), QPointF(155, 55)])
         previous = scene
         chart.update_option({
             "graphic": [{"type": "text", "left": 12, "top": 8,
