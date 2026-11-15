@@ -215,9 +215,20 @@ def _():
         assert len(model._segment_paths) == len(renderer._segments) == 3
         assert len(model._trails) == 3
         assert model._phase == 0.25
+        coord = chart.primary_coord()
+        assert (coord.x_axis.vmin, coord.x_axis.vmax) == (0, 100)
+        points = [point for segment in renderer._segments
+                  for point in (segment["p0"], segment["p1"])]
+        xs, ys = [point.x() for point in points], [point.y() for point in points]
+        assert all(coord.plot.contains(point) for point in points), points
+        assert max(xs) - min(xs) > coord.plot.width() * 0.5, (min(xs), max(xs))
+        assert max(ys) - min(ys) > coord.plot.height() * 0.5, (min(ys), max(ys))
+        trails = [renderer._curve_path(segment["p0"], segment["p1"], 0.2).pointAtPercent(
+            (0.25 + index / 3) % 1.0)
+            for index, segment in enumerate(renderer._segments)]
         assert all(path.commandsSize() == 2 for path in model._segment_paths)
         assert {color.alpha() for _path, color, _width in model._outlines} == {165}
-        assert_matches(viewport, chart, "lines_effect")
+        assert_matches(viewport, chart, "lines_effect", points + trails)
         renderer._phase = 0.5
         viewport._sync_now()
         assert viewport._line_views[0]._phase == 0.5
