@@ -293,13 +293,15 @@ def main():
                         default=["blank", "form", "chart", "blueprint", "mermaid",
                                  "complex", "opaque", "native"])
     parser.add_argument("--audio", action="store_true")
+    parser.add_argument("--backend", choices=["rhi", "canvas"], default="rhi")
     parser.add_argument("--label", default="candidate")
     parser.add_argument("--tag", default="matrix")
     args = parser.parse_args()
     source = ROOT
     sys.path.insert(0, str(source))
     os.environ.pop("QT_QPA_PLATFORM", None)
-    os.environ.pop("UIKIT_CHART_BACKEND", None)
+    os.environ["UIKIT_CHART_BACKEND"] = args.backend
+    os.environ["UIKIT_BLUEPRINT_BACKEND"] = "canvas" if args.backend == "canvas" else "rhi"
     os.environ.pop("QSG_RHI_BACKEND", None)
     os.environ.pop("QT_QUICK_BACKEND", None)
     from PySide6.QtWidgets import QApplication
@@ -319,6 +321,7 @@ def main():
               "source_dirty": source_dirty,
               "label": args.label, "seed": SEED,
               "phase_seconds": args.phase_seconds,
+              "backend": args.backend,
               "audio_enabled": args.audio,
               "audio_available": audio.available,
               "global_graphics_api_forced": False,
