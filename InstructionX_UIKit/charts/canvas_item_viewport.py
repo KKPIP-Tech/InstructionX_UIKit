@@ -497,7 +497,7 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
         if not self._ready:
             return
         self._sync_dirty = True
-        if self._chart._ui_active and self.isVisible() and not self._waiting_for_frame:
+        if self._chart._ui_active and self.isVisible():
             self._sync_timer.start(0)
 
     def _sync_series_model(self, model):
