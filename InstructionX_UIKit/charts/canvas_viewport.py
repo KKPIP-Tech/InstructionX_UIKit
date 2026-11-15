@@ -31,6 +31,7 @@ class CanvasLineViewport(QCanvasPainterWidget):
         self._coord = coord if coord is not None else (
             renderer.chart.coord_for(renderer.opt) if renderer is not None else None)
         self._plot = QRectF(self._coord.plot) if isinstance(self._coord, GridCoord) else None
+        self._visible = renderer.visible if renderer is not None else False
         self._points = []
         self._screen_geometry = None
         self._areas = []
@@ -85,6 +86,7 @@ class CanvasLineViewport(QCanvasPainterWidget):
 
     def _rebuild_paths(self, points):
         self._screen_geometry = None
+        self._visible = self._renderer.visible if self._renderer is not None else False
         if self._renderer is None:
             self._points = list(points)
             self._paths = []
@@ -160,6 +162,7 @@ class CanvasLineViewport(QCanvasPainterWidget):
 
     def set_arrays(self, geometry):
         self._screen_geometry = geometry
+        self._visible = self._renderer.visible
         self._points = []
         self._areas = []
         self._dashes = []
@@ -198,6 +201,9 @@ class CanvasLineViewport(QCanvasPainterWidget):
             self._last_symbol_count += 1
 
     def _draw(self, painter, scale=None):
+        self._last_symbol_count = 0
+        if not self._visible:
+            return
         painter.save()
         try:
             painter.setTransform(QTransform())
@@ -356,6 +362,7 @@ class CanvasLineChartViewport(_ViewportMixin, CanvasLineViewport):
         self._sync_structure()
         self._chart._layout_all()
         for model in self._line_views:
+            model._visible = model._renderer.visible
             model._plot = QRectF(model._coord.plot) \
                 if isinstance(model._coord, GridCoord) else None
             geometry = model._renderer._gpu_geometry

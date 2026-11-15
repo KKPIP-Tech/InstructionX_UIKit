@@ -6,12 +6,13 @@ import weakref
 
 from shiboken6 import isValid as _shiboken_is_valid
 from PySide6.QtCanvasPainter import QCanvasPainterItem, QCanvasPainterItemRenderer
-from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSizeF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QImage, QPixmap
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSizeF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QContextMenuEvent, QImage, QMouseEvent, QPixmap, QWheelEvent
 from PySide6.QtQuick import QQuickView
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QApplication, QWidget
 
 from .axes import GridCoord
+from .canvas_static import build_static_scene, static_scene_key
 from .canvas_viewport import CanvasLineChartViewport, CanvasLineViewport
 from .viewport import _ViewportMixin
 
@@ -36,6 +37,7 @@ class _CanvasPaintModel:
         self._symbol_size = model._symbol_size
         self._line_width = model._line_width
         self._anim_t = model._anim_t
+        self._visible = model._visible
         self._last_symbol_count = 0
 
 
@@ -43,14 +45,18 @@ class _CanvasItemRenderer(QCanvasPainterItemRenderer):
     def __init__(self):
         super().__init__()
         self._views = ()
+        self._static_scene = None
         self.symbol_counts = ()
         self.paint_times = []
 
     def synchronizeData(self, item):  # noqa: N802
         self._views = tuple(_CanvasPaintModel(model) for model in item._line_views)
+        self._static_scene = item._static_scene
 
     def paint(self, painter):
         started = time.perf_counter()
+        if self._static_scene is not None:
+            self._static_scene.draw(painter)
         for model in self._views:
             model._draw(painter, scale=1.0)
         self.symbol_counts = tuple(model._last_symbol_count for model in self._views)
@@ -62,6 +68,7 @@ class _CanvasItem(QCanvasPainterItem):
     def __init__(self):
         super().__init__()
         self._line_views = ()
+        self._static_scene = None
         self._renderer = None
         self.setFillColor(QColor(Qt.transparent))
 
@@ -69,8 +76,10 @@ class _CanvasItem(QCanvasPainterItem):
         self._renderer = _CanvasItemRenderer()
         return self._renderer
 
-    def set_views(self, views):
+    def set_views(self, views, static_scene=None):
         self._line_views = tuple(views)
+        if static_scene is not None:
+            self._static_scene = static_scene
         self.update()
 
 
@@ -110,6 +119,7 @@ class _CanvasSceneHost(QObject):
         self._view.setColor(Qt.transparent)
         self._view.setResizeMode(QQuickView.SizeRootObjectToView)
         self._view.frameSwapped.connect(self._emit_frames)
+        self._view.installEventFilter(self)
         self._container = QWidget.createWindowContainer(self._view, self._window)
         self._container.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self._container.setGeometry(self._window.rect())
@@ -167,7 +177,48 @@ class _CanvasSceneHost(QObject):
         for viewport in tuple(self._viewports):
             viewport._sync_item_geometry()
 
+    def _input_target(self, global_pos):
+        target = QApplication.widgetAt(global_pos)
+        if target is None or target is self._container:
+            target = self._window.childAt(self._window.mapFromGlobal(global_pos))
+        if target is None or target is self._container:
+            for viewport in self._viewports:
+                if viewport.isVisible() and viewport.rect().contains(
+                        viewport.mapFromGlobal(global_pos)):
+                    target = viewport
+                    break
+        return target
+
+    def _forward_input(self, event):
+        if isinstance(event, QContextMenuEvent):
+            global_pos = event.globalPos()
+        else:
+            global_pos = event.globalPosition().toPoint()
+        target = self._input_target(global_pos)
+        if target is None:
+            return False
+        local_pos = target.mapFromGlobal(global_pos)
+        if isinstance(event, QContextMenuEvent):
+            forwarded = QContextMenuEvent(event.reason(), local_pos, global_pos)
+        elif isinstance(event, QWheelEvent):
+            forwarded = QWheelEvent(
+                QPointF(local_pos), QPointF(global_pos), event.pixelDelta(),
+                event.angleDelta(), event.buttons(), event.modifiers(), event.phase(),
+                event.inverted(), event.source())
+        else:
+            forwarded = QMouseEvent(
+                event.type(), QPointF(local_pos), QPointF(local_pos),
+                QPointF(global_pos), event.button(), event.buttons(), event.modifiers())
+        QCoreApplication.sendEvent(target, forwarded)
+        event.accept()
+        return True
+
     def eventFilter(self, obj, event):  # noqa: N802
+        if obj is self._view and event.type() in (
+                QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove,
+                QEvent.Type.MouseButtonRelease, QEvent.Type.MouseButtonDblClick,
+                QEvent.Type.Wheel, QEvent.Type.ContextMenu):
+            return self._forward_input(event)
         if obj is not self._window:
             return super().eventFilter(obj, event)
         if event.type() == QEvent.Type.Resize:
@@ -218,6 +269,7 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
         self._renderer = None
         self._renderer_ids = ()
         self._line_views = []
+        self._static_scene = None
         self._host = None
         self._view = None
         self._item = None
@@ -349,6 +401,7 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
         self._sync_structure()
         self._chart._layout_all()
         for model in self._line_views:
+            model._visible = model._renderer.visible
             model._plot = QRectF(model._coord.plot) if isinstance(model._coord, GridCoord) else None
             geometry = model._renderer._gpu_geometry
             if geometry is not None:
@@ -356,7 +409,9 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
                     model.set_arrays(geometry)
             elif model._source_points is not model._renderer._points:
                 model.set_paths(model._renderer._points)
-        self._item.set_views(self._line_views)
+        if self._static_scene is None or self._static_scene.key != static_scene_key(self._chart):
+            self._static_scene = build_static_scene(self._chart)
+        self._item.set_views(self._line_views, self._static_scene)
         self.sync_times.append((time.perf_counter() - started) * 1000)
         del self.sync_times[:-120]
 
