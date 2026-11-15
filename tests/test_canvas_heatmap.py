@@ -195,8 +195,8 @@ def _():
                          if comp.option_key == "visualMap")
         command = gradient_command(viewport)
         assert command[1] == component._bar
-        assert command[3].startColor().name() == "#ebeff5"
-        assert command[3].endColor().name() == "#3f5e8c"
+        assert command[3].startColor().name() == "#3f5e8c"
+        assert command[3].endColor().name() == "#ebeff5"
         assert "direct" in viewport.rhi_api().lower(), viewport.rhi_api()
         assert_matches(viewport, chart, "grid_half")
         chart.anim.set_progress(1.0)
@@ -207,8 +207,8 @@ def _():
         hover(viewport, first["rect"].center())
         assert chart.tooltip.active and viewport._tooltip_scene is not None
         assert viewport._static_scene is cached
-        assert any(command[0] == "text" and command[1].startswith("一, 上:")
-                   for command in viewport._tooltip_scene.commands)
+        assert any(command[0] == "text" and command[1] == "热度: 0"
+                   for command in viewport._tooltip_scene.commands), chart.tooltip._lines
         assert_matches(viewport, chart, "grid_tooltip")
         chart.update_option({
             "visualMap": {"min": 0, "max": 20,
@@ -225,8 +225,8 @@ def _():
         assert model._source_cells is renderer._cells
         assert len(model._areas) == 6
         command = gradient_command(viewport)
-        assert command[3].startColor().name() == "#fff7bc"
-        assert command[3].endColor().name() == "#d95f0e"
+        assert command[3].startColor().name() == "#d95f0e"
+        assert command[3].endColor().name() == "#fff7bc"
         component = next(comp for comp in chart.components
                          if comp.option_key == "visualMap")
         assert component.max == 20 and any(command[0] == "text" and command[1] == "20"
@@ -287,8 +287,8 @@ def _():
         hover(viewport, cell["rect"].center())
         assert chart.tooltip.active
         assert coord.date_at(cell["rect"].center()).isoformat() == "2026-02-14"
-        assert any(command[0] == "text" and command[1].startswith("2026-02-14:")
-                   for command in viewport._tooltip_scene.commands)
+        assert any(command[0] == "text" and command[1] == "提交: 8"
+                   for command in viewport._tooltip_scene.commands), chart.tooltip._lines
         day_rect = coord.cell_rect("2026-02-14").adjusted(0.5, 0.5, -0.5, -0.5)
         assert any(command[0] == "stroke" and command[3] == 1.4
                    for command in viewport._tooltip_scene.commands)
