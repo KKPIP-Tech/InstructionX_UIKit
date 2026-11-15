@@ -109,9 +109,10 @@ def main():
                     raise RuntimeError("set_stream_data 返回 False")
         state["tick"] += 1
 
+    producer_interval = 0 if os.environ.get("UIKIT_CANVAS_STREAM_CONTINUOUS") == "1" else 16
     timer = QTimer()
     timer.setTimerType(Qt.PreciseTimer)
-    timer.setInterval(16)
+    timer.setInterval(producer_interval)
     timer.timeout.connect(load)
     timer.start()
     QTimer.singleShot(1000, lambda: state.update(recording=True))
@@ -197,6 +198,8 @@ def main():
                   cwd=ROOT).returncode != 0,
               "time_utc": datetime.now(timezone.utc).isoformat(),
               "scope": "两个仅 line 的 Canvas 图表；其他系列与轴组件另行验收",
+              "producer_interval_ms": producer_interval,
+              "producer_ticks": state["tick"],
               "charts": reports, "hidden_pause_pass": hidden_ok,
               "recover_latest_pass": recovered_ok,
               "pass": bool(all_pass and hidden_ok and recovered_ok)}
