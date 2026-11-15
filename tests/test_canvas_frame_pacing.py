@@ -37,18 +37,12 @@ def check(name):
     return decorate
 
 
-@check("流动定时器唤醒同步且无变化与隐藏时暂停")
+@check("交换帧继续调度下一次同步且保持隐藏暂停")
 def _():
     graph = BlueprintGraph()
     node = BlueprintNode("perf", "静态节点", node_id="a")
-    node.add_output("out")
     node.pos = QPointF(80, 90)
-    target = BlueprintNode("perf", "目标节点", node_id="b")
-    target.add_input("in")
-    target.pos = QPointF(360, 90)
     graph.add_node(node)
-    graph.add_node(target)
-    graph.add_edge("a", "out", "b", "in")
     canvas = BlueprintCanvas(graph)
     canvas.resize(900, 600)
     canvas.show()
@@ -63,16 +57,9 @@ def _():
     try:
         viewport._sync_now()
         viewport._sync_timer.stop()
+        assert not viewport._sync_timer.isActive()
         viewport._host._emit_frames()
-        assert not viewport._sync_timer.isActive(), "相位不变时不应重复同步"
-        edge = next(iter(canvas._edge_widgets.values()))
-        edge.set_flowing(True)
-        viewport._sync_now()
-        viewport._sync_timer.stop()
-        canvas._tick_flow()
-        assert viewport._sync_dirty, "流动定时器必须标脏视口"
-        viewport._host._emit_frames()
-        assert viewport._sync_timer.isActive(), "相位变化必须唤醒同步"
+        assert viewport._sync_timer.isActive()
         viewport._suspend()
         viewport._sync_timer.stop()
         viewport._host._emit_frames()
@@ -107,12 +94,12 @@ def _():
         viewport._sync_now()
         viewport._sync_timer.stop()
         viewport.update()
-        assert viewport._sync_timer.isActive(), "数据更新必须主动唤醒呈现"
-        viewport._sync_now()
+        assert not viewport._sync_timer.isActive(), "数据更新不应越过下一次交换帧额外同步"
         viewport._host._emit_frames()
-        assert not viewport._sync_timer.isActive(), "干净视口不应在交换帧重复同步"
+        assert viewport._sync_timer.isActive(), "交换帧必须调度包含最新数据的同步"
+        viewport._sync_now()
         viewport.update()
-        assert viewport._sync_timer.isActive()
+        assert not viewport._sync_timer.isActive()
     finally:
         viewport.close()
         canvas.close()
