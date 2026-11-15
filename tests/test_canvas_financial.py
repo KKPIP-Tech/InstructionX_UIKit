@@ -139,10 +139,12 @@ def _():
             first["close"], chart.primary_coord().plot.bottom(), chart.primary_coord().plot.top()))
         hover(viewport, point)
         assert chart.tooltip.active and viewport._tooltip_scene is not None
-        chart.update_option({"series": [{"data": [[3, 5, 2, 6], [5, 4, 3, 6], [4, 4, 3, 7]]}]})
+        chart.update_option({"series": [{"type": "candlestick", "name": "价格",
+                                          "data": [[3, 5, 2, 6], [5, 4, 3, 6], [4, 4, 3, 7]]}]})
         chart.anim.stop()
         chart.anim.set_progress(0.5)
         viewport._sync_now()
+        model = viewport._line_views[0]
         assert model._anim_t == 0.5
         assert model._source_items[0]["prev"] is not None
         chart.anim.set_progress(1.0)
