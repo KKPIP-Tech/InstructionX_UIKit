@@ -71,6 +71,42 @@ def _():
             time.sleep(0.005)
 
 
+@check("数据更新与交换帧合并为每个呈现周期一次同步")
+def _():
+    graph = BlueprintGraph()
+    node = BlueprintNode("perf", "数据节点", node_id="a")
+    node.pos = QPointF(80, 90)
+    graph.add_node(node)
+    canvas = BlueprintCanvas(graph)
+    canvas.resize(900, 600)
+    canvas.show()
+    viewport = CanvasBlueprintViewport(canvas, parent=canvas)
+    old = canvas._viewport
+    canvas._viewport = viewport
+    for widget in canvas._node_widgets.values():
+        widget.setParent(viewport)
+    old.close()
+    old.deleteLater()
+    viewport.show()
+    try:
+        viewport._sync_now()
+        viewport._sync_timer.stop()
+        viewport.update()
+        assert not viewport._sync_timer.isActive(), "数据更新不应越过下一次交换帧额外同步"
+        viewport._host._emit_frames()
+        assert viewport._sync_timer.isActive(), "交换帧必须调度包含最新数据的同步"
+        viewport._sync_now()
+        viewport.update()
+        assert not viewport._sync_timer.isActive()
+    finally:
+        viewport.close()
+        canvas.close()
+        deadline = time.perf_counter() + 0.1
+        while time.perf_counter() < deadline:
+            app.processEvents()
+            time.sleep(0.005)
+
+
 if __name__ == "__main__":
     app.quit()
     raise SystemExit(1 if _FAILURES else 0)
