@@ -583,7 +583,18 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
 
     def grab_canvas(self, callback):
         self._sync_now()
-        QTimer.singleShot(0, lambda: callback(self._grab_image()))
+        if self._host is None:
+            QTimer.singleShot(0, lambda: callback(self._grab_image()))
+            return
+
+        def captured():
+            try:
+                self.frameSwapped.disconnect(captured)
+            except (RuntimeError, TypeError):
+                pass
+            callback(self._grab_image())
+
+        self.frameSwapped.connect(captured)
 
     def grab(self):
         if self._host is None:
