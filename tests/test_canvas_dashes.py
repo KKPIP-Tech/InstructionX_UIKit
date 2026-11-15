@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""通用虚线弧长切分与 Blueprint 原生描边轮廓回归。"""
+"""Canvas 虚线按原路径弧长切分，不依赖整块描边轮廓。"""
 
 import os
 from pathlib import Path
@@ -58,35 +58,6 @@ def _():
         expected = path.pointAtPercent(fraction / path.length())
         assert (point - expected).manhattanLength() < 1e-6, (point, expected)
     assert all(path.commandsSize() >= 2 for path in paths)
-
-
-@check("Blueprint 流动虚线复用 Qt 原生描边轮廓")
-def _():
-    from PySide6.QtCore import Qt
-    from PySide6.QtGui import QColor, QPainterPathStroker
-    from InstructionX_UIKit.blueprint.canvas_scene import _dashed
-    path = QPainterPath(QPointF(0, 0))
-    path.cubicTo(QPointF(30, -80), QPointF(90, 80), QPointF(140, 0))
-    commands = []
-    _dashed(commands, path, QColor("#3366ff"), 2.4, [3.0, 3.0], -1.6)
-    assert len(commands) == 1
-    assert commands[0][0] == "fill"
-    stroker = QPainterPathStroker()
-    stroker.setWidth(2.4)
-    stroker.setCapStyle(Qt.RoundCap)
-    stroker.setJoinStyle(Qt.MiterJoin)
-    stroker.setDashPattern([3.0, 3.0])
-    stroker.setDashOffset(-1.6)
-    expected = stroker.createStroke(path)
-    actual = commands[0][1]
-    assert isinstance(actual, QPainterPath)
-    assert actual.elementCount() == expected.elementCount()
-    for index in range(actual.elementCount()):
-        actual_element = actual.elementAt(index)
-        expected_element = expected.elementAt(index)
-        assert actual_element.type == expected_element.type
-        assert abs(actual_element.x - expected_element.x) < 1e-9
-        assert abs(actual_element.y - expected_element.y) < 1e-9
 
 
 if __name__ == "__main__":
