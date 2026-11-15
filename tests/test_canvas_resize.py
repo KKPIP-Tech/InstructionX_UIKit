@@ -4,6 +4,7 @@
 import os
 from pathlib import Path
 import sys
+import time
 import traceback
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,7 +13,6 @@ sys.path.insert(0, str(ROOT / "tests" / "perf"))
 os.environ.pop("QT_QPA_PLATFORM", None)
 os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
 
-from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 from InstructionX_UIKit.charts import ChartWidget
 from InstructionX_UIKit.theme import ThemeManager
@@ -32,6 +32,13 @@ def check(name):
             print(f"  [失败] {name}")
             traceback.print_exc()
     return decorate
+
+
+def pump(milliseconds):
+    deadline = time.monotonic() + milliseconds / 1000
+    while time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.004)
 
 
 def make_chart():
@@ -65,7 +72,7 @@ def wait_preview(canvas, active):
             return
         if active:
             canvas.resize(1000, 440)
-        QTest.qWait(10)
+        pump(10)
     raise AssertionError(f"缩放预览状态超时: active={active}")
 
 
@@ -80,12 +87,12 @@ def _():
         wait_preview(chart, True)
         assert chart._preview_capturing is False
         wait_preview(chart, False)
-        QTest.qWait(50)
+        pump(50)
         final = chart._viewport.grab().toImage()
         os.environ["UIKIT_RESIZE_PREVIEW"] = "off"
         reference = make_chart()
         reference.resize(1000, 440)
-        QTest.qWait(50)
+        pump(50)
         expected = reference._viewport.grab().toImage()
         assert final == expected, "预览恢复后的最终图像与全质量路径不一致"
     finally:
@@ -110,12 +117,12 @@ def _():
         wait_preview(canvas, False)
         assert not canvas._gesture_deferred
         assert all(widget.isVisible() for widget in canvas._node_widgets.values())
-        QTest.qWait(50)
+        pump(50)
         final = canvas._viewport.grab().toImage()
         os.environ["UIKIT_RESIZE_PREVIEW"] = "off"
         reference, reference_canvas = make_blueprint()
         reference_canvas.resize(1000, 540)
-        QTest.qWait(50)
+        pump(50)
         assert final == reference_canvas._viewport.grab().toImage()
     finally:
         page.close()
