@@ -105,6 +105,12 @@ class CanvasStaticScene:
                     painter.setTextAlign(align)
                     painter.setTextBaseline(baseline)
                     painter.fillText(text, rect)
+                elif kind == "grid_pattern":
+                    _kind, rect, path, ox, oy, step, color = command
+                    renderer = getattr(self, "grid_renderer", None)
+                    if renderer is None:
+                        raise RuntimeError("网格路径缺少 Canvas 渲染宿主")
+                    renderer.grid_pattern(rect, path, ox, oy, step, color, painter)
                 else:
                     raise ValueError(f"未知 Canvas 静态命令: {kind!r}")
         finally:

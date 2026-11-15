@@ -58,6 +58,7 @@ class _CanvasItemRenderer(QCanvasPainterItemRenderer):
         self._static_scene = None
         self._component_scene = None
         self._overlay_scene = None
+        self._grid_cache = {}
         self.symbol_counts = ()
         self.paint_times = []
 
@@ -66,6 +67,25 @@ class _CanvasItemRenderer(QCanvasPainterItemRenderer):
         self._static_scene = item._static_scene
         self._component_scene = getattr(item, "_component_scene", None)
         self._overlay_scene = item._overlay_scene
+        if self._static_scene is not None:
+            self._static_scene.grid_renderer = self
+
+    def grid_pattern(self, rect, path, ox, oy, step, color, painter):
+        """以有界 path group 复用点阵几何，不生成纹理。"""
+        key = (step, color.rgba())
+        cached = self._grid_cache.get(key)
+        if cached is not None and cached[1:] == (ox, oy):
+            group = cached[0]
+        else:
+            if cached is not None:
+                painter.removePathGroup(cached[0])
+            elif len(self._grid_cache) >= 8:
+                _key, oldest = self._grid_cache.pop(next(iter(self._grid_cache)))
+                painter.removePathGroup(oldest[0])
+            group = len(self._grid_cache) + 1
+            self._grid_cache[key] = (group, ox, oy)
+        painter.setFillStyle(color)
+        painter.fill(path, group)
 
     def paint(self, painter):
         started = time.perf_counter()
