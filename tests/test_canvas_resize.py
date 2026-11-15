@@ -94,6 +94,9 @@ def _():
         reference.resize(1000, 440)
         pump(50)
         expected = reference._viewport.grab().toImage()
+        if final != expected:
+            final.save(str(ROOT / "temp" / "canvas_resize_chart_final.png"))
+            expected.save(str(ROOT / "temp" / "canvas_resize_chart_expected.png"))
         assert final == expected, "预览恢复后的最终图像与全质量路径不一致"
     finally:
         chart.close()
@@ -123,7 +126,11 @@ def _():
         reference, reference_canvas = make_blueprint()
         reference_canvas.resize(1000, 540)
         pump(50)
-        assert final == reference_canvas._viewport.grab().toImage()
+        expected = reference_canvas._viewport.grab().toImage()
+        if final != expected:
+            final.save(str(ROOT / "temp" / "canvas_resize_blueprint_final.png"))
+            expected.save(str(ROOT / "temp" / "canvas_resize_blueprint_expected.png"))
+        assert final == expected
     finally:
         page.close()
         if reference is not None:
