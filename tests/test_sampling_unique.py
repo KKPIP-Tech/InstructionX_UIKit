@@ -66,5 +66,29 @@ def _():
     assert np.array_equal(actual[:7], expected), actual[:7]
 
 
+@check("相同数据形状复用采样索引计划且逐项一致")
+def _():
+    from InstructionX_UIKit.charts import sampling
+    cache = getattr(sampling, "_SAMPLE_PLAN_CACHE", None)
+    if cache is not None:
+        cache.clear()
+    values = np.sin(np.arange(777) / 31)
+    expected = sample_indices(values, 77)
+    original_arange = np.arange
+    calls = []
+
+    def counted(*args, **kwargs):
+        calls.append(args)
+        return original_arange(*args, **kwargs)
+
+    np.arange = counted
+    try:
+        actual = sample_indices(values, 77)
+    finally:
+        np.arange = original_arange
+    assert not calls, f"相同形状仍重建索引计划: {len(calls)} 次 arange"
+    assert np.array_equal(actual, expected)
+
+
 if __name__ == "__main__":
     raise SystemExit(1 if _FAILURES else 0)
