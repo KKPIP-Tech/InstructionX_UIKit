@@ -217,6 +217,7 @@ class _CanvasSceneHost(QObject):
     def _emit_frames(self):
         for viewport in tuple(self._viewports):
             if viewport.isVisible() and viewport._chart._ui_active:
+                viewport._waiting_for_frame = False
                 viewport._sync_timer.start(0)
                 viewport.frameSubmitted.emit()
                 viewport.frameSwapped.emit()
@@ -348,6 +349,7 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
         self._view = None
         self._item = None
         self.sync_times = []
+        self._waiting_for_frame = False
         self._sync_timer = QTimer(self)
         self._sync_timer.setSingleShot(True)
         self._sync_timer.timeout.connect(self._sync_now)
@@ -485,7 +487,8 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
         self._ready = False
 
     def update(self, *_args):
-        if self._ready and self._chart._ui_active and self.isVisible():
+        if self._ready and self._chart._ui_active and self.isVisible() \
+                and not self._waiting_for_frame:
             self._sync_timer.start(0)
 
     def _sync_series_model(self, model):
@@ -502,6 +505,8 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
         if not self._chart._ui_active or not self.isVisible() or self._item is None \
                 or not _shiboken_is_valid(self._item):
             return
+        self._sync_timer.stop()
+        self._waiting_for_frame = True
         started = time.perf_counter()
         try:
             self._sync_structure()
