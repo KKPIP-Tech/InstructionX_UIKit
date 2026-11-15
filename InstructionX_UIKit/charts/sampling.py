@@ -236,10 +236,10 @@ def sample_indices(values, buckets: int):
     keep[0] = True
     keep[1:] = indices[1:] != indices[:-1]
     indices = indices[keep]
-    endpoints = [index for index in (0, n - 1) if _np.isfinite(values[index])]
-    for index in endpoints:
-        if not _np.any(indices == index):
-            indices = _np.append(indices, index)
+    if _np.isfinite(values[0]) and (not indices.size or indices[0] != 0):
+        indices = _np.concatenate((_np.asarray([0], dtype=_np.int64), indices))
+    if _np.isfinite(values[-1]) and (not indices.size or indices[-1] != n - 1):
+        indices = _np.concatenate((indices, _np.asarray([n - 1], dtype=_np.int64)))
     return indices.astype(_np.int64, copy=False)
 
 
