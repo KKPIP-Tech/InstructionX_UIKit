@@ -15,7 +15,7 @@ from shiboken6 import isValid as _shiboken_is_valid
 
 from ..theme import T, ThemeManager
 from .axes import GridCoord
-from .canvas_paths import line_path_arrays, line_paths, path_from_qpainter
+from .canvas_paths import array_painter_path, line_paths, path_from_qpainter
 from .series_cartesian import LineSeriesRenderer, _to_float, _with_alpha
 from .viewport import _ViewportMixin
 
@@ -166,7 +166,7 @@ class CanvasLineViewport(QCanvasPainterWidget):
         self._points = []
         self._areas = []
         self._dashes = []
-        self._paths = [line_path_arrays(*geometry)]
+        self._paths = [array_painter_path(*geometry)]
         self._canvas_dirty = True
         self.update()
 
@@ -226,7 +226,12 @@ class CanvasLineViewport(QCanvasPainterWidget):
                     painter.fill(path)
             else:
                 for path in self._paths:
-                    if path.commandsSize() >= 2:
+                    if isinstance(path, QPainterPath):
+                        if path.elementCount() >= 2:
+                            painter.beginPath()
+                            painter.addPath(path)
+                            painter.stroke()
+                    elif path.commandsSize() >= 2:
                         painter.stroke(path)
             self._draw_symbols(painter)
         finally:

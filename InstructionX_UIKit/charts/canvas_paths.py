@@ -9,7 +9,39 @@ from PySide6.QtCore import QPointF
 from PySide6.QtGui import QPainterPath
 
 __all__ = ["line_path", "line_paths", "line_path_arrays", "path_from_qpainter",
-           "dashed_paths"]
+           "dashed_paths", "array_painter_path"]
+
+
+class _CanvasArrayPath(QPainterPath):
+    def commandsSize(self):
+        return self.elementCount()
+
+    def commandsDataSize(self):
+        return self.elementCount() * 2
+
+
+def array_painter_path(xs, ys) -> QPainterPath:
+    """由 Qt 原生数据流批量构造折线，不逐点调用 Python 路径接口。"""
+    import numpy as np
+    from PySide6.QtCore import QDataStream, QByteArray
+    from PySide6.QtGui import QPolygonF
+
+    if len(xs) != len(ys):
+        raise ValueError("横纵坐标数组长度必须一致")
+    if not len(xs):
+        return _CanvasArrayPath()
+    points = np.empty((len(xs), 2), dtype="<f8")
+    points[:, 0] = xs
+    points[:, 1] = ys
+    stream = QDataStream(QByteArray(len(xs).to_bytes(4, "little") + points.tobytes()))
+    stream.setByteOrder(QDataStream.LittleEndian)
+    polygon = QPolygonF()
+    stream >> polygon
+    if stream.status() != QDataStream.Ok:
+        raise ValueError("数值屏幕坐标无法构造折线")
+    path = _CanvasArrayPath()
+    path.addPolygon(polygon)
+    return path
 
 
 def line_path_arrays(xs, ys) -> QCanvasPath:
