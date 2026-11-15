@@ -83,8 +83,14 @@ def grab_pair(viewport, app, points):
 
     viewport.frameSubmitted.connect(first_requested)
     viewport.update()
-    QTimer.singleShot(6000, lambda: app.exit(2))
-    if app.exec() != 0 or result.get("first") is None or result.get("second") is None:
+    watchdog = QTimer(viewport)
+    watchdog.setSingleShot(True)
+    watchdog.setInterval(6000)
+    watchdog.timeout.connect(lambda: app.exit(2))
+    watchdog.start()
+    result_code = app.exec()
+    watchdog.stop()
+    if result_code != 0 or result.get("first") is None or result.get("second") is None:
         print("CANVAS_STATE", result.keys(), len(viewport.paint_times),
               viewport._canvas is None, viewport.windowHandle().isExposed(), flush=True)
         raise RuntimeError("Canvas 回读失败")
