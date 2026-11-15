@@ -43,7 +43,8 @@ def grab_pair(viewport, app, points):
             result["second"].convertToFormat(QImage.Format_RGBA8888))
 
 
-def render_case(app, name, series):
+def render_case(app, name, series, dark=False):
+    previous_mode = ThemeManager.instance().mode
     chart = ChartWidget()
     chart.set_option({"animation": False, "xAxis": {"type": "value"},
                       "yAxis": {"type": "value", "min": -2, "max": 2},
@@ -60,13 +61,10 @@ def render_case(app, name, series):
     coord = chart.primary_coord()
     viewport = CanvasLineViewport(renderer, coord)
     viewport.resize(chart.width(), chart.height())
+    if dark:
+        ThemeManager.instance().set_mode("dark")
     viewport.show()
-    timer = QTimer(viewport)
-    timer.setInterval(0)
-    timer.timeout.connect(viewport.update)
-    timer.start()
     actual, repeated = grab_pair(viewport, app, renderer._points)
-    timer.stop()
     repeat_changed = int(actual != repeated)
     expected = QImage(round(chart.width() * viewport.devicePixelRatioF()),
                       round(chart.height() * viewport.devicePixelRatioF()),
@@ -94,7 +92,7 @@ def render_case(app, name, series):
         structure_ok = bool(getattr(viewport, "_areas", []))
     elif name in ("dash", "dot"):
         structure_ok = bool(getattr(viewport, "_dashes", []))
-    elif name == "symbols":
+    elif name in ("symbols", "symbols_dark"):
         expected_count = renderer._last_symbol_count
         structure_ok = 0 < getattr(viewport, "_last_symbol_count", 0) == expected_count
     else:
@@ -118,8 +116,8 @@ def render_case(app, name, series):
     clip_ok = int(np.count_nonzero(outside)) == 0
     expected_color = list(renderer.color().getRgb())
     actual_color = base_color(actual)
-    if name == "symbols":
-        color_ok = viewport._color.getRgb() == expected_color and actual_color in (
+    if name in ("symbols", "symbols_dark"):
+        color_ok = viewport._color.getRgb() == tuple(expected_color) and actual_color in (
             expected_color, list(QColor(T("color.bg.elevated")).getRgb()))
     else:
         color_ok = actual_color == expected_color
@@ -134,6 +132,7 @@ def render_case(app, name, series):
         "ink_ratio": ink_ratio, "ink_ratio_pass": ink_ratio_ok,
         "actual_bbox": actual_bbox, "expected_bbox": expected_bbox,
         "expected_color": expected_color, "actual_color": actual_color,
+        "viewport_color": list(viewport._color.getRgb()),
         "qpainter_changed_pixels": int(np.any(delta.reshape(-1, 4), axis=1).sum()),
         "qpainter_max_delta": int(np.abs(delta).max()),
         "command_max_ms": max(viewport.paint_times, default=0.0),
@@ -142,6 +141,7 @@ def render_case(app, name, series):
     }
     viewport.close()
     chart.close()
+    ThemeManager.instance().set_mode(previous_mode)
     app.processEvents()
     return report, actual, expected
 
@@ -160,6 +160,7 @@ def main():
         "dot": {"type": "line", "data": values,
                 "lineStyle": {"type": "dotted"}, "showSymbol": False},
         "symbols": {"type": "line", "data": values, "showSymbol": True},
+        "symbols_dark": {"type": "line", "data": values, "showSymbol": True},
     }
     source_sha = subprocess.check_output(["git", "rev-parse", "uniform_style"],
                                          cwd=ROOT, text=True).strip()
@@ -176,7 +177,7 @@ def main():
               "cases": {}}
     for name, series in cases.items():
         try:
-            case, actual, expected = render_case(app, name, series)
+            case, actual, expected = render_case(app, name, series, dark=name == "symbols_dark")
             actual.save(str(destination / f"{name}_actual.png"))
             expected.save(str(destination / f"{name}_reference.png"))
         except Exception as exc:
