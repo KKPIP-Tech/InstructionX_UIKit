@@ -8,7 +8,8 @@ from PySide6.QtCanvasPainter import QCanvasPath
 from PySide6.QtCore import QPointF
 from PySide6.QtGui import QPainterPath
 
-__all__ = ["line_path", "line_paths", "line_path_arrays", "path_from_qpainter"]
+__all__ = ["line_path", "line_paths", "line_path_arrays", "path_from_qpainter",
+           "dashed_paths"]
 
 
 def line_path_arrays(xs, ys) -> QCanvasPath:
@@ -67,4 +68,31 @@ def path_from_qpainter(path: QPainterPath, close=False) -> QCanvasPath:
                                  QPointF(end.x, end.y))
     if close:
         result.closePath()
+    return result
+
+
+def dashed_paths(path: QPainterPath, pattern, offset=0.0, segment_px=2.0):
+    """按路径弧长生成可见虚线段，直接由 Canvas 描边。"""
+    import math
+
+    if len(pattern) != 2 or pattern[0] <= 0 or pattern[1] < 0:
+        raise ValueError("虚线模式必须是 [线段长, 间隔长]")
+    if segment_px <= 0:
+        raise ValueError("虚线细分像素必须大于零")
+    length = path.length()
+    if length <= 0:
+        return []
+    result = []
+    start = -float(offset)
+    while start < length:
+        end = start + pattern[0]
+        if end > 0:
+            first = max(0.0, start)
+            last = min(length, end)
+            if last > first:
+                count = max(1, int(math.ceil((last - first) / segment_px)))
+                points = [path.pointAtPercent((first + (last - first) * index / count) / length)
+                          for index in range(count + 1)]
+                result.append(line_path(points))
+        start = end + pattern[1]
     return result
