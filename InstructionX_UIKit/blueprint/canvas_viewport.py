@@ -54,6 +54,7 @@ class _FlowView:
 
 class CanvasBlueprintViewport(CanvasItemLineChartViewport):
     supports_node_proxy = True
+    _continuous_sync = True
 
     def __init__(self, canvas, parent=None):
         self._mouse_target = None
@@ -69,6 +70,7 @@ class CanvasBlueprintViewport(CanvasItemLineChartViewport):
         if not self._canvas._ui_active or not self.isVisible() or self._item is None:
             return
         self._sync_timer.stop()
+        self._sync_dirty = False
         self._waiting_for_frame = True
         started = time.perf_counter()
         key = blueprint_scene_key(self._canvas)
