@@ -190,6 +190,15 @@ def frame_metrics(name, frames):
     }
 
 
+def timing_summary(samples):
+    import numpy as np
+    values = list(samples)
+    if not values:
+        return {}
+    return {"count": len(values), "mean_ms": float(np.mean(values)),
+            "p95_ms": float(np.percentile(values, 95)), "max_ms": float(max(values))}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seconds", type=float, default=60)
@@ -286,6 +295,20 @@ def main():
             viewport.paintEvent = measured_paint
 
     state["persistent_failures"] = list(state["failures"])
+    state["gc"] = []
+    state["gc_started"] = None
+
+    def gc_event(phase, info):
+        if phase == "start":
+            state["gc_started"] = time.perf_counter()
+        elif phase == "stop" and state["gc_started"] is not None:
+            state["gc"].append((state["gc_started"],
+                                time.perf_counter() - state["gc_started"],
+                                info.get("generation")))
+            state["gc_started"] = None
+
+    import gc
+    gc.callbacks.append(gc_event)
 
     def sample_resource():
         if state["recording"]:
@@ -394,7 +417,12 @@ def main():
             "data_sha256": [hashlib.sha256(values.tobytes()).hexdigest()
                             for chart in series_data for values in chart],
             "metrics": metrics,
+            "paint_times_ms": {name: timing_summary(getattr(viewport, "paint_times", ()))
+                               for name, viewport in viewports.items()},
+            "sync_times_ms": {name: timing_summary(getattr(viewport, "sync_times", ()))
+                              for name, viewport in viewports.items()},
             "long_tasks_ms": [task[2] * 1000 for task in long_tasks],
+            "gc_times_ms": timing_summary([event[1] * 1000 for event in state["gc"]]),
             "failures": state["failures"],
             "pass": passed,
             "measurement": "QQuickView.frameSwapped + UI 快照同步耗时；不是 PresentMon",
@@ -416,6 +444,11 @@ def main():
             writer.writerow(["source", "started", "duration_ms"])
             writer.writerows((source, started, duration * 1000)
                              for source, started, duration in state["tasks"])
+        with (destination / f"{round_name}_gc.csv").open("w", newline="", encoding="utf-8") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(["started", "duration_ms", "generation"])
+            writer.writerows((started, duration * 1000, generation)
+                             for started, duration, generation in state["gc"])
         with (destination / f"{round_name}_resources.csv").open("w", newline="", encoding="utf-8") as stream:
             fields = ["time", "working_set", "private_bytes", "handles",
                       "gdi_objects", "user_objects", "cpu_seconds"]
@@ -432,6 +465,7 @@ def main():
             state["frames"] = {name: [] for name in viewports}
             state["tasks"] = []
             state["resources"] = []
+            state["gc"] = []
             state["failures"] = list(state["persistent_failures"])
             state["recording"] = True
             QTimer.singleShot(int(args.seconds * 1000), finish_round)
@@ -459,6 +493,7 @@ def main():
                       "dpr": window.devicePixelRatioF(),
                       "rounds": args.rounds, "seconds": args.seconds,
                       "output": str(destination)}, ensure_ascii=False), flush=True)
+    gc.callbacks.remove(gc_event)
     return app.exec()
 
 
