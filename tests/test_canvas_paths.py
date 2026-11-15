@@ -13,7 +13,7 @@ os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
 
 from PySide6.QtCore import QPointF
 from PySide6.QtWidgets import QApplication
-from InstructionX_UIKit.charts.canvas_paths import line_path, line_paths
+from InstructionX_UIKit.charts.canvas_paths import line_path, line_paths, path_from_qpainter
 
 _FAILURES = []
 app = QApplication.instance() or QApplication(sys.argv)
@@ -77,6 +77,20 @@ def _():
 def _():
     assert line_paths([]) == []
     assert line_paths([None, None]) == []
+
+
+@check("QPainterPath 直线与三次贝塞尔命令完整转换")
+def _():
+    from PySide6.QtGui import QPainterPath
+
+    source = QPainterPath(QPointF(1, 2))
+    source.lineTo(3, 4)
+    source.cubicTo(QPointF(5, 6), QPointF(7, 8), QPointF(9, 10))
+    path = path_from_qpainter(source)
+    assert path.commandsSize() == 5
+    assert path.commandsDataSize() == 10
+    point = path.currentPosition()
+    assert point.x() == 9 and point.y() == 10
 
 
 if __name__ == "__main__":
