@@ -30,14 +30,25 @@ def grab_pair(viewport, app, points):
         result["second"] = image
         app.quit()
 
+    def second_requested():
+        viewport.frameSubmitted.disconnect(second_requested)
+        viewport.grab_canvas(second)
+
     def first(image):
         result["first"] = image
         viewport.set_paths(points)
-        QTimer.singleShot(100, lambda: viewport.grab_canvas(second))
+        viewport.frameSubmitted.connect(second_requested)
 
-    QTimer.singleShot(400, lambda: viewport.grab_canvas(first))
+    def first_requested():
+        viewport.frameSubmitted.disconnect(first_requested)
+        viewport.grab_canvas(first)
+
+    viewport.frameSubmitted.connect(first_requested)
+    viewport.update()
     QTimer.singleShot(6000, lambda: app.exit(2))
     if app.exec() != 0 or result.get("first") is None or result.get("second") is None:
+        print("CANVAS_STATE", result.keys(), len(viewport.paint_times),
+              viewport._canvas is None, viewport.windowHandle().isExposed(), flush=True)
         raise RuntimeError("Canvas 回读失败")
     return (result["first"].convertToFormat(QImage.Format_RGBA8888),
             result["second"].convertToFormat(QImage.Format_RGBA8888))

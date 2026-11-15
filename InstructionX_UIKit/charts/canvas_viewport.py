@@ -242,6 +242,7 @@ class CanvasLineViewport(QCanvasPainterWidget):
         self._canvas_dirty = True
 
     def closeEvent(self, event):  # noqa: N802
+        self._disconnect_theme()
         self._canvas = None
         self._canvas_signature = None
         self._canvas_dirty = True
