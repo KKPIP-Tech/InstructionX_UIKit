@@ -43,6 +43,8 @@ _USER32.SetForegroundWindow.argtypes = [wintypes.HWND]
 _USER32.SetForegroundWindow.restype = wintypes.BOOL
 _USER32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
 _USER32.MonitorFromWindow.restype = wintypes.HMONITOR
+_USER32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+_USER32.MonitorFromPoint.restype = wintypes.HMONITOR
 _USER32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(_MonitorInfo)]
 _USER32.GetMonitorInfoW.restype = wintypes.BOOL
 _USER32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(_Rect)]
@@ -99,6 +101,26 @@ def client_to_physical(widget, point):
     dpr = screen.devicePixelRatio()
     return (round(info.rcMonitor.left + (global_point.x() - origin.x()) * dpr),
             round(info.rcMonitor.top + (global_point.y() - origin.y()) * dpr))
+
+
+def global_to_physical(screen, point):
+    origin = screen.geometry().topLeft()
+    dpr = screen.devicePixelRatio()
+    candidate = wintypes.POINT(
+        round(origin.x() + (point.x() - origin.x()) * dpr),
+        round(origin.y() + (point.y() - origin.y()) * dpr))
+    monitor = _USER32.MonitorFromPoint(candidate, 2)
+    info = _MonitorInfo()
+    info.cbSize = ctypes.sizeof(info)
+    if not monitor or not _USER32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    expected_width = round(screen.geometry().width() * dpr)
+    expected_height = round(screen.geometry().height() * dpr)
+    if abs(info.rcMonitor.right - info.rcMonitor.left - expected_width) > 2 \
+            or abs(info.rcMonitor.bottom - info.rcMonitor.top - expected_height) > 2:
+        raise RuntimeError(f"目标屏幕与原生显示器不一致: {screen.name()}")
+    return (round(info.rcMonitor.left + (point.x() - origin.x()) * dpr),
+            round(info.rcMonitor.top + (point.y() - origin.y()) * dpr))
 
 
 def is_foreground(widget):

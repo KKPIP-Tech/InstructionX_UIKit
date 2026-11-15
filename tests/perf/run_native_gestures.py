@@ -61,11 +61,11 @@ def point_for(host, gesture, region="titlebar"):
     return points[gesture]
 
 
-def drag(host, point, delta, records, region="titlebar"):
+def drag(host, point, delta, records, region="titlebar", target_physical=None):
     app = QApplication.instance()
     source = host if region == "window" else host._titlebar
     start = client_to_physical(source, point)
-    target = client_to_physical(source, point + delta)
+    target = target_physical or client_to_physical(source, point + delta)
     before = host.geometry()
     move_to(*start)
     pump(20)
