@@ -1001,12 +1001,6 @@ class BlueprintCanvas(QWidget):
         if vp is not None and enabled and not self._resize_preview.active \
                 and self.graph.nodes():
             self._preview_capturing = True
-            if hasattr(vp, "grab_canvas"):
-                vp.setGeometry(self.rect())
-                vp.grab_resize_preview(self._begin_resize_preview)
-                self.update()
-                super().resizeEvent(event)
-                return
             try:
                 snapshot = vp.grab()
                 vp.setGeometry(self.rect())
@@ -1032,27 +1026,6 @@ class BlueprintCanvas(QWidget):
             self._resize_preview.touch()
         self.update()
         super().resizeEvent(event)
-
-    def _begin_resize_preview(self, image):
-        started = self._resize_preview.begin(QPixmap.fromImage(image))
-        if started:
-            vp = self._viewport
-            self._preview_nodes = {
-                node_id: widget.isVisibleTo(vp)
-                for node_id, widget in self._node_widgets.items()
-            }
-            self._preview_flow = self._flow_timer.isActive()
-            if self._preview_flow:
-                self._flow_timer.stop()
-            if getattr(vp, "supports_node_proxy", False):
-                self._view_changed(gesture=True)
-            else:
-                for widget in self._node_widgets.values():
-                    widget.hide()
-        else:
-            self._update_view()
-        self._preview_capturing = False
-        self.update()
 
     def _finish_resize_preview(self):
         for node_id, visible in self._preview_nodes.items():

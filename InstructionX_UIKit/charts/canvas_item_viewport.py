@@ -592,27 +592,9 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
                 self.frameSwapped.disconnect(captured)
             except (RuntimeError, TypeError):
                 pass
-            QTimer.singleShot(0, lambda: callback(self._grab_image()))
+            callback(self._grab_image())
 
         self.frameSwapped.connect(captured)
-
-    def grab_resize_preview(self, callback):
-        self._sync_now()
-
-        def captured():
-            if self._host is None or self._item is None or not _shiboken_is_valid(self._item):
-                callback(QImage())
-                return
-            view = self._view
-            dpr = view.devicePixelRatio()
-            image = view.screen().grabWindow(view.winId()).toImage()
-            image.setDevicePixelRatio(dpr)
-            position = self._item.position()
-            rect = QRect(round(position.x() * dpr), round(position.y() * dpr),
-                         round(self.width() * dpr), round(self.height() * dpr))
-            callback(image.copy(rect))
-
-        QTimer.singleShot(0, captured)
 
     def grab(self):
         if self._host is None:
