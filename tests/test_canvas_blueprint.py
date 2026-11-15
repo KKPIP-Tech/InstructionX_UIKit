@@ -231,11 +231,57 @@ def _():
         canvas.resize(820, 560)
         viewport._sync_now()
         assert_matches(viewport, canvas, "resized")
+        QTest.mouseClick(viewport._view, Qt.RightButton, Qt.NoModifier, QPoint(700, 420))
+        pump(60)
+        popup = app.activePopupWidget()
+        assert popup is not None, "空白处右键未打开创建菜单"
+        QTest.keyClick(popup, Qt.Key_Escape)
+        pump(40)
+        assert app.activePopupWidget() is None
     finally:
         viewport.close()
         canvas.close()
         pump()
     assert viewport._item is None
+
+
+@check("自定义节点体保持真实控件输入能力")
+def _():
+    from PySide6.QtWidgets import QLineEdit
+    from InstructionX_UIKit.blueprint import register_node_type
+
+    def build_body(node, container):
+        editor = QLineEdit("32")
+        editor.setObjectName("canvasBodyEditor")
+        container.layout().addWidget(editor)
+
+    register_node_type("canvas_body", "自定义", "测试", body_builder=build_body)
+    graph = BlueprintGraph()
+    node = BlueprintNode("canvas_body", "自定义", node_id="body")
+    node.pos = QPointF(90, 100)
+    graph.add_node(node)
+    canvas = BlueprintCanvas(graph)
+    canvas.resize(900, 600)
+    canvas.show()
+    viewport = replace_viewport(canvas)
+    try:
+        widget = canvas.node_widget("body")
+        widget._body.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        editor = widget._body.findChild(QLineEdit, "canvasBodyEditor")
+        assert editor is not None and editor.isVisible()
+        assert not widget.uses_proxy()
+        global_pos = editor.mapToGlobal(QPoint(6, 6))
+        local = viewport._view.mapFromGlobal(global_pos)
+        QTest.mouseClick(viewport._view, Qt.LeftButton, Qt.NoModifier, local)
+        editor.selectAll()
+        QTest.keyClicks(viewport._view, "64")
+        assert editor.text() == "64", editor.text()
+        viewport._sync_now()
+        assert_matches(viewport, canvas, "custom_body")
+    finally:
+        viewport.close()
+        canvas.close()
+        pump()
 
 
 if __name__ == "__main__":
