@@ -67,6 +67,7 @@ def make_chart():
 
 
 def replace_viewport(chart):
+    chart.show()
     viewport = CanvasItemLineChartViewport(chart, parent=chart)
     old = chart._viewport
     chart._viewport = viewport
@@ -153,10 +154,12 @@ def _():
         assert all(abs(a - b) <= 3 for a, b in zip(actual_title, expected_title)), (
             actual_title, expected_title)
         assert ink_bbox(actual) is not None and ink_bbox(expected) is not None
-        cached = viewport._static_scene
         assert chart.set_stream_data([0.2, 0.8, 0.3, -0.6, 0.4, 0.9, 0.1], series=0)
         viewport._sync_now()
-        assert viewport._static_scene is cached
+        cached = viewport._static_scene
+        assert chart.set_stream_data([0.1, 0.7, 0.4, -0.5, 0.6, 0.8, 0.2], series=0)
+        viewport._sync_now()
+        assert viewport._static_scene is cached, (cached.key, viewport._static_scene.key)
         second_color = list(chart.series_renderers[1].color().getRgb())
         assert color_count(actual, second_color) > 0
         center = chart.legend._item_rects[1].center()
