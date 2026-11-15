@@ -204,6 +204,37 @@ def _blocked_numpy_extrema(values, bounds, block=64):
     return list(zip(min_indices.tolist(), max_indices.tolist()))
 
 
+_SAMPLE_PLAN_CACHE = {}
+_SAMPLE_PLAN_CACHE_MAX = 8
+
+
+def _sample_plan(n, buckets):
+    """按数据长度与桶数复用只读索引计划，缓存规模有界。"""
+    key = (n, buckets)
+    cached = _SAMPLE_PLAN_CACHE.get(key)
+    if cached is not None:
+        return cached
+    columns = _np.arange(buckets, dtype=_np.int64)
+    starts = _np.ceil(columns * (n / buckets)).astype(_np.int64)
+    ends = _np.ceil((columns + 1) * (n / buckets)).astype(_np.int64)
+    ends[-1] = n
+    empty = ends <= starts
+    starts[empty] = _np.minimum(columns[empty], n - 1)
+    ends[empty] = _np.minimum(starts[empty] + 1, n)
+    lengths = ends - starts
+    groups = []
+    for width in _np.unique(lengths):
+        selected = _np.flatnonzero(lengths == width)
+        selected_starts = starts[selected]
+        positions = selected_starts[:, None] + _np.arange(width)
+        groups.append((selected, selected_starts, positions))
+    if len(_SAMPLE_PLAN_CACHE) >= _SAMPLE_PLAN_CACHE_MAX:
+        _SAMPLE_PLAN_CACHE.pop(next(iter(_SAMPLE_PLAN_CACHE)))
+    cached = tuple(groups)
+    _SAMPLE_PLAN_CACHE[key] = cached
+    return cached
+
+
 def sample_indices(values, buckets: int):
     """数值序列的像素桶极值下标，保留原顺序、首命中与有效端点。"""
     if _np is None:
@@ -213,20 +244,9 @@ def sample_indices(values, buckets: int):
     n = len(values)
     if buckets < 2 or buckets >= n or values.ndim != 1:
         return _np.arange(n, dtype=_np.int64)
-    columns = _np.arange(buckets, dtype=_np.int64)
-    starts = _np.ceil(columns * (n / buckets)).astype(_np.int64)
-    ends = _np.ceil((columns + 1) * (n / buckets)).astype(_np.int64)
-    ends[-1] = n
-    empty = ends <= starts
-    starts[empty] = _np.minimum(columns[empty], n - 1)
-    ends[empty] = _np.minimum(starts[empty] + 1, n)
-    lengths = ends - starts
     minima = _np.empty(buckets, dtype=_np.int64)
     maxima = _np.empty(buckets, dtype=_np.int64)
-    for width in _np.unique(lengths):
-        selected = _np.flatnonzero(lengths == width)
-        selected_starts = starts[selected]
-        positions = selected_starts[:, None] + _np.arange(width)
+    for selected, selected_starts, positions in _sample_plan(n, buckets):
         bucket_values = values[positions]
         minima[selected] = selected_starts + _np.argmin(bucket_values, axis=1)
         maxima[selected] = selected_starts + _np.argmax(bucket_values, axis=1)
