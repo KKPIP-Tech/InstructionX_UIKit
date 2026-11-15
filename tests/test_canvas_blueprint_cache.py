@@ -60,11 +60,11 @@ def _():
     viewport.show()
     try:
         viewport._sync_now()
-        static = viewport._static_scene
-        nodes = viewport._component_scene
         edge = next(iter(canvas._edge_widgets.values()))
         edge.set_flowing(True)
         viewport._sync_now()
+        static = viewport._static_scene
+        nodes = viewport._component_scene
         flowing = viewport._line_views[0]
         edge.advance_dash()
         viewport._sync_now()
