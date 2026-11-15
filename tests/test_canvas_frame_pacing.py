@@ -107,12 +107,12 @@ def _():
         viewport._sync_now()
         viewport._sync_timer.stop()
         viewport.update()
-        assert not viewport._sync_timer.isActive(), "数据更新不应越过下一次交换帧额外同步"
-        viewport._host._emit_frames()
-        assert viewport._sync_timer.isActive(), "交换帧必须调度包含最新数据的同步"
+        assert viewport._sync_timer.isActive(), "数据更新必须主动唤醒呈现"
         viewport._sync_now()
+        viewport._host._emit_frames()
+        assert not viewport._sync_timer.isActive(), "干净视口不应在交换帧重复同步"
         viewport.update()
-        assert not viewport._sync_timer.isActive()
+        assert viewport._sync_timer.isActive()
     finally:
         viewport.close()
         canvas.close()
