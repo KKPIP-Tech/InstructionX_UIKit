@@ -42,7 +42,7 @@ def _():
     chart._layout_all(force=True)
     source = CanvasLineViewport(chart.series_renderers[0], chart.primary_coord())
     renderer = _CanvasItemRenderer()
-    renderer.synchronizeData(SimpleNamespace(_line_views=[source]))
+    renderer.synchronizeData(SimpleNamespace(_line_views=[source], _static_scene=None))
     try:
         assert len(renderer._views) == 1
         snapshot = renderer._views[0]

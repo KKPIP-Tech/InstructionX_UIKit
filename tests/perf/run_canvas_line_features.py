@@ -21,7 +21,44 @@ from InstructionX_UIKit.charts import ChartWidget
 from InstructionX_UIKit.charts.axes import GridCoord
 from InstructionX_UIKit.charts.canvas_viewport import CanvasLineViewport
 from InstructionX_UIKit.theme import T, ThemeManager
-from run_canvas_line import alpha_bbox, base_color
+def series_color_count(image, color):
+    pixels = np.frombuffer(image.constBits(), dtype=np.uint8).reshape(
+        image.height(), image.width(), 4)
+    return int(np.count_nonzero(np.all(pixels == np.array(color, dtype=np.uint8), axis=2)))
+
+
+def series_ink_bbox(image):
+    pixels = np.frombuffer(image.constBits(), dtype=np.uint8).reshape(
+        image.height(), image.width(), 4)
+    background = np.array(QColor(T("color.bg.base")).getRgb()[:3], dtype=np.uint8)
+    if float(np.mean(pixels[:, :, 3])) < 128:
+        ys, xs = np.where(pixels[:, :, 3] != 0)
+    else:
+        ys, xs = np.where(np.any(pixels[:, :, :3] != background, axis=2))
+    if not len(xs):
+        return None
+    return [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
+
+
+def series_clip_ok(image, colors, outer, legend_rects, dpr):
+    pixels = np.frombuffer(image.constBits(), dtype=np.uint8).reshape(
+        image.height(), image.width(), 4)
+    left = max(0, int(outer.left() * dpr))
+    top = max(0, int(outer.top() * dpr))
+    right = min(image.width(), int(np.ceil(outer.right() * dpr)))
+    bottom = min(image.height(), int(np.ceil(outer.bottom() * dpr)))
+    for color in colors:
+        mask = np.all(pixels == np.array(color, dtype=np.uint8), axis=2)
+        mask[top:bottom, left:right] = False
+        for rect in legend_rects:
+            x0 = max(0, int((rect.left() - 2) * dpr))
+            y0 = max(0, int((rect.top() - 2) * dpr))
+            x1 = min(image.width(), int(np.ceil((rect.right() + 2) * dpr)))
+            y1 = min(image.height(), int(np.ceil((rect.bottom() + 2) * dpr)))
+            mask[y0:y1, x0:x1] = False
+        if int(np.count_nonzero(mask)):
+            return False
+    return True
 
 
 def grab_pair(viewport, app, points):
@@ -91,13 +128,19 @@ def render_case(app, name, series, dark=False):
                       QImage.Format_ARGB32_Premultiplied)
     expected.setDevicePixelRatio(viewport.devicePixelRatioF())
     expected.fill(Qt.transparent)
+    chart._static_pixmap_cache = None
+    chart._series_pixmap_cache = None
     painter = QPainter(expected)
     painter.setRenderHint(QPainter.Antialiasing)
-    renderer.paint(painter, 1.0)
+    if getattr(viewport, "_static_scene", None) is not None:
+        chart._paint_contents(painter)
+    else:
+        for item in chart.series_renderers:
+            item.paint(painter, 1.0)
     painter.end()
     expected = expected.convertToFormat(QImage.Format_RGBA8888)
-    actual_bbox = alpha_bbox(actual)
-    expected_bbox = alpha_bbox(expected)
+    actual_bbox = series_ink_bbox(actual)
+    expected_bbox = series_ink_bbox(expected)
     geometry_ok = actual_bbox is not None and expected_bbox is not None and all(
         abs(a - b) <= 2 for a, b in zip(actual_bbox, expected_bbox))
     commands = sum(path.commandsSize() for path in viewport._paths)
@@ -137,8 +180,9 @@ def render_case(app, name, series, dark=False):
         actual.height(), actual.width(), 4)
     expected_pixels = np.frombuffer(expected.constBits(), dtype=np.uint8).reshape(
         expected.height(), expected.width(), 4)
-    actual_ink = int(np.count_nonzero(pixels[:, :, 3]))
-    expected_ink = int(np.count_nonzero(expected_pixels[:, :, 3]))
+    expected_color = list(renderer.color().getRgb())
+    actual_ink = series_color_count(actual, expected_color)
+    expected_ink = series_color_count(expected, expected_color)
     ink_ratio = actual_ink / expected_ink if expected_ink else 0.0
     ink_ratio_ok = ink_ratio >= 0.55 if name in ("area", "polar_area") else True
     if isinstance(coord, GridCoord):
@@ -146,20 +190,13 @@ def render_case(app, name, series, dark=False):
     else:
         outer = QRectF(0, 0, chart.width(), chart.height())
     outer = outer.adjusted(-8, -8, 8, 8)
-    left = max(0, int(outer.left() * dpr))
-    top = max(0, int(outer.top() * dpr))
-    right = min(actual.width(), int(np.ceil(outer.right() * dpr)))
-    bottom = min(actual.height(), int(np.ceil(outer.bottom() * dpr)))
-    outside = pixels[:, :, 3].copy()
-    outside[top:bottom, left:right] = 0
-    clip_ok = int(np.count_nonzero(outside)) == 0
-    expected_color = list(renderer.color().getRgb())
-    actual_color = base_color(actual)
+    clip_ok = series_clip_ok(actual, [expected_color], outer,
+                             chart.legend._item_rects, dpr)
+    actual_color = expected_color if actual_ink else None
+    color_ok = actual_color == expected_color
     if name in ("symbols", "symbols_dark"):
-        color_ok = viewport._color.getRgb() == tuple(expected_color) and actual_color in (
-            expected_color, list(QColor(T("color.bg.elevated")).getRgb()))
-    else:
-        color_ok = actual_color == expected_color
+        fill_color = list(QColor(T("color.bg.elevated")).getRgb())
+        color_ok = color_ok and series_color_count(actual, fill_color) > 0
     delta = pixels.astype(np.int16) - expected_pixels.astype(np.int16)
     backend = getattr(viewport.api(), "name", str(viewport.api()))
     report = {

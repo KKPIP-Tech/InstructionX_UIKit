@@ -181,7 +181,9 @@ def _():
         assert viewport._static_scene is not cached
         dark = grab(viewport)
         dark.save(str(destination / "dark.png"))
-        assert color_count(dark, second_color) > 0
+        dark_second_color = list(chart.series_renderers[1].color().getRgb())
+        assert dark_second_color != second_color
+        assert color_count(dark, dark_second_color) > 0
         expected_dark = reference(chart, viewport.devicePixelRatioF())
         assert actual.size() == expected_dark.size()
         assert ink_bbox(dark, title_rect) is not None

@@ -15,13 +15,14 @@ sys.path.insert(0, str(ROOT / "tests" / "perf"))
 os.environ.pop("QT_QPA_PLATFORM", None)
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QRectF, Qt, QTimer
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QMainWindow, QWidget
 from InstructionX_UIKit.charts import ChartWidget
 from InstructionX_UIKit.charts.canvas_item_viewport import CanvasItemLineChartViewport
 from InstructionX_UIKit.theme import ThemeManager
 from run_canvas_stream import models_match, reference
-from run_canvas_line import alpha_bbox, base_color
+from run_canvas_line_features import series_clip_ok, series_color_count, series_ink_bbox
 from run_realtime import SEED, frame_metrics
 
 
@@ -88,9 +89,15 @@ def main():
         if len(state["images"]) == len(charts):
             app.exit(0)
 
-    QTimer.singleShot(4000, lambda: [viewport.grab_canvas(
-        lambda image, index=index: captured(index, image))
-        for index, (_chart, viewport, _values) in enumerate(charts)])
+    def capture_all():
+        timer.stop()
+        state["recording"] = False
+        for _chart, viewport, _values in charts:
+            viewport._sync_now()
+        for index, (_chart, viewport, _values) in enumerate(charts):
+            viewport.grab_canvas(lambda image, index=index: captured(index, image))
+
+    QTimer.singleShot(4000, capture_all)
     QTimer.singleShot(15000, lambda: app.exit(2))
     result = app.exec()
     timer.stop()
@@ -108,23 +115,16 @@ def main():
             continue
         actual = image.convertToFormat(QImage.Format_RGBA8888)
         expected = reference(chart, viewport.devicePixelRatioF())
-        actual_bbox = alpha_bbox(actual)
-        expected_bbox = alpha_bbox(expected)
+        actual_bbox = series_ink_bbox(actual)
+        expected_bbox = series_ink_bbox(expected)
         geometry_ok = actual_bbox is not None and expected_bbox is not None and all(
             abs(a - b) <= 2 for a, b in zip(actual_bbox, expected_bbox))
         colors = {tuple(renderer.color().getRgb()) for renderer in chart.series_renderers}
-        color_ok = base_color(actual) in [list(color) for color in colors]
+        color_ok = all(series_color_count(actual, color) > 0 for color in colors)
         plot = chart.primary_coord().plot
         dpr = viewport.devicePixelRatioF()
-        pixels = np.frombuffer(actual.constBits(), dtype=np.uint8).reshape(
-            actual.height(), actual.width(), 4)
-        left = max(0, int((plot.left() - 8) * dpr))
-        top = max(0, int((plot.top() - 8) * dpr))
-        right = min(actual.width(), int(np.ceil((plot.right() + 8) * dpr)))
-        bottom = min(actual.height(), int(np.ceil((plot.bottom() + 8) * dpr)))
-        outside = pixels[:, :, 3].copy()
-        outside[top:bottom, left:right] = 0
-        clip_ok = int(np.count_nonzero(outside)) == 0
+        outer = QRectF(plot).adjusted(-8, -8, 8, 8)
+        clip_ok = series_clip_ok(actual, colors, outer, chart.legend._item_rects, dpr)
         models_ok = models_match(chart, viewport)
         metrics = frame_metrics(f"chart_{index}", state["frames"][index])
         passed = bool(geometry_ok and color_ok and clip_ok and models_ok
@@ -178,5 +178,4 @@ def main():
 
 
 if __name__ == "__main__":
-    from PySide6.QtGui import QImage
     raise SystemExit(main())
