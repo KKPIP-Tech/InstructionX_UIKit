@@ -8,13 +8,14 @@ from PySide6.QtCore import QRectF
 from PySide6.QtGui import QColor, QTransform
 
 from ..theme import T
-from .axes import GridCoord
+from .axes import CalendarCoord, GridCoord
 from .canvas_item_viewport import CanvasItemLineChartViewport
 from .series_cartesian import (
     BarSeriesRenderer,
     BoxplotSeriesRenderer,
     CandlestickSeriesRenderer,
     EffectScatterSeriesRenderer,
+    HeatmapSeriesRenderer,
     LineSeriesRenderer,
     PictorialBarSeriesRenderer,
     ScatterSeriesRenderer,
@@ -25,7 +26,8 @@ from .series_cartesian import (
 
 __all__ = ["CanvasBarView", "CanvasBarChartViewport",
            "CanvasScatterView", "CanvasScatterChartViewport",
-           "CanvasFinancialChartViewport", "CanvasPictorialChartViewport"]
+           "CanvasFinancialChartViewport", "CanvasPictorialChartViewport",
+           "CanvasHeatmapView", "CanvasHeatmapChartViewport"]
 
 
 class CanvasBarView:
@@ -482,3 +484,61 @@ class CanvasPictorialChartViewport(CanvasFinancialChartViewport):
         if type(renderer) is PictorialBarSeriesRenderer:
             return CanvasPictorialView(renderer, coord)
         return super()._model_for(renderer, coord)
+
+
+class CanvasHeatmapView(CanvasBarView):
+    def set_geometry(self, renderer, anim_t):
+        coord = renderer.chart.coord_for(renderer.opt)
+        self._coord = coord
+        self._plot = QRectF(coord.plot) if isinstance(coord, GridCoord) else None
+        self._calendar = isinstance(coord, CalendarCoord)
+        self._source_cells = renderer._cells
+        self._anim_t = float(anim_t)
+        self._color = QColor(renderer.color())
+        self._cell_colors = tuple(cell["color"].getRgb() for cell in self._source_cells)
+        self._areas = []
+        for cell in self._source_cells:
+            path = QCanvasPath(4)
+            if self._calendar:
+                path.roundRect(QRectF(cell["rect"]), 2.0)
+            else:
+                path.rect(QRectF(cell["rect"]))
+            color = QColor(cell["color"])
+            color.setAlpha(int(255 * max(0.15, anim_t)))
+            self._areas.append((path, color))
+
+
+class CanvasHeatmapChartViewport(CanvasPictorialChartViewport):
+    """支持直角与日历热力图、visualMap 的共享 Scene Graph 视口。"""
+
+    @staticmethod
+    def _line_models(renderers):
+        supported = (LineSeriesRenderer, BarSeriesRenderer, ScatterSeriesRenderer,
+                     EffectScatterSeriesRenderer, CandlestickSeriesRenderer,
+                     BoxplotSeriesRenderer, PictorialBarSeriesRenderer,
+                     HeatmapSeriesRenderer)
+        if any(type(renderer) not in supported for renderer in renderers):
+            raise NotImplementedError("CanvasHeatmapChartViewport 当前不支持该系列类型")
+        return list(renderers)
+
+    def _model_for(self, renderer, coord):
+        if type(renderer) is HeatmapSeriesRenderer:
+            return CanvasHeatmapView(renderer, coord)
+        return super()._model_for(renderer, coord)
+
+    def _sync_series_model(self, model):
+        if not isinstance(model, CanvasHeatmapView):
+            super()._sync_series_model(model)
+            return
+        renderer = model._renderer
+        model._visible = renderer.visible
+        coord = renderer.chart.coord_for(renderer.opt)
+        calendar = isinstance(coord, CalendarCoord)
+        model._plot = QRectF(coord.plot) if isinstance(coord, GridCoord) else None
+        colors = tuple(cell["color"].getRgb() for cell in renderer._cells)
+        if model._source_cells is not renderer._cells \
+                or model._anim_t != self._chart.anim.t \
+                or model._color != renderer.color() \
+                or model._calendar != calendar \
+                or model._cell_colors != colors:
+            model.set_geometry(renderer, self._chart.anim.t)

@@ -15,6 +15,7 @@ from .axes import GridCoord
 from .canvas_components import build_tooltip_scene
 from .canvas_static import build_static_scene, static_scene_key
 from .canvas_viewport import CanvasLineChartViewport, CanvasLineViewport
+from .canvas_visuals import build_component_scene, component_scene_key
 from .viewport import _ViewportMixin
 
 __all__ = ["CanvasItemLineChartViewport"]
@@ -50,6 +51,7 @@ class _CanvasItemRenderer(QCanvasPainterItemRenderer):
         super().__init__()
         self._views = ()
         self._static_scene = None
+        self._component_scene = None
         self._overlay_scene = None
         self.symbol_counts = ()
         self.paint_times = []
@@ -57,6 +59,7 @@ class _CanvasItemRenderer(QCanvasPainterItemRenderer):
     def synchronizeData(self, item):  # noqa: N802
         self._views = tuple(_CanvasPaintModel(model) for model in item._line_views)
         self._static_scene = item._static_scene
+        self._component_scene = item._component_scene
         self._overlay_scene = item._overlay_scene
 
     def paint(self, painter):
@@ -65,6 +68,8 @@ class _CanvasItemRenderer(QCanvasPainterItemRenderer):
             self._static_scene.draw(painter)
         for model in self._views:
             model._draw(painter, scale=1.0)
+        if self._component_scene is not None:
+            self._component_scene.draw(painter)
         if self._overlay_scene is not None:
             self._overlay_scene.draw(painter)
         self.symbol_counts = tuple(model._last_symbol_count for model in self._views)
@@ -80,6 +85,7 @@ class _CanvasItem(QCanvasPainterItem):
         super().__init__()
         self._line_views = ()
         self._static_scene = None
+        self._component_scene = None
         self._overlay_scene = None
         self._renderer = None
         self.setFillColor(QColor(Qt.transparent))
@@ -88,12 +94,15 @@ class _CanvasItem(QCanvasPainterItem):
         self._renderer = _CanvasItemRenderer()
         return self._renderer
 
-    def set_views(self, views, static_scene=None, overlay_scene=_OVERLAY_UNSET):
+    def set_views(self, views, static_scene=None, overlay_scene=_OVERLAY_UNSET,
+                  component_scene=_OVERLAY_UNSET):
         self._line_views = tuple(views)
         if static_scene is not None:
             self._static_scene = static_scene
         if overlay_scene is not _OVERLAY_UNSET:
             self._overlay_scene = overlay_scene
+        if component_scene is not _OVERLAY_UNSET:
+            self._component_scene = component_scene
         self.update()
 
 
@@ -284,6 +293,7 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
         self._renderer_ids = ()
         self._line_views = []
         self._static_scene = None
+        self._component_scene = None
         self._tooltip_scene = None
         self._host = None
         self._view = None
@@ -450,12 +460,16 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
             self._sync_series_model(model)
         if self._static_scene is None or self._static_scene.key != static_scene_key(self._chart):
             self._static_scene = build_static_scene(self._chart)
+        if self._component_scene is None \
+                or self._component_scene.key != component_scene_key(self._chart):
+            self._component_scene = build_component_scene(self._chart)
         tooltip_scene = build_tooltip_scene(self._chart)
         if tooltip_scene is None:
             self._tooltip_scene = None
         elif self._tooltip_scene is None or self._tooltip_scene.key != tooltip_scene.key:
             self._tooltip_scene = tooltip_scene
-        self._item.set_views(self._line_views, self._static_scene, self._tooltip_scene)
+        self._item.set_views(self._line_views, self._static_scene, self._tooltip_scene,
+                             component_scene=self._component_scene)
         self.sync_times.append((time.perf_counter() - started) * 1000)
         del self.sync_times[:-120]
 
