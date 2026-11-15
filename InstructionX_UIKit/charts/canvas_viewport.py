@@ -28,7 +28,7 @@ class CanvasLineViewport(QCanvasPainterWidget):
         super().__init__(parent)
         self._renderer = renderer
         self._coord = coord if coord is not None else renderer.chart.coord_for(renderer.opt)
-        self._plot = QRectF(self._coord.plot)
+        self._plot = QRectF(self._coord.plot) if isinstance(self._coord, GridCoord) else QRectF()
         self._points = []
         self._areas = []
         self._paths = []
