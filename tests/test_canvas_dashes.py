@@ -38,7 +38,7 @@ def _():
         paths = dashed_paths(path, [3.0, 3.0], offset)
         assert len(paths) == 17, (offset, len(paths))
         first = paths[0]
-        start, end = first.positionAt(0), first.positionAt(1)
+        start, end = first.positionAt(0), first.currentPosition()
         assert abs(start.x() - expected_start) < 1e-9, (offset, start)
         assert abs(end.x() - expected_end) < 1e-9, (offset, end)
         assert all(item.commandsSize() >= 2 for item in paths)
@@ -53,7 +53,7 @@ def _():
     assert paths
     first = paths[0]
     start = first.positionAt(0)
-    end = first.positionAt(first.commandsSize() - 1)
+    end = first.currentPosition()
     for point, fraction in ((start, 1.6), (end, 5.6)):
         expected = path.pointAtPercent(fraction / path.length())
         assert (point - expected).manhattanLength() < 1e-6, (point, expected)
