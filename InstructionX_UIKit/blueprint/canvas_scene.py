@@ -2,6 +2,7 @@
 """Blueprint 网格、边、节点装饰与临时线的 Canvas 原生场景。"""
 
 import math
+import weakref
 
 from PySide6.QtCanvasPainter import QCanvasPainter, QCanvasPath
 from PySide6.QtCore import QPointF, QRectF, Qt
@@ -41,9 +42,30 @@ def _circle(commands, center, radius, fill=None, stroke=None, width=1.0):
         _stroke(commands, path, stroke, width)
 
 
-def _dashed(commands, path, color, width, pattern, offset=0.0):
-    for dash in dashed_paths(path, pattern, offset):
-        _stroke(commands, dash, color, width, cap=QCanvasPainter.LineCap.Round)
+_DASH_CACHE = weakref.WeakKeyDictionary()
+_DASH_CACHE_MAX_PHASES = 32
+
+
+def _dashed(commands, edge):
+    """按边几何、主题色与周期相位复用既有弧长虚线路径。"""
+    color = QColor(T("color.primary"))
+    phase = round(edge._dash_offset % 6.0, 9)
+    path = edge.path()
+    geometry = edge._geo_key
+    color_key = color.rgba()
+    entry = _DASH_CACHE.get(edge)
+    if entry is None or entry[0] != geometry or entry[1] != color_key:
+        entry = (geometry, color_key, {})
+        _DASH_CACHE[edge] = entry
+    phases = entry[2]
+    paths = phases.get(phase)
+    if paths is None:
+        if len(phases) >= _DASH_CACHE_MAX_PHASES:
+            phases.clear()
+        paths = tuple(dashed_paths(path, (3.0, 3.0), phase))
+        phases[phase] = paths
+    for dash in paths:
+        _stroke(commands, dash, color, 2.4, cap=QCanvasPainter.LineCap.Round)
 
 
 def blueprint_scene_key(canvas):
@@ -132,11 +154,10 @@ def _edges(commands, canvas, flowing=None):
     for edge in canvas._edge_widgets.values():
         if flowing is not None and edge.flowing != flowing:
             continue
-        path = path_from_qpainter(edge.path())
         if edge.flowing:
-            _dashed(commands, edge.path(), QColor(T("color.primary")),
-                    2.4, [3.0, 3.0], edge._dash_offset)
+            _dashed(commands, edge)
             continue
+        path = path_from_qpainter(edge.path())
         color = QColor(T("color.primary")) if edge.selected else edge._color()
         width = 2.8 if edge.selected else (3.2 if edge.hovered else 2.0)
         _stroke(commands, path, color, width, cap=QCanvasPainter.LineCap.Round)
