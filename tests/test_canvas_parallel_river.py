@@ -159,7 +159,8 @@ def _():
         hover(viewport, renderer._rows[0]["pts"][0])
         assert chart.tooltip.active and viewport._tooltip_scene is not None
         assert_matches(viewport, chart, "parallel_tooltip")
-        chart.update_option({"series": [{"type": "parallel", "name": "成绩",
+        chart.update_option({"parallelAxis": [],
+                             "series": [{"type": "parallel", "name": "成绩",
                                           "data": [["速度", "力量", "耐力"],
                                                    [7, 8, 6], [5, 9, 8]]}]})
         chart.anim.stop()
