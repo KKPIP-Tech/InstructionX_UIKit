@@ -54,7 +54,6 @@ class _FlowView:
 
 class CanvasBlueprintViewport(CanvasItemLineChartViewport):
     supports_node_proxy = True
-    _continuous_sync = True
 
     def __init__(self, canvas, parent=None):
         self._mouse_target = None
