@@ -48,6 +48,13 @@ class CanvasStaticScene:
                     _kind, path, color = command
                     painter.setFillStyle(color)
                     painter.fill(path)
+                elif kind == "stroke_pen":
+                    _kind, path, color, width, cap, join = command
+                    painter.setStrokeStyle(color)
+                    painter.setLineWidth(width)
+                    painter.setLineCap(cap)
+                    painter.setLineJoin(join)
+                    painter.stroke(path)
                 elif kind == "fill_circle":
                     _kind, rect, color = command
                     painter.setFillStyle(color)
