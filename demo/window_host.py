@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from shiboken6 import isValid as _shiboken_is_valid
+
 from InstructionX_UIKit.theme import T, ThemeManager, set_font
 
 
@@ -33,8 +35,8 @@ class WindowGestureController(QObject):
         self._manual = None
         titlebar.installEventFilter(self)
 
-    def edges_at(self, position):
-        rect = self._titlebar.rect()
+    def edges_at(self, position, rect=None):
+        rect = self._titlebar.rect() if rect is None else rect
         edges = Qt.Edge(0)
         if position.x() < self.MARGIN:
             edges |= Qt.LeftEdge
@@ -47,25 +49,30 @@ class WindowGestureController(QObject):
         return edges
 
     def eventFilter(self, watched, event):  # noqa: N802
-        if watched is self._titlebar and event.type() == QEvent.MouseButtonPress \
+        titlebar = getattr(self, "_titlebar", None)
+        window = getattr(self, "_window", None)
+        if not _shiboken_is_valid(self) or titlebar is None or window is None \
+                or not _shiboken_is_valid(titlebar) or not _shiboken_is_valid(window):
+            return False
+        if watched is titlebar and event.type() == QEvent.MouseButtonPress \
                 and event.button() == Qt.MouseButton.LeftButton:
             position = event.position().toPoint()
-            if self._titlebar.childAt(position) not in (None, self._titlebar):
+            if titlebar.childAt(position) not in (None, titlebar):
                 return False
             if self.edges_at(position):
                 return False
-            if self._window.windowHandle() is not None \
-                    and self._system_move(self._window.windowHandle()):
+            if window.windowHandle() is not None \
+                    and self._system_move(window.windowHandle()):
                 event.accept()
                 return True
             self._manual = ("move", event.globalPosition().toPoint(),
-                            self._window.geometry())
+                            window.geometry())
             event.accept()
             return True
         return super().eventFilter(watched, event)
 
-    def begin_resize(self, position, global_position):
-        edges = self.edges_at(position)
+    def begin_resize(self, position, global_position, rect=None):
+        edges = self.edges_at(position, rect)
         if not edges:
             return False
         handle = self._window.windowHandle()
@@ -130,9 +137,32 @@ class WindowHost(QMainWindow):
         hint = QLabel("拖动标题栏移动窗口；四边四角缩放窗口。", central)
         set_font(hint, "md")
         layout.addWidget(hint, 1)
+        self._central = central
         self._titlebar = titlebar
         self.gesture = WindowGestureController(self, titlebar)
         titlebar.installEventFilter(self)
+        central.installEventFilter(self)
+
+    def eventFilter(self, watched, event):  # noqa: N802
+        central = getattr(self, "_central", None)
+        gesture = getattr(self, "gesture", None)
+        if watched is central and central is not None and _shiboken_is_valid(central) \
+                and gesture is not None and _shiboken_is_valid(gesture):
+            if event.type() == QEvent.MouseButtonPress \
+                    and event.button() == Qt.MouseButton.LeftButton:
+                if gesture.begin_resize(event.position().toPoint(),
+                                        event.globalPosition().toPoint(), central.rect()):
+                    event.accept()
+                    return True
+            if event.type() in (QEvent.MouseMove, QEvent.MouseButtonRelease) \
+                    and gesture._manual is not None:
+                if event.type() == QEvent.MouseButtonRelease:
+                    gesture.mouseReleaseEvent(event)
+                else:
+                    gesture.mouseMoveEvent(event)
+                event.accept()
+                return True
+        return super().eventFilter(watched, event)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton and self._titlebar.geometry().contains(
