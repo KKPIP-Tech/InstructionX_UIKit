@@ -41,7 +41,7 @@ class CanvasLineViewport(QCanvasPainterWidget):
         self._line_width = _to_float(line_style.get("width"), 2.0)
         self._sync_color()
         self._rebuild_paths(renderer._points if renderer is not None else [])
-        self._points_id = id(renderer._points) if renderer is not None else None
+        self._source_points = renderer._points if renderer is not None else None
         self._canvas = None
         self._canvas_signature = None
         self._canvas_dirty = True
@@ -151,7 +151,7 @@ class CanvasLineViewport(QCanvasPainterWidget):
 
     def set_paths(self, points):
         self._rebuild_paths(points)
-        self._points_id = id(points)
+        self._source_points = points
         self._canvas_dirty = True
         self.update()
 
@@ -305,20 +305,22 @@ class CanvasLineChartViewport(_ViewportMixin, CanvasLineViewport):
         self._renderer = current[0] if current else None
 
     def _sync_now(self):
+        if not self._chart._ui_active or not self.isVisible():
+            return
         started = time.perf_counter()
         self._sync_structure()
         self._chart._layout_all()
         for model in self._line_views:
             model._plot = QRectF(model._coord.plot) \
                 if isinstance(model._coord, GridCoord) else QRectF()
-            if model._points_id != id(model._renderer._points):
+            if model._source_points is not model._renderer._points:
                 model.set_paths(model._renderer._points)
         self._canvas_dirty = True
         self.sync_times.append((time.perf_counter() - started) * 1000)
         del self.sync_times[:-120]
 
     def update(self, *args):
-        if not self._chart._ui_active:
+        if not self._chart._ui_active or not self.isVisible():
             return
         self._sync_timer.start(0)
         super().update(*args)
@@ -350,6 +352,7 @@ class CanvasLineChartViewport(_ViewportMixin, CanvasLineViewport):
 
     def showEvent(self, event):  # noqa: N802
         self._chart.on_ui_activated()
+        self.winId()
         self._sync_timer.start(0)
         super().showEvent(event)
 
