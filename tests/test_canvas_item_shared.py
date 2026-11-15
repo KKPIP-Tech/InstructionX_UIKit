@@ -78,7 +78,9 @@ def _():
         for chart, viewport in zip(charts, viewports):
             assert viewport._item.size() == QSizeF(chart.size())
             expected = QPointF(chart.mapTo(window, chart.rect().topLeft()))
-            assert viewport._item.position() == expected
+            assert viewport._item.position() == expected, (
+                viewport._item.position(), expected, chart.pos(), viewport.pos(),
+                viewport._host._container.pos())
             assert viewport.rhi_api() == "Direct3D11"
         window.showMinimized()
         pump()
