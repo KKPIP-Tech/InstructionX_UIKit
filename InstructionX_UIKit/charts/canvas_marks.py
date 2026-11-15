@@ -8,6 +8,11 @@ from PySide6.QtGui import QColor, QFontMetricsF, QPainterPath, QPainterPathStrok
 from ..theme import T
 from ._utils import to_float as _to_float
 from .axes import chart_font
+from .canvas_interactions import (
+    append_interactive_components,
+    interactive_component_key,
+    is_interactive_component,
+)
 from .canvas_paths import line_path, path_from_qpainter
 from .canvas_static import _text
 from .components import GraphicComponent, MarkAreaComponent, MarkLineComponent, MarkPointComponent
@@ -18,23 +23,26 @@ _NATIVE_TYPES = (MarkPointComponent, MarkLineComponent, MarkAreaComponent, Graph
 
 
 def is_native_component(component):
-    return isinstance(component, _NATIVE_TYPES)
+    return isinstance(component, _NATIVE_TYPES) or is_interactive_component(component)
 
 
 def native_component_key(chart):
     result = []
     for component in chart.components:
-        if not is_native_component(component):
+        if is_interactive_component(component):
+            result.append(interactive_component_key(component))
+        elif not is_native_component(component):
             continue
-        renderer = component._renderer() if hasattr(component, "_renderer") else None
-        color = component._color() if hasattr(component, "_color") else QColor(T("color.primary"))
-        geometry = tuple(repr(getattr(component, name, None))
-                         for name in ("_marks", "_lines", "_areas", "elements", "rect"))
-        result.append((id(component), repr(getattr(component, "opt", None)),
-                       repr(component.series_opt)
-                       if hasattr(component, "series_opt") else None,
-                       geometry, renderer.visible if renderer is not None else None,
-                       color.getRgb()))
+        else:
+            renderer = component._renderer() if hasattr(component, "_renderer") else None
+            color = component._color() if hasattr(component, "_color") else QColor(T("color.primary"))
+            geometry = tuple(repr(getattr(component, name, None))
+                             for name in ("_marks", "_lines", "_areas", "elements", "rect"))
+            result.append((id(component), repr(getattr(component, "opt", None)),
+                           repr(component.series_opt)
+                           if hasattr(component, "series_opt") else None,
+                           geometry, renderer.visible if renderer is not None else None,
+                           color.getRgb()))
     return tuple(result)
 
 
@@ -174,3 +182,4 @@ def append_native_components(commands, chart):
             _mark_area(commands, component)
         elif isinstance(component, GraphicComponent):
             _graphic(commands, component)
+    append_interactive_components(commands, chart)
