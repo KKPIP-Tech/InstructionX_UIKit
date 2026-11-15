@@ -55,6 +55,8 @@ def _cached_dashed(commands, edge):
     """按边几何、主题色与周期相位复用既有弧长虚线路径。"""
     color = QColor(T("color.primary"))
     phase = round(edge._dash_offset % 6.0, 9)
+    if phase >= 6.0:
+        phase = 0.0
     path = edge.path()
     geometry = edge._geo_key
     color_key = color.rgba()
