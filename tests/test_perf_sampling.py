@@ -209,6 +209,52 @@ def _():
     assert vector_ms < reference_ms / 2, (reference_ms, vector_ms)
 
 
+def _expanded_extrema(values, bounds):
+    starts = np.asarray([start for start, _end in bounds], dtype=np.int64)
+    ends = np.asarray([end for _start, end in bounds], dtype=np.int64)
+    indices = np.arange(len(values))
+    min_values = np.minimum.reduceat(values, starts)
+    expanded_min = np.repeat(min_values, ends - starts)
+    min_indices = np.minimum.reduceat(
+        np.where(values == expanded_min, indices, len(values)), starts)
+    max_values = np.maximum.reduceat(values, starts)
+    expanded_max = np.repeat(max_values, ends - starts)
+    max_indices = -np.maximum.reduceat(
+        np.where(values == expanded_max, -indices, -len(values)), starts)
+    nan_indices = np.minimum.reduceat(
+        np.where(np.isnan(values), indices, len(values)), starts)
+    has_nan = nan_indices < ends
+    min_indices = np.where(has_nan, nan_indices, min_indices)
+    max_indices = np.where(has_nan, nan_indices, max_indices)
+    return list(zip(min_indices.tolist(), max_indices.tolist()))
+
+
+@check("极值分桶保持首命中并降低扩展数组成本")
+def _():
+    for n, threshold in ((17, 4), (100, 7), (1000, 31), (20000, 1196)):
+        bounds = _bucket_bounds(n, threshold)
+        for values in (np.resize([0.0, -0.0, 4.0, 4.0, -2.0, -2.0], n),
+                       np.resize([np.nan, np.nan, 0.0, np.inf, -np.inf], n)):
+            assert sampling._blocked_numpy_extrema(values, bounds) == \
+                _reference_blocked_extrema(values, bounds)
+    values = np.random.default_rng(20261115).normal(size=20000)
+    values[17] = np.nan
+    bounds = _bucket_bounds(len(values), 1196)
+    timings = {}
+    for name, function in (("expanded", _expanded_extrema),
+                           ("current", sampling._blocked_numpy_extrema)):
+        for _ in range(3):
+            function(values, bounds)
+        samples = []
+        for _ in range(7):
+            started = time.perf_counter()
+            for _ in range(20):
+                function(values, bounds)
+            samples.append((time.perf_counter() - started) * 1000 / 20)
+        timings[name] = min(samples)
+    assert timings["current"] < timings["expanded"] * 0.85, timings
+
+
 if __name__ == "__main__":
     app.quit()
     raise SystemExit(1 if _FAILURES else 0)
