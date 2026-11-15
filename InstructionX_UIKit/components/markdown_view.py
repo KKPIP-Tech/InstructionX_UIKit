@@ -615,6 +615,27 @@ def _extract_math(text: str, mark: str, mermaid_mark: str = None):
     return "\n".join(out), maths, diagrams
 
 
+def _safe_strong_fragment(text: str) -> bool:
+    """是否只含纯文本与完整加粗片段，且不存在跨分片标记。"""
+    index = 0
+    while index < len(text):
+        if text.startswith("**", index):
+            end = text.find("**", index + 2)
+            if end < 0:
+                return False
+            content = text[index + 2:end]
+            if not content or content[0].isspace() or content[-1].isspace():
+                return False
+            if any(char in _INLINE_SIG for char in content):
+                return False
+            index = end + 2
+        else:
+            if text[index] in _INLINE_SIG or text[index] in "\r\n":
+                return False
+            index += 1
+    return True
+
+
 def _para_sig(text: str, prev_src: str) -> bool:
     """文本是否含 Markdown 敏感内容（行内符号或行首块标记）。
 
@@ -1533,6 +1554,20 @@ a {{ color: {T("color.primary")}; }}
 
     def _commit_paragraph_text(self, text: str) -> None:
         """以正文格式增量插入段落文本（软换行按 Qt 表示折叠为空格）。"""
+        if (self._para_mode == "open" and self._para_rich
+                and not self._para_dirty and text.startswith(" ")
+                and not text.startswith("  ") and not text.endswith(" ")
+                and "**" in text and _safe_strong_fragment(self._para_src)
+                and _safe_strong_fragment(text)):
+            self._para_src += text
+            cur = self.textCursor()
+            cur.movePosition(QTextCursor.End)
+            cur.setCharFormat(self._body_format())
+            cur.insertText(" ")
+            cur.insertHtml(self._parse_html(text[1:])[0])
+            self.setTextCursor(cur)
+            self._para_trail_space = False
+            return
         if self._para_mode == "none":
             self._para_src = ""
             cur = self.textCursor()
