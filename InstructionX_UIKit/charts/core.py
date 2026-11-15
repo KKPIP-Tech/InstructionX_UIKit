@@ -1481,6 +1481,11 @@ class ChartWidget(QWidget):
         if vp is not None and enabled and not self._resize_preview.active \
                 and has_content:
             self._preview_capturing = True
+            if hasattr(vp, "grab_canvas"):
+                vp.setGeometry(self.rect())
+                vp.grab_canvas(self._begin_resize_preview)
+                self.update()
+                return
             try:
                 snapshot = vp.grab()
                 vp.setGeometry(self.rect())
@@ -1498,6 +1503,18 @@ class ChartWidget(QWidget):
             self._resize_preview.touch()
         else:
             self._layout_all()
+        self.update()
+
+    def _begin_resize_preview(self, image):
+        started = self._resize_preview.begin(QPixmap.fromImage(image))
+        if started:
+            self._preview_animation = (self.anim.is_running(), self.anim.t)
+            self.anim.stop()
+            for session in getattr(self, "_streams", []):
+                session.set_active(False)
+        else:
+            self._layout_all()
+        self._preview_capturing = False
         self.update()
 
     def _finish_resize_preview(self):
