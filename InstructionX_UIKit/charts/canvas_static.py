@@ -95,6 +95,9 @@ class CanvasStaticScene:
                 elif kind == "rotate":
                     _kind, degrees = command
                     painter.rotate(math.radians(degrees))
+                elif kind == "scale":
+                    _kind, sx, sy = command
+                    painter.scale(sx, sy)
                 elif kind == "text":
                     _kind, text, rect, font, color, align, baseline = command
                     painter.setFont(font)

@@ -219,6 +219,15 @@ class _CanvasSceneHost(QObject):
         return target
 
     def _forward_input(self, event):
+        if event.type() not in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+            global_pos = event.globalPosition().toPoint()
+            for viewport in tuple(self._viewports):
+                handler = getattr(viewport, "_forward_scene_input", None)
+                if handler is not None and viewport.isVisible() \
+                        and viewport.rect().contains(viewport.mapFromGlobal(global_pos)) \
+                        and handler(event):
+                    event.accept()
+                    return True
         if event.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
             target = QApplication.focusWidget()
             if target is None or target in (self._container, self._view):
