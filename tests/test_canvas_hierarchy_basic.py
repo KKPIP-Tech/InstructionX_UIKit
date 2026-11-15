@@ -268,7 +268,8 @@ def _():
         assert model._cur_value == 33
         assert model._pointer_angle == renderer._value_angle(33)
         assert len(model._arcs) == 4
-        assert model._arcs[0][0] == -225 and model._arcs[-1][1] == 45
+        assert model._arcs[0][0] == -225 and model._arcs[2][1] == 45
+        assert model._arcs[-1][1] == model._pointer_angle
         labels = {command[1] for command in model._scene.commands if command[0] == "text"}
         assert {"33", "完成率"} <= labels
         points = []
