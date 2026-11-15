@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """Chart 静态轴、标题与图例的 Canvas 原生绘制命令。"""
 
+import math
+
 from PySide6.QtCanvasPainter import QCanvasPainter, QCanvasPath
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtGui import QColor, QFontMetricsF, QTransform
@@ -83,6 +85,16 @@ class CanvasStaticScene:
                     painter.setLineWidth(width)
                     painter.fill(path)
                     painter.stroke(path)
+                elif kind == "save":
+                    painter.save()
+                elif kind == "restore":
+                    painter.restore()
+                elif kind == "translate":
+                    _kind, point = command
+                    painter.translate(point.x(), point.y())
+                elif kind == "rotate":
+                    _kind, degrees = command
+                    painter.rotate(math.radians(degrees))
                 elif kind == "text":
                     _kind, text, rect, font, color, align, baseline = command
                     painter.setFont(font)
