@@ -12,14 +12,18 @@ from .axes import GridCoord
 from .canvas_item_viewport import CanvasItemLineChartViewport
 from .series_cartesian import (
     BarSeriesRenderer,
+    BoxplotSeriesRenderer,
+    CandlestickSeriesRenderer,
     EffectScatterSeriesRenderer,
     LineSeriesRenderer,
     ScatterSeriesRenderer,
+    _lerp,
     _with_alpha,
 )
 
 __all__ = ["CanvasBarView", "CanvasBarChartViewport",
-           "CanvasScatterView", "CanvasScatterChartViewport"]
+           "CanvasScatterView", "CanvasScatterChartViewport",
+           "CanvasFinancialChartViewport"]
 
 
 class CanvasBarView:
@@ -92,6 +96,10 @@ class CanvasBarView:
             for path, brush in self._areas:
                 painter.setFillStyle(brush)
                 painter.fill(path)
+            for path, color, width in getattr(self, "_outlines", ()):
+                painter.setStrokeStyle(color)
+                painter.setLineWidth(width)
+                painter.stroke(path)
         finally:
             painter.restore()
 
@@ -258,4 +266,134 @@ class CanvasScatterChartViewport(CanvasBarChartViewport):
                 or model._aggregated != renderer._aggregated \
                 or model._phase != getattr(renderer, "_phase", 0.0) \
                 or model._scale != getattr(renderer, "_scale", 2.6):
+            model.set_geometry(renderer, self._chart.anim.t)
+
+
+class _FinancialViewBase(CanvasBarView):
+    pass
+
+
+class CanvasCandlestickView(_FinancialViewBase):
+    def set_geometry(self, renderer, anim_t):
+        coord = renderer.chart.coord_for(renderer.opt)
+        self._coord = coord
+        self._plot = QRectF(coord.plot) if isinstance(coord, GridCoord) else None
+        self._source_items = renderer._items
+        self._anim_t = float(anim_t)
+        self._color = QColor(renderer.color())
+        self._up_color = renderer._up_color()
+        self._down_color = renderer._down_color()
+        self._areas = []
+        self._outlines = []
+        if not isinstance(coord, GridCoord):
+            return
+        axis = coord.y_axis
+        for item in self._source_items:
+            if item["prev"] is not None and anim_t < 1.0:
+                open_, close, low, high = (
+                    _lerp(item["prev"][index], value, anim_t)
+                    for index, value in enumerate((item["open"], item["close"],
+                                                   item["low"], item["high"])))
+            elif anim_t < 1.0:
+                open_ = item["open"]
+                close = _lerp(open_, item["close"], anim_t)
+                low = _lerp(open_, item["low"], anim_t)
+                high = _lerp(open_, item["high"], anim_t)
+            else:
+                open_, close, low, high = item["open"], item["close"], item["low"], item["high"]
+            yo = axis.map(open_, coord.plot.bottom(), coord.plot.top())
+            yc = axis.map(close, coord.plot.bottom(), coord.plot.top())
+            yl = axis.map(low, coord.plot.bottom(), coord.plot.top())
+            yh = axis.map(high, coord.plot.bottom(), coord.plot.top())
+            color = self._up_color if close >= open_ else self._down_color
+            cx, width = item["cx"], item["w"]
+            wick = QCanvasPath(2)
+            wick.moveTo(cx, yh)
+            wick.lineTo(cx, yl)
+            self._outlines.append((wick, QColor(color), 1.2))
+            body = QCanvasPath(4)
+            body.rect(QRectF(cx - width / 2, min(yo, yc), width,
+                             max(1.0, abs(yc - yo))))
+            self._areas.append((body, QColor(color)))
+
+
+class CanvasBoxplotView(_FinancialViewBase):
+    def set_geometry(self, renderer, anim_t):
+        coord = renderer.chart.coord_for(renderer.opt)
+        self._coord = coord
+        self._plot = QRectF(coord.plot) if isinstance(coord, GridCoord) else None
+        self._source_items = renderer._items
+        self._anim_t = float(anim_t)
+        self._color = QColor(renderer.color())
+        self._areas = []
+        self._outlines = []
+        if not isinstance(coord, GridCoord):
+            return
+        axis = coord.y_axis
+        for item in self._source_items:
+            vmin, q1, median, q3, vmax = item["vals"]
+            middle = (q1 + q3) / 2
+            if anim_t < 1.0:
+                vmin = _lerp(middle, vmin, anim_t)
+                vmax = _lerp(middle, vmax, anim_t)
+                q1 = _lerp(middle, q1, anim_t)
+                q3 = _lerp(middle, q3, anim_t)
+                median = _lerp(middle, median, anim_t)
+            y_min = axis.map(vmin, coord.plot.bottom(), coord.plot.top())
+            y_q1 = axis.map(q1, coord.plot.bottom(), coord.plot.top())
+            y_med = axis.map(median, coord.plot.bottom(), coord.plot.top())
+            y_q3 = axis.map(q3, coord.plot.bottom(), coord.plot.top())
+            y_max = axis.map(vmax, coord.plot.bottom(), coord.plot.top())
+            cx, width = item["cx"], item["w"]
+            for start, end in (
+                    ((cx, y_max), (cx, y_min)),
+                    ((cx - width / 4, y_min), (cx + width / 4, y_min)),
+                    ((cx - width / 4, y_max), (cx + width / 4, y_max))):
+                path = QCanvasPath(2)
+                path.moveTo(*start)
+                path.lineTo(*end)
+                self._outlines.append((path, QColor(self._color), 1.2))
+            rect = QRectF(cx - width / 2, min(y_q1, y_q3), width,
+                          max(1.0, abs(y_q3 - y_q1)))
+            box = QCanvasPath(4)
+            box.rect(rect)
+            self._areas.append((box, _with_alpha(self._color, 60)))
+            self._outlines.append((box, QColor(self._color), 1.4))
+            median_path = QCanvasPath(2)
+            median_path.moveTo(cx - width / 2, y_med)
+            median_path.lineTo(cx + width / 2, y_med)
+            self._outlines.append((median_path, QColor(self._color), 2.0))
+
+
+class CanvasFinancialChartViewport(CanvasScatterChartViewport):
+    """支持 line、bar、scatter、candlestick 与 boxplot 的共享视口。"""
+
+    @staticmethod
+    def _line_models(renderers):
+        supported = (LineSeriesRenderer, BarSeriesRenderer, ScatterSeriesRenderer,
+                     EffectScatterSeriesRenderer, CandlestickSeriesRenderer,
+                     BoxplotSeriesRenderer)
+        if any(type(renderer) not in supported for renderer in renderers):
+            raise NotImplementedError("CanvasFinancialChartViewport 当前仅支持 line、bar、scatter、candlestick、boxplot")
+        return list(renderers)
+
+    def _model_for(self, renderer, coord):
+        if type(renderer) is CandlestickSeriesRenderer:
+            return CanvasCandlestickView(renderer, coord)
+        if type(renderer) is BoxplotSeriesRenderer:
+            return CanvasBoxplotView(renderer, coord)
+        return super()._model_for(renderer, coord)
+
+    def _sync_series_model(self, model):
+        if not isinstance(model, _FinancialViewBase):
+            super()._sync_series_model(model)
+            return
+        renderer = model._renderer
+        model._visible = renderer.visible
+        changed = model._source_items is not renderer._items \
+            or model._anim_t != self._chart.anim.t or model._color != renderer.color()
+        if isinstance(model, CanvasCandlestickView):
+            changed = changed or model._up_color != renderer._up_color() \
+                or model._down_color != renderer._down_color()
+        if changed:
             model.set_geometry(renderer, self._chart.anim.t)
