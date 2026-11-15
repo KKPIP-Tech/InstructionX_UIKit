@@ -7,6 +7,7 @@ from PySide6.QtGui import QColor, QFontMetricsF
 
 from ..theme import T, ThemeManager
 from .axes import chart_font, format_value
+from .canvas_marks import append_native_components, is_native_component, native_component_key
 from .canvas_static import CanvasStaticScene, _text
 from .interact import VisualMapComponent, _VM_GAP, _VM_LABEL_H, _VM_LABEL_W
 
@@ -54,7 +55,7 @@ def _visual_map(commands, component):
 
 def _check_components(chart):
     for component in chart.components:
-        if isinstance(component, VisualMapComponent):
+        if isinstance(component, VisualMapComponent) or is_native_component(component):
             continue
         if callable(getattr(component, "paint", None)):
             raise NotImplementedError(
@@ -70,15 +71,16 @@ def component_scene_key(chart):
             result.append((id(component), component.min, component.max, component.orient,
                            tuple(component.colors()),
                            (rect.left(), rect.top(), rect.width(), rect.height())))
-    return ThemeManager.instance().mode, tuple(result)
+    return ThemeManager.instance().mode, tuple(result), native_component_key(chart)
 
 
 def build_component_scene(chart):
     key = component_scene_key(chart)
-    if not key[1]:
+    if not key[1] and not key[2]:
         return None
     commands = []
     for component in chart.components:
         if isinstance(component, VisualMapComponent):
             _visual_map(commands, component)
+    append_native_components(commands, chart)
     return CanvasStaticScene(commands, key)
