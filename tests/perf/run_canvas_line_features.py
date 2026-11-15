@@ -15,11 +15,11 @@ os.environ.pop("QT_QPA_PLATFORM", None)
 
 import numpy as np
 from PySide6.QtCore import QRectF, Qt, QTimer
-from PySide6.QtGui import QImage, QPainter
+from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import QApplication
 from InstructionX_UIKit.charts import ChartWidget
 from InstructionX_UIKit.charts.canvas_viewport import CanvasLineViewport
-from InstructionX_UIKit.theme import ThemeManager
+from InstructionX_UIKit.theme import T, ThemeManager
 from run_canvas_line import alpha_bbox, base_color
 
 
@@ -92,6 +92,11 @@ def render_case(app, name, series):
             and data_size == 2 * commands
     elif name == "area":
         structure_ok = bool(getattr(viewport, "_areas", []))
+    elif name in ("dash", "dot"):
+        structure_ok = bool(getattr(viewport, "_dashes", []))
+    elif name == "symbols":
+        expected_count = renderer._last_symbol_count
+        structure_ok = 0 < getattr(viewport, "_last_symbol_count", 0) == expected_count
     else:
         structure_ok = True
     dpr = viewport.devicePixelRatioF()
@@ -113,7 +118,11 @@ def render_case(app, name, series):
     clip_ok = int(np.count_nonzero(outside)) == 0
     expected_color = list(renderer.color().getRgb())
     actual_color = base_color(actual)
-    color_ok = actual_color == expected_color
+    if name == "symbols":
+        color_ok = viewport._color.getRgb() == expected_color and actual_color in (
+            expected_color, list(QColor(T("color.bg.elevated")).getRgb()))
+    else:
+        color_ok = actual_color == expected_color
     delta = pixels.astype(np.int16) - expected_pixels.astype(np.int16)
     backend = getattr(viewport.api(), "name", str(viewport.api()))
     report = {
@@ -146,6 +155,11 @@ def main():
         "step": {"type": "line", "data": values, "step": "middle", "showSymbol": False},
         "area": {"type": "line", "data": values,
                  "areaStyle": {"opacity": 0.22}, "showSymbol": False},
+        "dash": {"type": "line", "data": values,
+                 "lineStyle": {"type": "dashed"}, "showSymbol": False},
+        "dot": {"type": "line", "data": values,
+                "lineStyle": {"type": "dotted"}, "showSymbol": False},
+        "symbols": {"type": "line", "data": values, "showSymbol": True},
     }
     source_sha = subprocess.check_output(["git", "rev-parse", "uniform_style"],
                                          cwd=ROOT, text=True).strip()
