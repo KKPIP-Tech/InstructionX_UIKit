@@ -200,11 +200,15 @@ def main():
     parser.add_argument("--only", choices=["complex", "charts", "single-chart", "blueprint", "chat", "no-chat"],
                         default="complex")
     parser.add_argument("--enforce", action="store_true")
-    parser.add_argument("--backend", choices=["rhi", "raster"], default="rhi")
+    parser.add_argument("--backend", choices=["rhi", "raster", "canvas"], default="rhi")
     args = parser.parse_args()
     if args.seconds <= 0 or args.rounds < 1 or args.warmup < 0:
         parser.error("seconds/rounds/warmup 参数无效")
     os.environ["UIKIT_CHART_BACKEND"] = args.backend
+    if args.backend == "canvas":
+        os.environ["UIKIT_BLUEPRINT_BACKEND"] = "canvas"
+    else:
+        os.environ.pop("UIKIT_BLUEPRINT_BACKEND", None)
     os.environ.pop("UIKIT_PERF_GPU_DIRECT", None)
     source = ROOT
     sys.path.insert(0, str(source))
