@@ -40,7 +40,13 @@ def _():
                       "yAxis": {"type": "value", "min": -2, "max": 2},
                       "series": [{"type": "line", "data": values, "showSymbol": False}]})
     chart.resize(1268, 850)
+    chart.show()
     viewport = CanvasLineChartViewport(chart, parent=chart)
+    old = chart._viewport
+    chart._viewport = viewport
+    old.close()
+    old.deleteLater()
+    viewport.show()
     try:
         for tick in range(3):
             assert chart.set_stream_data(np.roll(values, tick * 17))

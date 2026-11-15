@@ -69,6 +69,25 @@ def reference(chart, dpr):
     return image.convertToFormat(QImage.Format_RGBA8888)
 
 
+def models_match(chart, viewport):
+    if len(viewport._line_views) != len(chart.series_renderers):
+        return False
+    for model, renderer in zip(viewport._line_views, chart.series_renderers):
+        if model._renderer is not renderer:
+            return False
+        geometry = model._screen_geometry
+        if geometry is None:
+            if model._points != renderer._points:
+                return False
+            continue
+        renderer._ensure_legacy_geometry()
+        if len(renderer._points) != len(geometry[0]) or any(
+                abs(point.x() - float(x)) > 1e-9 or abs(point.y() - float(y)) > 1e-9
+                for point, x, y in zip(renderer._points, *geometry)):
+            return False
+    return True
+
+
 def main():
     app = QApplication.instance() or QApplication(sys.argv)
     ThemeManager.instance().apply(app)
@@ -91,6 +110,7 @@ def main():
         state["tick"] += 1
 
     timer = QTimer()
+    timer.setTimerType(Qt.PreciseTimer)
     timer.setInterval(16)
     timer.timeout.connect(load)
     timer.start()
@@ -142,9 +162,7 @@ def main():
         outside = pixels[:, :, 3].copy()
         outside[top:bottom, left:right] = 0
         clip_ok = int(np.count_nonzero(outside)) == 0
-        models_ok = len(viewport._line_views) == len(chart.series_renderers) and all(
-            model._renderer is renderer and model._points == renderer._points
-            for model, renderer in zip(viewport._line_views, chart.series_renderers))
+        models_ok = models_match(chart, viewport)
         metrics = frame_metrics(f"chart_{index}", state["frames"][index])
         chart_pass = bool(geometry_ok and clip_ok and color_ok and models_ok
                           and metrics["pass"] and max(viewport.paint_times) < 100)
@@ -161,18 +179,17 @@ def main():
         expected.save(str(destination / f"chart_{index}_reference.png"))
         all_pass = all_pass and chart_pass and reports[str(index)]["backend"] == "Direct3D11"
     chart, viewport, values = charts[0]
-    before = [model._points for model in viewport._line_views]
+    before = [(model._points, model._screen_geometry) for model in viewport._line_views]
     chart.hide()
     hidden_ok = not chart._ui_active
     for series_index, data in enumerate(values):
         chart.set_stream_data(np.roll(data, 1000 + series_index), series=series_index)
-    hidden_ok = hidden_ok and all(model._points is previous
-                                  for model, previous in zip(viewport._line_views, before))
+    hidden_ok = hidden_ok and all(
+        (model._points, model._screen_geometry) == previous
+        for model, previous in zip(viewport._line_views, before))
     chart.show()
     app.processEvents()
-    recovered_ok = chart._ui_active and all(
-        model._renderer is renderer and model._points == renderer._points
-        for model, renderer in zip(viewport._line_views, chart.series_renderers))
+    recovered_ok = chart._ui_active and models_match(chart, viewport)
     for _chart, _viewport, _values in charts:
         _chart.close()
     app.processEvents()
