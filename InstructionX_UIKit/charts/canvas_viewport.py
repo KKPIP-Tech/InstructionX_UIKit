@@ -103,28 +103,30 @@ class CanvasLineViewport(QCanvasPainterWidget):
             if len(segment) < 2:
                 continue
             path, spine = self._renderer._line_path(segment)
+            if area:
+                fill = QPainterPath(path)
+                if polar:
+                    fill.lineTo(self._coord.center)
+                    fill.closeSubpath()
+                    brush = _with_alpha(self._color, 255 * opacity)
+                elif base_y is not None:
+                    fill.lineTo(QPointF(spine[-1].x(), base_y))
+                    fill.lineTo(QPointF(spine[0].x(), base_y))
+                    fill.closeSubpath()
+                    top = min(point.y() for point in spine)
+                    brush = QCanvasLinearGradient(QPointF(0, top), QPointF(0, base_y))
+                    brush.setStartColor(_with_alpha(self._color, 255 * opacity))
+                    brush.setEndColor(_with_alpha(self._color, 0))
+                else:
+                    fill = None
+                if fill is not None:
+                    self._areas.append((path_from_qpainter(fill, close=True), brush))
             if polar:
                 path.closeSubpath()
             if dashed:
                 self._dashes.append(self._dash_path(path, line_type))
             else:
                 self._paths.append(path_from_qpainter(path, close=polar))
-            if not area:
-                continue
-            fill = QPainterPath(path)
-            if polar:
-                brush = _with_alpha(self._color, 255 * opacity)
-            elif base_y is not None:
-                fill.lineTo(QPointF(spine[-1].x(), base_y))
-                fill.lineTo(QPointF(spine[0].x(), base_y))
-                fill.closeSubpath()
-                top = min(point.y() for point in spine)
-                brush = QCanvasLinearGradient(QPointF(0, top), QPointF(0, base_y))
-                brush.setStartColor(_with_alpha(self._color, 255 * opacity))
-                brush.setEndColor(_with_alpha(self._color, 0))
-            else:
-                continue
-            self._areas.append((path_from_qpainter(fill, close=True), brush))
 
     def _dash_path(self, path, line_type):
         stroker = QPainterPathStroker()
