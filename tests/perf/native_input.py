@@ -34,6 +34,8 @@ class _Input(ctypes.Structure):
 
 _USER32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
 _USER32.GetCursorPos.restype = wintypes.BOOL
+_USER32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+_USER32.SetCursorPos.restype = wintypes.BOOL
 _USER32.GetSystemMetrics.argtypes = [ctypes.c_int]
 _USER32.GetSystemMetrics.restype = ctypes.c_int
 _USER32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(_Input), ctypes.c_int]
@@ -74,14 +76,23 @@ def _send(flags, x=None, y=None):
 
 
 def move_to(x, y):
-    _send(0x0001 | 0x8000 | 0x4000, round(x), round(y))
+    target = round(x), round(y)
+    direct = _USER32.SetCursorPos(*target)
     deadline = time.perf_counter() + 0.05
     actual = cursor_pos()
-    while actual != (round(x), round(y)) and time.perf_counter() < deadline:
+    while direct and actual != target and time.perf_counter() < deadline:
         time.sleep(0.001)
         actual = cursor_pos()
-    if actual != (round(x), round(y)):
-        raise AssertionError(f"原生光标位置不一致: 预期 {(round(x), round(y))}，实际 {actual}")
+    if actual == target:
+        return actual
+    _send(0x0001 | 0x8000 | 0x4000, *target)
+    deadline = time.perf_counter() + 0.05
+    actual = cursor_pos()
+    while actual != target and time.perf_counter() < deadline:
+        time.sleep(0.001)
+        actual = cursor_pos()
+    if actual != target:
+        raise AssertionError(f"原生光标位置不一致: 预期 {target}，实际 {actual}")
     return actual
 
 

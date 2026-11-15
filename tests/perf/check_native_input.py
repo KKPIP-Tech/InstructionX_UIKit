@@ -57,9 +57,9 @@ def main():
         try:
             report["target"] = target
             actual = move_to(*target)
-            report["send_input_actual"] = actual
+            report["native_move_actual"] = actual
             if actual != target:
-                raise AssertionError(f"SendInput 未到达目标: {actual!r}")
+                raise AssertionError(f"原生移动未到达目标: {actual!r}")
             report["native_mouse_verified"] = bool(report["foreground"])
             report["pass"] = bool(report["foreground"])
         except Exception as exc:

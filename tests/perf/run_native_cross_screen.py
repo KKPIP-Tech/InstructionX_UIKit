@@ -113,7 +113,7 @@ def main():
         raise RuntimeError("跨屏验收需要至少两台显示器")
     other = others[0]
     report = {"seconds": args.seconds, "rounds": args.rounds,
-              "input_mode": "Win32 SendInput 跨屏标题栏拖动",
+              "input_mode": "Win32 原生指针跨屏标题栏拖动",
               "screens": [{"name": screen.name(), "geometry": list(screen.geometry().getRect()),
                            "dpr": screen.devicePixelRatio()}
                           for screen in app.screens()],

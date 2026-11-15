@@ -199,7 +199,7 @@ def main():
                   cwd=ROOT).returncode != 0,
               "time_utc": datetime.now(timezone.utc).isoformat(),
               "seconds": args.seconds, "rounds": args.rounds,
-              "input_mode": "Win32 SendInput", "cases": {},
+              "input_mode": "Win32 原生指针移动与按键", "cases": {},
               "regions": args.regions,
               "scope": "WindowHost 指定命中区的原生几何；不是帧率验收",
               "performance_gate_pass": False}

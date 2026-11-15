@@ -133,7 +133,7 @@ def main():
                                                    cwd=ROOT, text=True).strip(),
               "time_utc": datetime.now(timezone.utc).isoformat(),
               "seconds": args.seconds, "rounds": args.rounds,
-              "input_mode": "Win32 SendInput 双击",
+              "input_mode": "Win32 原生指针双击",
               "presentation_signal_supported": len(frames) > 1,
               "performance_gate_pass": False,
               "cases": results}
