@@ -3,13 +3,15 @@
 
 import math
 
-from PySide6.QtCanvasPainter import QCanvasPath
-from PySide6.QtCore import QRectF
-from PySide6.QtGui import QColor, QTransform
+from PySide6.QtCanvasPainter import QCanvasPainter, QCanvasPath
+from PySide6.QtCore import QPointF, QRectF
+from PySide6.QtGui import QColor, QFontMetricsF, QPainterPath, QTransform
 
 from ..theme import T
-from .axes import CalendarCoord, GridCoord
+from .axes import CalendarCoord, GridCoord, chart_font, format_value
 from .canvas_item_viewport import CanvasItemLineChartViewport
+from .canvas_paths import line_path, path_from_qpainter
+from .canvas_static import _text
 from .series_cartesian import (
     BarSeriesRenderer,
     BoxplotSeriesRenderer,
@@ -17,9 +19,12 @@ from .series_cartesian import (
     EffectScatterSeriesRenderer,
     HeatmapSeriesRenderer,
     LineSeriesRenderer,
+    ParallelSeriesRenderer,
     PictorialBarSeriesRenderer,
     ScatterSeriesRenderer,
+    ThemeRiverSeriesRenderer,
     _lerp,
+    _smooth_path,
     _to_float,
     _with_alpha,
 )
@@ -27,7 +32,8 @@ from .series_cartesian import (
 __all__ = ["CanvasBarView", "CanvasBarChartViewport",
            "CanvasScatterView", "CanvasScatterChartViewport",
            "CanvasFinancialChartViewport", "CanvasPictorialChartViewport",
-           "CanvasHeatmapView", "CanvasHeatmapChartViewport"]
+           "CanvasHeatmapView", "CanvasHeatmapChartViewport",
+           "CanvasFlowChartViewport"]
 
 
 class CanvasBarView:
@@ -541,4 +547,195 @@ class CanvasHeatmapChartViewport(CanvasPictorialChartViewport):
                 or model._color != renderer.color() \
                 or model._calendar != calendar \
                 or model._cell_colors != colors:
+            model.set_geometry(renderer, self._chart.anim.t)
+
+
+class _CanvasLabeledView(CanvasBarView):
+    def _reset_geometry(self, renderer, anim_t):
+        self._coord = renderer.chart.coord_for(renderer.opt)
+        self._plot = None
+        self._area = QRectF(renderer._area)
+        self._anim_t = float(anim_t)
+        self._color = QColor(renderer.color())
+        self._palette = tuple(QColor(color).getRgb() for color in renderer.chart.palette())
+        self._theme_key = (T("color.bg.base"), T("color.text.secondary"),
+                           T("color.border.strong"))
+        self._background = None
+        self._background_color = QColor(T("color.bg.base"))
+        self._areas = []
+        self._outlines = []
+        self._paths = []
+        self._label_commands = []
+
+    def _draw(self, painter, scale=None):
+        if not self._visible:
+            return
+        painter.save()
+        try:
+            painter.resetClipping()
+            painter.setTransform(QTransform())
+            painter.scale(1.0 if scale is None else scale)
+            painter.setAntialias(1.0)
+            if self._background is not None:
+                painter.setFillStyle(self._background_color)
+                painter.fillRect(self._background)
+            painter.setLineCap(QCanvasPainter.LineCap.Round)
+            painter.setLineJoin(QCanvasPainter.LineJoin.Round)
+            for path, brush in self._areas:
+                painter.setFillStyle(brush)
+                painter.fill(path)
+            for path, color, width in self._outlines:
+                painter.setStrokeStyle(color)
+                painter.setLineWidth(width)
+                painter.stroke(path)
+            for _kind, text, rect, font, color, align, baseline in self._label_commands:
+                painter.setFont(font)
+                painter.setFillStyle(color)
+                painter.setTextAlign(align)
+                painter.setTextBaseline(baseline)
+                painter.fillText(text, rect)
+        finally:
+            painter.restore()
+
+
+class CanvasParallelView(_CanvasLabeledView):
+    def set_geometry(self, renderer, anim_t):
+        self._reset_geometry(renderer, anim_t)
+        self._source_axes = renderer._axes
+        self._source_rows = renderer._rows
+        if not renderer._axes:
+            return
+        self._background = QRectF(self._area.left() - 40, self._area.top() - 34,
+                                  self._area.width() + 80, self._area.height() + 60)
+        reveal = max(0.0, min(1.0, anim_t))
+        color = _with_alpha(self._color, 110)
+        for row in self._source_rows:
+            points = row["pts"]
+            if len(points) < 2:
+                continue
+            if reveal < 1.0:
+                upto = reveal * (len(points) - 1)
+                segment = []
+                for index, point in enumerate(points):
+                    if index <= int(upto):
+                        segment.append(point)
+                    elif index == int(upto) + 1:
+                        fraction = upto - int(upto)
+                        segment.append(QPointF(
+                            _lerp(points[index - 1].x(), point.x(), fraction),
+                            _lerp(points[index - 1].y(), point.y(), fraction)))
+                if len(segment) >= 2:
+                    self._outlines.append((line_path(segment), QColor(color), 1.6))
+            else:
+                self._outlines.append((line_path(points), QColor(color), 1.6))
+        font = chart_font(T("font.xs"))
+        fm = QFontMetricsF(font)
+        axis_color = QColor(T("color.border.strong"))
+        text_color = QColor(T("color.text.secondary"))
+        for axis in self._source_axes:
+            x = axis["x"]
+            self._outlines.append((line_path([QPointF(x, self._area.top()),
+                                              QPointF(x, self._area.bottom())]),
+                                   QColor(axis_color), 1.0))
+            _text(self._label_commands, axis["name"],
+                  QRectF(x - 50, self._area.top() - fm.height() - 6, 100, fm.height()),
+                  font, text_color, QCanvasPainter.TextAlign.Center,
+                  QCanvasPainter.TextBaseline.Bottom)
+            _text(self._label_commands, format_value(axis["vmax"]),
+                  QRectF(x - 50, self._area.top() + 2, 100, fm.height()),
+                  font, text_color, QCanvasPainter.TextAlign.Center,
+                  QCanvasPainter.TextBaseline.Top)
+            _text(self._label_commands, format_value(axis["vmin"]),
+                  QRectF(x - 50, self._area.bottom() - fm.height() - 2, 100, fm.height()),
+                  font, text_color, QCanvasPainter.TextAlign.Center,
+                  QCanvasPainter.TextBaseline.Bottom)
+
+
+class CanvasThemeRiverView(_CanvasLabeledView):
+    def set_geometry(self, renderer, anim_t):
+        self._reset_geometry(renderer, anim_t)
+        self._source_streams = renderer._streams
+        self._source_times = renderer._times
+        if not self._source_streams:
+            return
+        self._background = QRectF(self._area.left() - 24, self._area.top() - 20,
+                                  self._area.width() + 48, self._area.height() + 50)
+        palette = renderer.chart.palette()
+        grow = max(0.0, min(1.0, anim_t))
+        for stream in self._source_streams:
+            color = QColor(palette[stream["color_idx"] % len(palette)])
+            top, bottom = [], []
+            for a, b in zip(stream["top"], stream["bot"]):
+                middle = (a.y() + b.y()) / 2
+                top.append(QPointF(a.x(), middle + (a.y() - middle) * grow))
+                bottom.append(QPointF(b.x(), middle + (b.y() - middle) * grow))
+            if len(top) < 2:
+                continue
+            source = _smooth_path(top, 0.5)
+            bottom_path = _smooth_path(bottom, 0.5)
+            elements = [bottom_path.elementAt(index)
+                        for index in range(bottom_path.elementCount())]
+            reverse = QPainterPath()
+            reverse.moveTo(elements[-1].x, elements[-1].y)
+            index = len(elements) - 1
+            while index >= 3:
+                reverse.cubicTo(QPointF(elements[index - 1].x, elements[index - 1].y),
+                                QPointF(elements[index - 2].x, elements[index - 2].y),
+                                QPointF(elements[index - 3].x, elements[index - 3].y))
+                index -= 3
+            source.connectPath(reverse)
+            source.closeSubpath()
+            path = path_from_qpainter(source)
+            self._areas.append((path, _with_alpha(color, 150)))
+            self._outlines.append((path, _with_alpha(color, 200), 1.0))
+        font = chart_font(T("font.xs"))
+        fm = QFontMetricsF(font)
+        color = QColor(T("color.text.secondary"))
+        count = len(self._source_times)
+        for tick in range(min(5, count)):
+            index = round(tick * (count - 1) / max(1, min(5, count) - 1))
+            x = self._area.left() + self._area.width() * (index + 0.5) / count
+            _text(self._label_commands, self._source_times[index],
+                  QRectF(x - 60, self._area.bottom() + 8, 120, fm.height()),
+                  font, color, QCanvasPainter.TextAlign.Center, QCanvasPainter.TextBaseline.Top)
+
+
+class CanvasFlowChartViewport(CanvasHeatmapChartViewport):
+    """支持平行坐标、主题河及既有系列的共享 Scene Graph 视口。"""
+
+    @staticmethod
+    def _line_models(renderers):
+        supported = (LineSeriesRenderer, BarSeriesRenderer, ScatterSeriesRenderer,
+                     EffectScatterSeriesRenderer, CandlestickSeriesRenderer,
+                     BoxplotSeriesRenderer, PictorialBarSeriesRenderer,
+                     HeatmapSeriesRenderer, ParallelSeriesRenderer,
+                     ThemeRiverSeriesRenderer)
+        if any(type(renderer) not in supported for renderer in renderers):
+            raise NotImplementedError("CanvasFlowChartViewport 当前不支持该系列类型")
+        return list(renderers)
+
+    def _model_for(self, renderer, coord):
+        if type(renderer) is ParallelSeriesRenderer:
+            return CanvasParallelView(renderer, coord)
+        if type(renderer) is ThemeRiverSeriesRenderer:
+            return CanvasThemeRiverView(renderer, coord)
+        return super()._model_for(renderer, coord)
+
+    def _sync_series_model(self, model):
+        if not isinstance(model, _CanvasLabeledView):
+            super()._sync_series_model(model)
+            return
+        renderer = model._renderer
+        model._visible = renderer.visible
+        theme_key = (T("color.bg.base"), T("color.text.secondary"),
+                     T("color.border.strong"))
+        palette = tuple(QColor(color).getRgb() for color in renderer.chart.palette())
+        changed = model._anim_t != self._chart.anim.t \
+            or model._color != renderer.color() or model._theme_key != theme_key \
+            or model._palette != palette or model._area != renderer._area \
+            or getattr(model, "_source_rows", None) is not getattr(renderer, "_rows", None) \
+            or getattr(model, "_source_axes", None) is not getattr(renderer, "_axes", None) \
+            or getattr(model, "_source_streams", None) is not getattr(renderer, "_streams", None) \
+            or getattr(model, "_source_times", None) is not getattr(renderer, "_times", None)
+        if changed:
             model.set_geometry(renderer, self._chart.anim.t)
