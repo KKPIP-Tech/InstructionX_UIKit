@@ -80,6 +80,61 @@ def _():
             time.sleep(0.005)
 
 
+@check("相同流动相位复用路径且几何变化立即失效")
+def _():
+    from InstructionX_UIKit.blueprint import canvas_scene
+    graph = BlueprintGraph()
+    first = BlueprintNode("perf", "甲", node_id="a")
+    first.add_output("out")
+    first.pos = QPointF(80, 100)
+    second = BlueprintNode("perf", "乙", node_id="b")
+    second.add_input("in")
+    second.pos = QPointF(400, 200)
+    graph.add_node(first)
+    graph.add_node(second)
+    graph.add_edge("a", "out", "b", "in")
+    canvas = BlueprintCanvas(graph)
+    canvas.resize(900, 600)
+    canvas.show()
+    app.processEvents()
+    edge = next(iter(canvas._edge_widgets.values()))
+    edge.set_flowing(True)
+    original = canvas_scene.dashed_paths
+    calls = []
+
+    def counted(*args, **kwargs):
+        calls.append(args)
+        return original(*args, **kwargs)
+
+    canvas_scene.dashed_paths = counted
+    try:
+        edge._dash_offset = -1.6
+        first_scene = canvas_scene.build_blueprint_flow(canvas)
+        edge._dash_offset = -7.6
+        second_scene = canvas_scene.build_blueprint_flow(canvas)
+        assert len(calls) == 1, f"相同相位重复构建: {len(calls)} 次"
+        assert len(first_scene.commands) == len(second_scene.commands)
+        for left, right in zip(first_scene.commands, second_scene.commands):
+            assert left[0] == right[0]
+            if left[0] != "stroke_pen":
+                continue
+            assert left[1].commandsSize() == right[1].commandsSize()
+            for index in range(left[1].commandsSize()):
+                delta = left[1].positionAt(index) - right[1].positionAt(index)
+                assert delta.manhattanLength() < 1e-6
+        first.pos = QPointF(120, 140)
+        app.processEvents()
+        canvas_scene.build_blueprint_flow(canvas)
+        assert len(calls) == 2, "节点移动后必须重建新几何"
+    finally:
+        canvas_scene.dashed_paths = original
+        canvas.close()
+        deadline = time.perf_counter() + 0.1
+        while time.perf_counter() < deadline:
+            app.processEvents()
+            time.sleep(0.005)
+
+
 if __name__ == "__main__":
     app.quit()
     raise SystemExit(1 if _FAILURES else 0)
