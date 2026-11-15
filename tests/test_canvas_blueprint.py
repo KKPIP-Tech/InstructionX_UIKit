@@ -55,6 +55,7 @@ def make_canvas():
     second = BlueprintNode("custom", "推理", node_id="b")
     second.add_input("in", "进入", "exec")
     second.add_input("img", "图像", "image")
+    second.add_input("img2", "图像2", "image")
     second.pos = QPointF(440, 250)
     graph.add_node(first)
     graph.add_node(second)
@@ -171,7 +172,7 @@ def _():
         viewport._sync_now()
         assert canvas._wire is not None and viewport._overlay_scene is not None
         assert_matches(viewport, canvas, "temporary_wire")
-        target = canvas.pin_scene_pos("b", "img", PinDirection.Input)
+        target = canvas.pin_scene_pos("b", "img2", PinDirection.Input)
         canvas._finish_wire(canvas.scene_to_view(target))
         viewport._sync_now()
         assert len(canvas.graph.edges()) == 2
