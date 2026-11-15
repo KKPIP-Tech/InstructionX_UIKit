@@ -35,6 +35,7 @@ def check(name):
 @check("数组直供路径与按需兼容几何逐点一致")
 def _():
     values = np.sin(np.arange(20000) / 700)
+    values[0] = 0.01
     chart = ChartWidget()
     chart.set_option({"animation": False, "xAxis": {"type": "value"},
                       "yAxis": {"type": "value", "min": -2, "max": 2},
@@ -55,6 +56,10 @@ def _():
             model = viewport._line_views[0]
             geometry = renderer._gpu_geometry
             assert geometry is not None and model._screen_geometry is geometry
+            plot = chart.primary_coord().plot
+            assert abs(geometry[0][0] - plot.left()) < 1e-9, geometry[0][0]
+            assert abs(geometry[0][-1] - plot.right()) < 1e-9, geometry[0][-1]
+            assert np.all(geometry[0][1:] >= geometry[0][:-1]), "屏幕折线不得回连左边界"
             assert [path.commandsSize() for path in model._paths] == [len(geometry[0])]
             renderer._points = []
             assert chart._perf_snapshot()["screen_points"] == len(geometry[0])

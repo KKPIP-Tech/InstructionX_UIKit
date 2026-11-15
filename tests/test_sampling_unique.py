@@ -53,5 +53,18 @@ def _():
     assert np.array_equal(actual, expected), (actual[:20], expected[:20])
 
 
+@check("首尾端点按原始顺序保留且下标严格递增")
+def _():
+    values = np.zeros(64, dtype=np.float64)
+    values[1::4] = -10.0
+    values[2::4] = 10.0
+    actual = sample_indices(values, 4)
+    assert actual[0] == 0, f"首点被放到了错误位置: {actual.tolist()}"
+    assert actual[-1] == len(values) - 1, f"末点未保留: {actual.tolist()}"
+    assert np.all(actual[1:] > actual[:-1]), f"采样下标不是严格递增: {actual.tolist()}"
+    expected = np.array([0, 1, 2, 17, 18, 33, 34], dtype=np.int64)
+    assert np.array_equal(actual[:7], expected), actual[:7]
+
+
 if __name__ == "__main__":
     raise SystemExit(1 if _FAILURES else 0)
