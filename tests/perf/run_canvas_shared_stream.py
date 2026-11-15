@@ -86,7 +86,7 @@ def main():
     def captured(index, image):
         state["images"][index] = image
         if len(state["images"]) == len(charts):
-            app.quit()
+            app.exit(0)
 
     QTimer.singleShot(4000, lambda: [viewport.grab_canvas(
         lambda image, index=index: captured(index, image))

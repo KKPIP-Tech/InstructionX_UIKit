@@ -29,7 +29,7 @@ def grab_pair(viewport, app, points):
 
     def second(image):
         result["second"] = image
-        app.quit()
+        app.exit(0)
 
     def second_requested():
         viewport.frameSubmitted.disconnect(second_requested)

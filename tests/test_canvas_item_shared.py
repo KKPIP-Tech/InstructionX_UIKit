@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 os.environ.pop("QT_QPA_PLATFORM", None)
 
 from PySide6.QtCore import QPointF, QSizeF, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QHBoxLayout, QMainWindow, QWidget
 from InstructionX_UIKit.charts import ChartWidget
 from InstructionX_UIKit.charts.canvas_item_viewport import CanvasItemLineChartViewport
@@ -82,6 +83,16 @@ def _():
                 viewport._item.position(), expected, chart.pos(), viewport.pos(),
                 viewport._host._container.pos())
             assert viewport.rhi_api() == "Direct3D11"
+        received = []
+        original_press = charts[0].keyPressEvent
+        original_release = charts[0].keyReleaseEvent
+        charts[0].keyPressEvent = lambda event: received.append(("press", event.key()))
+        charts[0].keyReleaseEvent = lambda event: received.append(("release", event.key()))
+        first.setFocus()
+        QTest.keyClick(first, Qt.Key_A)
+        assert received == [("press", Qt.Key_A), ("release", Qt.Key_A)]
+        charts[0].keyPressEvent = original_press
+        charts[0].keyReleaseEvent = original_release
         window.showMinimized()
         pump()
         assert all(not chart._ui_active for chart in charts)
