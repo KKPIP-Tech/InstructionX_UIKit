@@ -142,16 +142,18 @@ def _():
         viewport._sync_now()
         renderer = chart.series_renderers[0]
         model = viewport._line_views[0]
-        assert len(model._outlines) == 3
-        assert all(path.commandsSize() == 2 for path, _color, _width in model._outlines)
+        assert len(model._outlines) == len(renderer._rows) + len(renderer._axes)
+        rows = model._outlines[:len(renderer._rows)]
+        assert all(path.commandsSize() == 2 for path, _color, _width in rows)
         assert all(color.alpha() == 110 and width == 1.6
-                   for _path, color, width in model._outlines)
+                   for _path, color, width in rows)
+        assert all(width == 1.0 for _path, _color, width in model._outlines[len(rows):])
         labels = {command[1] for command in model._label_commands if command[0] == "text"}
         assert {"语文", "数学", "英语", "0", "100"} <= labels
         assert_matches(viewport, chart, "parallel_half")
         chart.anim.set_progress(1.0)
         viewport._sync_now()
-        assert all(path.commandsSize() == 3 for path, _color, _width in model._outlines)
+        assert all(path.commandsSize() == 3 for path, _color, _width in rows)
         assert_matches(viewport, chart, "parallel")
         hover(viewport, renderer._rows[0]["pts"][0])
         assert chart.tooltip.active and viewport._tooltip_scene is not None
@@ -166,7 +168,7 @@ def _():
         model = viewport._line_views[0]
         assert model._source_rows is renderer._rows
         assert [axis["name"] for axis in renderer._axes] == ["速度", "力量", "耐力"]
-        assert len(model._outlines) == 2
+        assert len(model._outlines) == len(renderer._rows) + len(renderer._axes)
         assert_matches(viewport, chart, "parallel_header")
         ThemeManager.instance().set_mode("dark")
         viewport._sync_now()
@@ -198,7 +200,7 @@ def _():
         renderer = chart.series_renderers[0]
         model = viewport._line_views[0]
         assert len(model._areas) == 3 and len(model._outlines) == 3
-        assert all(path.commandsSize() == 12 for path, _color in model._areas)
+        assert all(path.commandsSize() == 13 for path, _color in model._areas)
         assert {color.alpha() for _path, color in model._areas} == {150}
         assert {color.alpha() for _path, _color, _width in model._outlines} == {200}
         labels = {command[1] for command in model._label_commands if command[0] == "text"}
