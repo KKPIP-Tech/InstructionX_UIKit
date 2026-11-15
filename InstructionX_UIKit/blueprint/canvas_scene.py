@@ -5,10 +5,10 @@ import math
 
 from PySide6.QtCanvasPainter import QCanvasPainter, QCanvasPath
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QPainterPath, QPainterPathStroker
+from PySide6.QtGui import QColor, QPainterPath
 
 from ..theme import T, ThemeManager
-from ..charts.canvas_paths import line_path, path_from_qpainter
+from ..charts.canvas_paths import dashed_paths, line_path, path_from_qpainter
 from ..charts.canvas_static import CanvasStaticScene, _text
 from .canvas import GRID_DOT_R
 from .edge_widget import bezier_path
@@ -42,12 +42,8 @@ def _circle(commands, center, radius, fill=None, stroke=None, width=1.0):
 
 
 def _dashed(commands, path, color, width, pattern, offset=0.0):
-    stroker = QPainterPathStroker()
-    stroker.setWidth(width)
-    stroker.setCapStyle(Qt.RoundCap)
-    stroker.setDashPattern(pattern)
-    stroker.setDashOffset(offset)
-    commands.append(("fill", path_from_qpainter(stroker.createStroke(path)), QColor(color)))
+    for dash in dashed_paths(path, pattern, offset):
+        _stroke(commands, dash, color, width, cap=QCanvasPainter.LineCap.Round)
 
 
 def blueprint_scene_key(canvas):
