@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """关系图与线图的 Canvas 原生几何和共享视口。"""
 
-from PySide6.QtCanvasPainter import QCanvasPainter
+from PySide6.QtCanvasPainter import QCanvasPainter, QCanvasPath
 from PySide6.QtCore import QPointF, QRectF
-from PySide6.QtGui import QColor, QFontMetricsF, QPainterPath
+from PySide6.QtGui import QColor, QFontMetricsF
 
 from ..theme import T
 from ._utils import ON_FILL_WHITE, to_float as _to_float, with_alpha
@@ -17,9 +17,9 @@ __all__ = ["CanvasGraphView", "CanvasLinesView", "CanvasNetworkChartViewport"]
 
 
 def _ellipse(point, radius):
-    path = QPainterPath()
-    path.addEllipse(QRectF(point.x() - radius, point.y() - radius, radius * 2, radius * 2))
-    return path_from_qpainter(path)
+    path = QCanvasPath(2)
+    path.ellipse(QRectF(point.x() - radius, point.y() - radius, radius * 2, radius * 2))
+    return path
 
 
 class CanvasGraphView(_CanvasHierarchyView):
