@@ -16,14 +16,16 @@ from .series_cartesian import (
     CandlestickSeriesRenderer,
     EffectScatterSeriesRenderer,
     LineSeriesRenderer,
+    PictorialBarSeriesRenderer,
     ScatterSeriesRenderer,
     _lerp,
+    _to_float,
     _with_alpha,
 )
 
 __all__ = ["CanvasBarView", "CanvasBarChartViewport",
            "CanvasScatterView", "CanvasScatterChartViewport",
-           "CanvasFinancialChartViewport"]
+           "CanvasFinancialChartViewport", "CanvasPictorialChartViewport"]
 
 
 class CanvasBarView:
@@ -397,3 +399,86 @@ class CanvasFinancialChartViewport(CanvasScatterChartViewport):
                 or model._down_color != renderer._down_color()
         if changed:
             model.set_geometry(renderer, self._chart.anim.t)
+
+
+def _pictorial_path(kind, cx, cy, width, height):
+    radius = min(width, height) / 2
+    path = QCanvasPath(6)
+    if kind == "circle":
+        path.ellipse(QRectF(cx - width / 2, cy - height / 2, width, height))
+    elif kind == "pin":
+        path.ellipse(QRectF(cx - radius, cy - height * 0.12 - radius,
+                            radius * 2, radius * 2))
+        path.moveTo(cx - radius * 0.55, cy + height * 0.12)
+        path.lineTo(cx, cy + height * 0.52)
+        path.lineTo(cx + radius * 0.55, cy + height * 0.12)
+        path.closePath()
+    else:
+        path.roundRect(QRectF(cx - width / 2, cy - height / 2, width, height), 2.0)
+    return path
+
+
+class CanvasPictorialView(CanvasBarView):
+    def set_geometry(self, renderer, anim_t):
+        coord = renderer.chart.coord_for(renderer.opt)
+        self._coord = coord
+        self._plot = QRectF(coord.plot) if isinstance(coord, GridCoord) else None
+        self._source_bars = renderer._bars
+        self._anim_t = float(anim_t)
+        self._color = QColor(renderer.color())
+        self._areas = []
+        if not isinstance(coord, GridCoord):
+            return
+        value_axis = coord.x_axis if renderer._horizontal else coord.y_axis
+        sw, sh = renderer._symbol_size()
+        repeat = renderer.opt.get("symbolRepeat", False)
+        kind = str(renderer.opt.get("symbol") or "rect")
+        for bar in self._source_bars:
+            value = renderer._animated_value(bar, anim_t)
+            v1 = bar["v0"] + value
+            if renderer._horizontal:
+                pa = value_axis.map(bar["v0"], coord.plot.left(), coord.plot.right())
+                pb = value_axis.map(v1, coord.plot.left(), coord.plot.right())
+                along, cross = sw, sh
+            else:
+                pa = value_axis.map(bar["v0"], coord.plot.bottom(), coord.plot.top())
+                pb = value_axis.map(v1, coord.plot.bottom(), coord.plot.top())
+                along, cross = sh, sw
+            direction = 1.0 if pb >= pa else -1.0
+            total = abs(pb - pa)
+            if total <= 0:
+                continue
+            if repeat is True:
+                count = max(1, int(total // max(1.0, along)))
+                offsets = [(index + 0.5) * along for index in range(count)]
+                offsets = [offset for offset in offsets if offset <= total] or [total / 2]
+            elif repeat:
+                count = max(1, int(_to_float(repeat, 1)))
+                offsets = [(index + 0.5) * total / count for index in range(count)]
+            else:
+                offsets = [max(along / 2, total - along / 2)]
+            for offset in offsets:
+                position = pa + direction * offset
+                if renderer._horizontal:
+                    path = _pictorial_path(kind, position, bar["center"], along, cross)
+                else:
+                    path = _pictorial_path(kind, bar["center"], position, cross, along)
+                self._areas.append((path, QColor(self._color)))
+
+
+class CanvasPictorialChartViewport(CanvasFinancialChartViewport):
+    """支持象形柱及既有系列的共享 Scene Graph 视口。"""
+
+    @staticmethod
+    def _line_models(renderers):
+        supported = (LineSeriesRenderer, BarSeriesRenderer, ScatterSeriesRenderer,
+                     EffectScatterSeriesRenderer, CandlestickSeriesRenderer,
+                     BoxplotSeriesRenderer, PictorialBarSeriesRenderer)
+        if any(type(renderer) not in supported for renderer in renderers):
+            raise NotImplementedError("CanvasPictorialChartViewport 当前不支持该系列类型")
+        return list(renderers)
+
+    def _model_for(self, renderer, coord):
+        if type(renderer) is PictorialBarSeriesRenderer:
+            return CanvasPictorialView(renderer, coord)
+        return super()._model_for(renderer, coord)
