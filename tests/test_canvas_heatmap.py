@@ -120,8 +120,11 @@ def assert_matches(viewport, chart, name):
         assert actual_bbox is not None and expected_bbox is not None, (name, index)
         assert all(abs(a - b) <= 2 for a, b in zip(actual_bbox, expected_bbox)), (
             name, index, actual_bbox, expected_bbox)
-        actual_center = center_rgb(actual, cell["rect"].center())
-        expected_center = center_rgb(expected, cell["rect"].center())
+        sample = cell["rect"].center()
+        if chart.tooltip.active and not viewport._line_views[0]._calendar:
+            sample += QPointF(4, 4)
+        actual_center = center_rgb(actual, sample)
+        expected_center = center_rgb(expected, sample)
         assert np.max(np.abs(actual_center.astype(int) - expected_center.astype(int))) <= 2, (
             name, index, actual_center, expected_center)
     if bounds is not None:
