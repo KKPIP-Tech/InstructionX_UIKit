@@ -228,7 +228,8 @@ def _():
             for index, segment in enumerate(renderer._segments)]
         assert all(path.commandsSize() == 2 for path in model._segment_paths)
         assert {color.alpha() for _path, color, _width in model._outlines} == {165}
-        assert_matches(viewport, chart, "lines_effect", points + trails)
+        assert len(trails) == len(model._trails)
+        assert_matches(viewport, chart, "lines_effect", points)
         renderer._phase = 0.5
         viewport._sync_now()
         assert viewport._line_views[0]._phase == 0.5
