@@ -222,7 +222,10 @@ def _():
         assert viewport._component_scene is not None
         points = []
         for name, polygon in renderer._polys:
-            point = polygon.boundingRect().center()
+            center = polygon.boundingRect().center()
+            vertex = polygon[0]
+            point = QPointF(vertex.x() * 0.85 + center.x() * 0.15,
+                            vertex.y() * 0.85 + center.y() * 0.15)
             if polygon.containsPoint(point, Qt.OddEvenFill):
                 hit = renderer.hit_test(point)
                 assert hit is not None and hit["name"] == name, (name, hit)
