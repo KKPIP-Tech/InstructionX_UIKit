@@ -52,8 +52,9 @@ class _CanvasHierarchyView(CanvasBarView):
     def _reset(self, renderer, anim_t):
         self._coord = renderer.chart.coord_for(renderer.opt)
         self._plot = None
-        radius = getattr(renderer, "_radius", getattr(renderer, "_r_out", 1.0))
-        center = renderer._center
+        radius = getattr(renderer, "_radius", getattr(
+            renderer, "_r_out", getattr(renderer, "_r1", 1.0)))
+        center = getattr(renderer, "_center", QPointF())
         self._area = QRectF(center.x() - radius, center.y() - radius, radius * 2, radius * 2)
         self._anim_t = float(anim_t)
         self._color = QColor(renderer.color())
@@ -64,19 +65,22 @@ class _CanvasHierarchyView(CanvasBarView):
         self._scene = None
 
     def _sync_key(self, renderer):
-        center = renderer._center
+        center = getattr(renderer, "_center", QPointF())
         return (
             repr(renderer.opt), repr(renderer.prev_data), renderer.chart.anim.t,
             tuple(QColor(color).getRgb() for color in renderer.chart.palette()),
             tuple(T(key) for key in ("color.bg.base", "color.bg.elevated", "color.border",
                                      "color.border.strong", "color.text.primary",
                                      "color.text.secondary")),
+            renderer.chart.width(), renderer.chart.height(),
             center.x(), center.y(), getattr(renderer, "_radius", None),
             getattr(renderer, "_r_in", None), getattr(renderer, "_r_out", None),
+            getattr(renderer, "_r0", None), getattr(renderer, "_r1", None),
             getattr(renderer, "_value", None),
             id(getattr(renderer, "_sectors", None)),
             id(getattr(renderer, "_indicators", None)),
             id(getattr(renderer, "_polys", None)), id(getattr(renderer, "_entries", None)),
+            id(getattr(renderer, "_layers", None)), id(getattr(renderer, "_nodes", None)),
         )
 
     def _finish(self, renderer, commands):
