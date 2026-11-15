@@ -350,6 +350,7 @@ class CanvasLineChartViewport(_ViewportMixin, CanvasLineViewport):
 
     def showEvent(self, event):  # noqa: N802
         self._chart.on_ui_activated()
+        self.winId()
         self._sync_timer.start(0)
         super().showEvent(event)
 
