@@ -230,10 +230,16 @@ def sample_indices(values, buckets: int):
         bucket_values = values[positions]
         minima[selected] = selected_starts + _np.argmin(bucket_values, axis=1)
         maxima[selected] = selected_starts + _np.argmax(bucket_values, axis=1)
-    indices = _np.unique(_np.stack((minima, maxima), axis=1))
+    indices = _np.stack((minima, maxima), axis=1).reshape(-1)
+    indices.sort()
+    keep = _np.empty(indices.size, dtype=bool)
+    keep[0] = True
+    keep[1:] = indices[1:] != indices[:-1]
+    indices = indices[keep]
     endpoints = [index for index in (0, n - 1) if _np.isfinite(values[index])]
-    if endpoints:
-        indices = _np.union1d(indices, _np.asarray(endpoints, dtype=_np.int64))
+    for index in endpoints:
+        if not _np.any(indices == index):
+            indices = _np.append(indices, index)
     return indices.astype(_np.int64, copy=False)
 
 
