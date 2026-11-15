@@ -285,6 +285,35 @@ def _():
         pump()
 
 
+@check("Blueprint 生产工厂 canvas 选项与默认后端")
+def _():
+    from InstructionX_UIKit.blueprint.canvas_viewport import CanvasBlueprintViewport
+    from InstructionX_UIKit.blueprint.rhi_viewport import _RhiViewport
+    from InstructionX_UIKit.blueprint.viewport import _RasterViewport
+    previous = os.environ.get("UIKIT_BLUEPRINT_BACKEND")
+    try:
+        os.environ.pop("UIKIT_BLUEPRINT_BACKEND", None)
+        _graph, canvas = make_canvas()
+        assert isinstance(canvas._viewport, _RhiViewport)
+        canvas.close()
+        os.environ["UIKIT_BLUEPRINT_BACKEND"] = "canvas"
+        _graph, canvas = make_canvas()
+        assert isinstance(canvas._viewport, CanvasBlueprintViewport)
+        assert canvas._viewport.mean_sync_ms() >= 0
+        assert "direct" in canvas._viewport.rhi_api().lower()
+        canvas.close()
+        os.environ["UIKIT_BLUEPRINT_BACKEND"] = "raster"
+        _graph, canvas = make_canvas()
+        assert isinstance(canvas._viewport, _RasterViewport)
+        canvas.close()
+    finally:
+        if previous is None:
+            os.environ.pop("UIKIT_BLUEPRINT_BACKEND", None)
+        else:
+            os.environ["UIKIT_BLUEPRINT_BACKEND"] = previous
+        pump()
+
+
 if __name__ == "__main__":
     app.quit()
     raise SystemExit(1 if _FAILURES else 0)
