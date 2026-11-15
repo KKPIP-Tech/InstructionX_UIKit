@@ -88,7 +88,8 @@ def center_rgb(image, point):
     dpr = image.devicePixelRatioF()
     pixels = np.frombuffer(image.constBits(), dtype=np.uint8).reshape(
         image.height(), image.width(), 4)
-    return pixels[round(point.y() * dpr), round(point.x() * dpr), :3]
+    x, y = round(point.x() * dpr), round(point.y() * dpr)
+    return pixels[y - 1:y + 2, x - 1:x + 2, :3].mean(axis=(0, 1))
 
 
 def assert_matches(viewport, chart, name, points=()):
