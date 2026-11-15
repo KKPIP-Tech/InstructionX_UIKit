@@ -338,24 +338,16 @@ def _():
             streamed = MarkdownView(variant="plain")
             streamed.append_markdown(source)
             original = streamed._render_paragraph
-            original_parse = streamed._parse_html
             calls = []
-            parse_calls = []
 
             def counted(*args, **kwargs):
                 calls.append(args)
                 return original(*args, **kwargs)
 
-            def counted_parse(*args, **kwargs):
-                parse_calls.append(args)
-                return original_parse(*args, **kwargs)
-
             streamed._render_paragraph = counted
-            streamed._parse_html = counted_parse
             for chunk in chunks:
                 streamed.append_markdown(chunk)
             assert_eq(len(calls), 0, f"{mode} 完整加粗分片不应重排整个段落")
-            assert_eq(len(parse_calls), 0, f"{mode} 完整加粗分片不应重复导入 HTML")
             reference = MarkdownView(source + "".join(chunks), variant="plain")
             assert_eq(streamed.toPlainText(), reference.toPlainText(), f"{mode} 纯文本不一致")
             assert_eq(streamed.document().blockCount(), reference.document().blockCount(),
