@@ -217,6 +217,7 @@ class _CanvasSceneHost(QObject):
     def _emit_frames(self):
         for viewport in tuple(self._viewports):
             if viewport.isVisible() and viewport._chart._ui_active:
+                viewport._sync_timer.start(0)
                 viewport.frameSubmitted.emit()
                 viewport.frameSwapped.emit()
 
