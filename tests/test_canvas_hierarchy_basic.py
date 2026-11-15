@@ -284,7 +284,8 @@ def _():
         assert renderer.hit_test(renderer._center) is not None
         hover(viewport, renderer._center)
         assert chart.tooltip.active and viewport._tooltip_scene is not None
-        chart.update_option({"series": [{"data": [{"name": "完成率", "value": 30}]}]})
+        chart.update_option({"series": [{"type": "gauge", "name": "完成率",
+                                          "data": [{"name": "完成率", "value": 30}]}]})
         chart.anim.stop()
         chart.anim.set_progress(0.5)
         viewport._sync_now()
