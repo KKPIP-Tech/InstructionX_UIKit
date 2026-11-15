@@ -423,6 +423,26 @@ def _structured_extent(data, idx: int):
     return min(ys), max(ys)
 
 
+def _lines_extent(data, key):
+    """线图 ``coords`` 起终点的 x/y 极值；无有效坐标对时返回 ``None``。"""
+    index = 0 if key == "x" else 1
+    values = []
+    for item in data or []:
+        if not isinstance(item, dict):
+            continue
+        coords = item.get("coords")
+        if not isinstance(coords, (list, tuple)):
+            continue
+        for point in coords:
+            if not isinstance(point, (list, tuple)) or len(point) <= index:
+                continue
+            value = point[index]
+            if isinstance(value, (int, float)) and not isinstance(value, bool) \
+                    and math.isfinite(value):
+                values.append(float(value))
+    return (min(values), max(values)) if values else None
+
+
 class AxisModel:
     """坐标轴模型：category（list[str]）或 value（自动 nice ticks）。
 
@@ -688,7 +708,12 @@ class GridCoord(Coord):
         # 卡顿的真正来源，故必须缓存。
         y_lo = y_hi = None
         for s in grid_series:
-            ext = _series_extent(s.get("data"), "y")
+            if s.get("type") == "lines":
+                ext = _lines_extent(s.get("data"), "y")
+                if ext is None:
+                    continue
+            else:
+                ext = _series_extent(s.get("data"), "y")
             if ext is None:
                 vals = list(_iter_data_values(s.get("data")))
                 if not vals:
@@ -737,7 +762,12 @@ class GridCoord(Coord):
                     continue
                 if n == 0:
                     continue
-                ext_x = _series_extent(data, "x")
+                if s.get("type") == "lines":
+                    ext_x = _lines_extent(data, "x")
+                    if ext_x is None:
+                        continue
+                else:
+                    ext_x = _series_extent(data, "x")
                 if ext_x is not None:
                     xs.append(ext_x[0])
                     xs.append(ext_x[1])
@@ -756,7 +786,10 @@ class GridCoord(Coord):
                     lo_x -= pad
                     hi_x += pad
                 self.x_axis.set_extent(lo_x, hi_x)
-                self.x_axis.vmin, self.x_axis.vmax = lo_x, hi_x
+                user_lo = _opt_bound(self.x_axis.min)
+                user_hi = _opt_bound(self.x_axis.max)
+                self.x_axis.vmin = lo_x if user_lo is None else user_lo
+                self.x_axis.vmax = hi_x if user_hi is None else user_hi
             elif self.x_axis.type == "value":
                 self.x_axis.set_extent(0.0, 1.0)
 
