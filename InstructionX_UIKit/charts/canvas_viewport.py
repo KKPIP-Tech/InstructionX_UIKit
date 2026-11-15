@@ -24,11 +24,11 @@ __all__ = ["CanvasLineViewport"]
 class CanvasLineViewport(QCanvasPainterWidget):
     """以原有颜色、线宽、圆角、点序和裁剪绘制单条折线系列。"""
 
-    def __init__(self, renderer, coord, parent=None):
+    def __init__(self, renderer, coord=None, parent=None):
         super().__init__(parent)
         self._renderer = renderer
-        self._coord = coord
-        self._plot = QRectF(coord.plot)
+        self._coord = coord if coord is not None else renderer.chart.coord_for(renderer.opt)
+        self._plot = QRectF(self._coord.plot)
         self._points = []
         self._areas = []
         self._paths = []
