@@ -286,7 +286,7 @@ class CanvasLineChartViewport(_ViewportMixin, CanvasLineViewport):
 
     @staticmethod
     def _line_models(renderers):
-        if any(not isinstance(renderer, LineSeriesRenderer for renderer in renderers):
+        if any(not isinstance(renderer, LineSeriesRenderer) for renderer in renderers):
             raise NotImplementedError("CanvasLineChartViewport 当前仅支持 line 系列")
         return list(renderers)
 
