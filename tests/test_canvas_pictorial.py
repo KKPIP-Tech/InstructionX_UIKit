@@ -110,7 +110,7 @@ def hover(viewport, pos):
 @check("象形柱符号、重复、水平方向、动画与 tooltip")
 def _():
     ThemeManager.instance().apply(app)
-    for name, symbol, repeat in (("rect", True), ("circle", 2), ("pin", False)):
+    for name, symbol, repeat in (("rect", "rect", True), ("circle", "circle", 2), ("pin", "pin", False)):
         chart = ChartWidget()
         chart.set_option({
             "animation": True, "xAxis": {"type": "category", "data": ["一", "二", "三"]},
