@@ -23,7 +23,8 @@ from .node_widget import (
 )
 from .registry import pin_color
 
-__all__ = ["build_blueprint_scenes", "blueprint_scene_key"]
+__all__ = ["build_blueprint_scenes", "build_blueprint_flow",
+           "blueprint_scene_key", "blueprint_flow_key"]
 
 
 def _stroke(commands, path, color, width=1.0, cap=QCanvasPainter.LineCap.Square,
@@ -57,12 +58,17 @@ def blueprint_scene_key(canvas):
         tuple((node_id, widget._layout_rev, widget._pulse)
               for node_id, widget in canvas._node_widgets.items()),
         tuple(canvas._selected_nodes), tuple(canvas._selected_edges),
-        tuple((edge_id, edge.hovered, edge.selected, edge.flowing, edge._dash_offset)
+        tuple((edge_id, edge.hovered, edge.selected, edge.flowing)
               for edge_id, edge in canvas._edge_widgets.items()),
         None if canvas._wire is None else (
             canvas._wire.start, canvas._wire.end, canvas._wire.magnet),
         repr(canvas._wire_target), repr(canvas._band),
     )
+
+
+def blueprint_flow_key(canvas):
+    return tuple((edge_id, edge._dash_offset)
+                  for edge_id, edge in canvas._edge_widgets.items() if edge.flowing)
 
 
 def _grid_scene(canvas):
@@ -123,11 +129,13 @@ def _rounded(rect, radius):
     return path
 
 
-def _edges(commands, canvas):
+def _edges(commands, canvas, flowing=None):
     commands.append(("save",))
     commands.append(("translate", QPointF(canvas._offset)))
     commands.append(("scale", canvas._zoom, canvas._zoom))
     for edge in canvas._edge_widgets.values():
+        if flowing is not None and edge.flowing != flowing:
+            continue
         path = path_from_qpainter(edge.path())
         if edge.flowing:
             _dashed(commands, edge.path(), QColor(T("color.primary")),
@@ -264,11 +272,21 @@ def _overlay_scene(canvas):
     return CanvasStaticScene(commands, ("overlay", repr(canvas._wire_target), repr(canvas._band)))
 
 
+def build_blueprint_flow(canvas):
+    if not any(edge.flowing for edge in canvas._edge_widgets.values()):
+        return None
+    commands = []
+    _edges(commands, canvas, flowing=True)
+    return CanvasStaticScene(commands, blueprint_flow_key(canvas))
+
+
 def build_blueprint_scenes(canvas):
     static = _grid_scene(canvas)
+    static_commands = list(static.commands)
+    _selection_glow(static_commands, canvas)
+    _edges(static_commands, canvas, flowing=False)
+    static = CanvasStaticScene(static_commands, (static.key, blueprint_scene_key(canvas)))
     commands = []
-    _selection_glow(commands, canvas)
-    _edges(commands, canvas)
     for widget in canvas._node_widgets.values():
         _node(commands, canvas, widget)
     component = CanvasStaticScene(commands, blueprint_scene_key(canvas))
