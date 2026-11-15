@@ -3,6 +3,7 @@
 
 import math
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -146,6 +147,66 @@ def _():
     assert_fast_map_matches(chart, renderer, xs, ys)
     assert renderer._map_sampled_fast(coord, [0, float("nan"), 2], [1, 2, 3]) is None
     chart.close()
+
+
+def _reference_blocked_extrema(values, bounds, block=64):
+    output = []
+    for offset in range(0, len(bounds), block):
+        part = bounds[offset:offset + block]
+        extrema = [None] * len(part)
+        valid_rows = []
+        width = max(end - start for start, end in part)
+        lows = np.full((len(part), width), np.inf)
+        highs = np.full((len(part), width), -np.inf)
+        for row, (start, end) in enumerate(part):
+            segment = values[start:end]
+            if np.isnan(segment).any():
+                extrema[row] = (start + int(np.argmin(segment)),
+                                start + int(np.argmax(segment)))
+                continue
+            lows[row, :end - start] = segment
+            highs[row, :end - start] = segment
+            valid_rows.append(row)
+        for row in valid_rows:
+            start, _ = part[row]
+            extrema[row] = (start + int(np.argmin(lows[row])),
+                            start + int(np.argmax(highs[row])))
+        output.extend(extrema)
+    return output
+
+
+@check("reduceat 极值索引逐项一致且降低分块成本")
+def _():
+    rng = np.random.default_rng(20261115)
+    for n, threshold in ((3, 2), (17, 4), (100, 7), (1000, 31),
+                         (20000, 1196), (20000, 4096), (1000, 999)):
+        for index in range(8):
+            values = rng.normal(size=n)
+            if index % 3 == 0:
+                values[index % n] = np.nan
+            if index % 4 == 0:
+                values[(index * 7) % n] = np.inf
+            if index % 5 == 0:
+                values[(index * 11) % n] = -np.inf
+            values[0] = -0.0
+            if n > 1:
+                values[1] = 0.0
+            bounds = _bucket_bounds(n, threshold)
+            expected = _reference_blocked_extrema(values, bounds)
+            actual = sampling._blocked_numpy_extrema(values, bounds)
+            assert actual == expected, (n, threshold, actual[:8], expected[:8])
+    values = rng.normal(size=20000)
+    values[17] = np.nan
+    bounds = _bucket_bounds(len(values), 1196)
+    started = time.perf_counter()
+    for _ in range(25):
+        _reference_blocked_extrema(values, bounds)
+    reference_ms = (time.perf_counter() - started) * 1000
+    started = time.perf_counter()
+    for _ in range(25):
+        sampling._blocked_numpy_extrema(values, bounds)
+    vector_ms = (time.perf_counter() - started) * 1000
+    assert vector_ms < reference_ms / 2, (reference_ms, vector_ms)
 
 
 if __name__ == "__main__":
