@@ -144,7 +144,8 @@ def _():
         model = viewport._line_views[0]
         assert len(model._outlines) == len(renderer._rows) + len(renderer._axes)
         rows = model._outlines[:len(renderer._rows)]
-        assert all(path.commandsSize() == 2 for path, _color, _width in rows)
+        assert model._anim_t == 0.5
+        assert all(path.commandsSize() == 3 for path, _color, _width in rows)
         assert all(color.alpha() == 110 and width == 1.6
                    for _path, color, width in rows)
         assert all(width == 1.0 for _path, _color, width in model._outlines[len(rows):])
@@ -202,7 +203,7 @@ def _():
         assert len(model._areas) == 3 and len(model._outlines) == 3
         assert all(path.commandsSize() == 13 for path, _color in model._areas)
         assert {color.alpha() for _path, color in model._areas} == {150}
-        assert {color.alpha() for _path, _color, _width in model._outlines} == {200}
+        assert {_color.alpha() for _path, _color, _width in model._outlines} == {200}
         labels = {command[1] for command in model._label_commands if command[0] == "text"}
         assert labels <= set(times) and len(labels) == 5
         assert_matches(viewport, chart, "river_half")
