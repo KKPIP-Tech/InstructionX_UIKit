@@ -1560,13 +1560,30 @@ a {{ color: {T("color.primary")}; }}
                 and "**" in text and _safe_strong_fragment(self._para_src)
                 and _safe_strong_fragment(text)):
             self._para_src += text
-            html = self._parse_html(text[1:])[0]
-            paragraph = html.find("<p")
-            insert_at = html.find(">", paragraph) + 1
-            html = html[:insert_at] + "&#32;" + html[insert_at:]
+            body_format = self._body_format()
+            bold_format = QTextCharFormat(body_format)
+            bold_format.setFontWeight(QFont.Bold)
             cur = self.textCursor()
             cur.movePosition(QTextCursor.End)
-            cur.insertHtml(html)
+            cur.beginEditBlock()
+            source_pos = 0
+            try:
+                while source_pos < len(text):
+                    start = text.find("**", source_pos)
+                    if start < 0:
+                        cur.setCharFormat(body_format)
+                        cur.insertText(text[source_pos:])
+                        break
+                    if start > source_pos:
+                        cur.setCharFormat(body_format)
+                        cur.insertText(text[source_pos:start])
+                    end = text.find("**", start + 2)
+                    bold = text[start + 2:end]
+                    cur.setCharFormat(bold_format)
+                    cur.insertText(bold)
+                    source_pos = end + 2
+            finally:
+                cur.endEditBlock()
             self.setTextCursor(cur)
             self._para_trail_space = False
             return
