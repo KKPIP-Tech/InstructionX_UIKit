@@ -81,6 +81,7 @@ class _CanvasHierarchyView(CanvasBarView):
             id(getattr(renderer, "_indicators", None)),
             id(getattr(renderer, "_polys", None)), id(getattr(renderer, "_entries", None)),
             id(getattr(renderer, "_layers", None)), id(getattr(renderer, "_nodes", None)),
+            id(getattr(renderer, "_edges", None)), id(getattr(renderer, "_bands", None)),
         )
 
     def _finish(self, renderer, commands):
