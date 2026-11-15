@@ -68,6 +68,8 @@ class CanvasBlueprintViewport(CanvasItemLineChartViewport):
     def _sync_now(self):
         if not self._canvas._ui_active or not self.isVisible() or self._item is None:
             return
+        self._sync_timer.stop()
+        self._waiting_for_frame = True
         started = time.perf_counter()
         key = blueprint_scene_key(self._canvas)
         if key != self._scene_key:
