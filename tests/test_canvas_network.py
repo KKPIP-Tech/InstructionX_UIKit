@@ -169,6 +169,15 @@ def _():
         ThemeManager.instance().set_mode("dark")
         viewport._sync_now()
         assert_matches(viewport, chart, "graph_dark")
+        chart.set_option({"animation": False,
+                          "series": [{"type": "graph", "name": "空关系", "data": []},
+                                     {"type": "lines", "name": "空航线", "data": []}]})
+        chart.anim.stop()
+        chart.anim.set_progress(1.0)
+        viewport._sync_now()
+        assert len(viewport._line_views) == 2
+        assert all(not model._scene.commands for model in viewport._line_views)
+        assert_matches(viewport, chart, "network_empty")
     finally:
         viewport.close()
         chart.close()
