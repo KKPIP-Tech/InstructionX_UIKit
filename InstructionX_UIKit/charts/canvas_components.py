@@ -6,7 +6,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFontMetricsF, QPainterPath, QPainterPathStroker
 
 from ..theme import T, ThemeManager
-from .axes import GridCoord, PolarCoord, SingleAxisCoord, chart_font
+from .axes import CalendarCoord, GridCoord, PolarCoord, SingleAxisCoord, chart_font
 from .canvas_paths import path_from_qpainter
 from .canvas_static import CanvasStaticScene, _line, _text
 
@@ -52,6 +52,13 @@ def _marker(commands, coord, pos):
         x = min(max(pos.x(), coord.plot.left()), coord.plot.right())
         _dashed(commands, QPointF(x, coord.rect.top() + 8),
                 QPointF(x, coord.rect.bottom() - 8), color)
+    elif isinstance(coord, CalendarCoord):
+        day = coord.date_at(pos)
+        if day is not None:
+            rect = coord.cell_rect(day).adjusted(0.5, 0.5, -0.5, -0.5)
+            path = QCanvasPath(4)
+            path.rect(rect)
+            commands.append(("stroke", path, QColor(T("color.primary")), 1.4))
     else:
         raise NotImplementedError(f"Canvas tooltip 坐标指示器未实现: {type(coord).__name__}")
 

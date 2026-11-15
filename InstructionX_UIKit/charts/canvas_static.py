@@ -7,9 +7,12 @@ from PySide6.QtGui import QColor, QFontMetricsF, QTransform
 
 from ..theme import T
 from .axes import (
+    CalendarCoord,
     GridCoord,
     PolarCoord,
     SingleAxisCoord,
+    _MONTH_LABELS,
+    _WEEKDAY_LABELS,
     _label_step,
     chart_font,
     format_value,
@@ -25,6 +28,7 @@ class CanvasStaticScene:
         self.key = key
 
     def draw(self, painter):
+        painter.resetClipping()
         painter.save()
         try:
             painter.setTransform(QTransform())
@@ -65,6 +69,13 @@ class CanvasStaticScene:
                     painter.beginPath()
                     painter.roundRect(rect, radius)
                     painter.fill()
+                elif kind == "gradient_path":
+                    _kind, rect, path, gradient, border_color, width = command
+                    painter.setFillStyle(gradient)
+                    painter.setStrokeStyle(border_color)
+                    painter.setLineWidth(width)
+                    painter.fill(path)
+                    painter.stroke(path)
                 elif kind == "text":
                     _kind, text, rect, font, color, align, baseline = command
                     painter.setFont(font)
@@ -255,6 +266,30 @@ def _title(commands, chart):
               QCanvasPainter.TextBaseline.Middle)
 
 
+def _calendar(commands, coord):
+    color = QColor(T("color.text.tertiary"))
+    font = chart_font(T("font.xs"))
+    fm = QFontMetricsF(font)
+    for row, label in _WEEKDAY_LABELS.items():
+        y = coord._origin.y() + row * coord._cell
+        _text(commands, label,
+              QRectF(coord.rect.left(), y,
+                     max(8.0, coord._origin.x() - coord.rect.left() - 4), coord._cell),
+              font, color, QCanvasPainter.TextAlign.Right, QCanvasPainter.TextBaseline.Middle)
+    label_y = coord._origin.y() - fm.height() - 2
+    first = coord._first_monday()
+    last_col = -1
+    for day in coord._month_dates():
+        anchor = day if day >= coord.start else coord.start
+        col = (anchor - first).days // 7
+        if col == last_col:
+            continue
+        last_col = col
+        x = coord._origin.x() + col * coord._cell
+        _text(commands, _MONTH_LABELS[day.month - 1], QRectF(x, label_y, 40, fm.height()),
+              font, color, QCanvasPainter.TextAlign.Left, QCanvasPainter.TextBaseline.Middle)
+
+
 def build_static_scene(chart):
     chart._layout_all()
     commands = [("fill_rect", QRectF(chart.rect()), QColor(T("color.bg.base")))]
@@ -265,6 +300,8 @@ def build_static_scene(chart):
             _polar(commands, coord)
         elif isinstance(coord, SingleAxisCoord):
             _single_axis(commands, coord)
+        elif isinstance(coord, CalendarCoord):
+            _calendar(commands, coord)
         else:
             raise NotImplementedError(f"Canvas 静态轴未实现: {type(coord).__name__}")
     _legend(commands, chart)
