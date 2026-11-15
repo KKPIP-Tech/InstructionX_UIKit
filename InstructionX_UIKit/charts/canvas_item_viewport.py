@@ -40,6 +40,7 @@ class _CanvasPaintModel:
         self._anim_t = model._anim_t
         self._visible = model._visible
         self._last_symbol_count = 0
+        self._draw = getattr(type(model), "_draw").__get__(self, _CanvasPaintModel)
 
 
 class _CanvasItemRenderer(QCanvasPainterItemRenderer):
@@ -293,7 +294,21 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
 
     layout_line = CanvasLineChartViewport.layout_line
     _line_models = staticmethod(CanvasLineChartViewport._line_models)
-    _sync_structure = CanvasLineChartViewport._sync_structure
+
+    def _model_for(self, renderer, coord):
+        return CanvasLineViewport(renderer, coord, self)
+
+    def _sync_structure(self):
+        current = self._line_models(self._chart.series_renderers)
+        if tuple(current) == self._renderer_ids:
+            return
+        for model in self._line_views:
+            model.close()
+            model.deleteLater()
+        self._line_views = [self._model_for(renderer, self._chart.coord_for(renderer.opt))
+                            for renderer in current]
+        self._renderer_ids = tuple(current)
+        self._renderer = current[0] if current else None
 
     @property
     def paint_times(self):
@@ -406,6 +421,16 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
         if self._ready and self._chart._ui_active and self.isVisible():
             self._sync_timer.start(0)
 
+    def _sync_series_model(self, model):
+        model._visible = model._renderer.visible
+        model._plot = QRectF(model._coord.plot) if isinstance(model._coord, GridCoord) else None
+        geometry = model._renderer._gpu_geometry
+        if geometry is not None:
+            if model._screen_geometry is not geometry:
+                model.set_arrays(geometry)
+        elif model._source_points is not model._renderer._points:
+            model.set_paths(model._renderer._points)
+
     def _sync_now(self):
         if not self._chart._ui_active or not self.isVisible() or self._item is None:
             return
@@ -413,14 +438,7 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
         self._sync_structure()
         self._chart._layout_all()
         for model in self._line_views:
-            model._visible = model._renderer.visible
-            model._plot = QRectF(model._coord.plot) if isinstance(model._coord, GridCoord) else None
-            geometry = model._renderer._gpu_geometry
-            if geometry is not None:
-                if model._screen_geometry is not geometry:
-                    model.set_arrays(geometry)
-            elif model._source_points is not model._renderer._points:
-                model.set_paths(model._renderer._points)
+            self._sync_series_model(model)
         if self._static_scene is None or self._static_scene.key != static_scene_key(self._chart):
             self._static_scene = build_static_scene(self._chart)
         tooltip_scene = build_tooltip_scene(self._chart)
