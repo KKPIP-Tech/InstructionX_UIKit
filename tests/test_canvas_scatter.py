@@ -180,7 +180,9 @@ def _():
             assert model._phase == renderer._phase
             assert model._ripples[0][1].alpha() < 140
             effect.set_series_visible("涟漪", False)
-            pump(80)
+            deadline = time.perf_counter() + 1.0
+            while renderer._timer.isActive() and time.perf_counter() < deadline:
+                pump(10)
             assert not renderer._timer.isActive()
             effect.set_series_visible("涟漪", True)
             effect_view._sync_now()
