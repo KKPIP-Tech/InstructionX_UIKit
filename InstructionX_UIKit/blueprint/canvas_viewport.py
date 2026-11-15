@@ -4,15 +4,52 @@
 import time
 
 from PySide6.QtCore import QCoreApplication, QEvent, QPointF, Qt
-from PySide6.QtGui import QMouseEvent, QWheelEvent
+from PySide6.QtGui import QColor, QMouseEvent, QWheelEvent
 from PySide6.QtWidgets import QApplication
 
 from ..charts.canvas_item_viewport import CanvasItemLineChartViewport
-from .canvas_scene import blueprint_scene_key, build_blueprint_scenes
+from .canvas_scene import (
+    blueprint_flow_key,
+    blueprint_scene_key,
+    build_blueprint_flow,
+    build_blueprint_scenes,
+)
 from .node_widget import NodeWidget, PinHandle
 from .viewport import _ViewportMixin
 
 __all__ = ["CanvasBlueprintViewport"]
+
+
+class _FlowView:
+    def __init__(self, scene):
+        self._scene = scene
+        self._renderer = None
+        self._coord = None
+        self._plot = None
+        self._points = ()
+        self._screen_geometry = None
+        self._paths = ()
+        self._areas = ()
+        self._outlines = ()
+        self._ripples = ()
+        self._dashes = ()
+        self._color = QColor(Qt.transparent)
+        self._symbol_fill = QColor(Qt.transparent)
+        self._symbol_setting = False
+        self._symbol_size = 6.0
+        self._line_width = 2.0
+        self._anim_t = 1.0
+        self._visible = True
+
+    def _draw(self, painter, scale=None):
+        if self._visible:
+            self._scene.draw(painter)
+
+    def close(self):
+        pass
+
+    def deleteLater(self):  # noqa: N802
+        pass
 
 
 class CanvasBlueprintViewport(CanvasItemLineChartViewport):
@@ -22,6 +59,7 @@ class CanvasBlueprintViewport(CanvasItemLineChartViewport):
         self._mouse_target = None
         super().__init__(canvas, parent)
         self._scene_key = None
+        self._flow_key = None
 
     def _init_viewport(self, canvas):
         _ViewportMixin._init_viewport(self, canvas)
@@ -38,7 +76,15 @@ class CanvasBlueprintViewport(CanvasItemLineChartViewport):
             self._component_scene = component
             self._overlay_scene = overlay
             self._scene_key = key
-        self._item.set_views((), self._static_scene, self._overlay_scene,
+        flow_key = blueprint_flow_key(self._canvas)
+        if flow_key != self._flow_key:
+            for model in self._line_views:
+                model.close()
+                model.deleteLater()
+            scene = build_blueprint_flow(self._canvas)
+            self._line_views = () if scene is None else (_FlowView(scene),)
+            self._flow_key = flow_key
+        self._item.set_views(self._line_views, self._static_scene, self._overlay_scene,
                              component_scene=self._component_scene)
         for widget in self._canvas._node_widgets.values():
             widget.raise_()
