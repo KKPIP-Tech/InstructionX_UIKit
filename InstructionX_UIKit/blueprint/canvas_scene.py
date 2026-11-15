@@ -48,7 +48,7 @@ def _dashed(commands, path, color, width, pattern, offset=0.0):
     stroker.setJoinStyle(Qt.MiterJoin)
     stroker.setDashPattern(list(pattern))
     stroker.setDashOffset(offset)
-    commands.append(("fill", path_from_qpainter(stroker.createStroke(path)), QColor(color)))
+    commands.append(("fill", stroker.createStroke(path), QColor(color)))
 
 
 def blueprint_scene_key(canvas):
