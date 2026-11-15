@@ -756,7 +756,6 @@ class MarkdownView(QTextBrowser):
             bar.setValue(bar.maximum())
         else:
             bar.setValue(min(old_value, bar.maximum()))
-        self.viewport().update()
 
     def clear(self) -> None:
         """清空内容，回到空占位状态。"""
