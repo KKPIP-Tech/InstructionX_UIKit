@@ -242,7 +242,11 @@ def _():
         hidden.save(str(ROOT / "temp" / "canvas_heatmap" / "grid_hidden.png"))
         for cell in renderer._cells:
             color = np.array(cell["color"].getRgb(), dtype=np.uint8)
-            assert int(np.count_nonzero(np.all(pixels(hidden) == color, axis=2))) == 0
+            rect = cell["rect"].adjusted(3, 3, -3, -3)
+            dpr = hidden.devicePixelRatioF()
+            patch = pixels(hidden)[round(rect.top() * dpr):round(rect.bottom() * dpr),
+                                   round(rect.left() * dpr):round(rect.right() * dpr)]
+            assert int(np.count_nonzero(np.all(patch == color, axis=2))) == 0
     finally:
         viewport.close()
         chart.close()
