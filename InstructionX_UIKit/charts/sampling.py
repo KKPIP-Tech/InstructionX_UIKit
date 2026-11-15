@@ -180,7 +180,7 @@ def _bucket_bounds(n: int, threshold: int):
 
 
 def _blocked_numpy_extrema(values, bounds, block=64):
-    """用 ``reduceat`` 计算每桶 argmin/argmax，保持首命中与 NaN 语义。
+    """用二维索引计算每桶 argmin/argmax，保持首命中与 NaN 语义。
 
     与原逐桶分块实现的输出逐项一致；额外数组规模只取决于输入点数，
     不保留历史数据。``block`` 仅为旧调用签名保留，不影响分桶边界。
@@ -190,20 +190,16 @@ def _blocked_numpy_extrema(values, bounds, block=64):
         return []
     starts = _np.asarray([start for start, _end in bounds], dtype=_np.int64)
     ends = _np.asarray([end for _start, end in bounds], dtype=_np.int64)
-    indices = _np.arange(len(values))
-    min_values = _np.minimum.reduceat(values, starts)
-    expanded_min = _np.repeat(min_values, ends - starts)
-    min_indices = _np.minimum.reduceat(
-        _np.where(values == expanded_min, indices, len(values)), starts)
-    max_values = _np.maximum.reduceat(values, starts)
-    expanded_max = _np.repeat(max_values, ends - starts)
-    max_indices = -_np.maximum.reduceat(
-        _np.where(values == expanded_max, -indices, -len(values)), starts)
-    nan_indices = _np.minimum.reduceat(
-        _np.where(_np.isnan(values), indices, len(values)), starts)
-    has_nan = nan_indices < ends
-    min_indices = _np.where(has_nan, nan_indices, min_indices)
-    max_indices = _np.where(has_nan, nan_indices, max_indices)
+    lengths = ends - starts
+    min_indices = _np.empty(len(bounds), dtype=_np.int64)
+    max_indices = _np.empty(len(bounds), dtype=_np.int64)
+    for width in _np.unique(lengths):
+        selected = _np.flatnonzero(lengths == width)
+        selected_starts = starts[selected]
+        positions = selected_starts[:, None] + _np.arange(width)
+        bucket_values = values[positions]
+        min_indices[selected] = selected_starts + _np.argmin(bucket_values, axis=1)
+        max_indices[selected] = selected_starts + _np.argmax(bucket_values, axis=1)
     return list(zip(min_indices.tolist(), max_indices.tolist()))
 
 
