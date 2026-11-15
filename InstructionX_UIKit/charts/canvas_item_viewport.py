@@ -592,7 +592,7 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
                 self.frameSwapped.disconnect(captured)
             except (RuntimeError, TypeError):
                 pass
-            callback(self._grab_image())
+            QTimer.singleShot(0, lambda: callback(self._grab_image()))
 
         self.frameSwapped.connect(captured)
 
