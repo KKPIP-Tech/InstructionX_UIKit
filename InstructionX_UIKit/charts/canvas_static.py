@@ -40,6 +40,25 @@ class CanvasStaticScene:
                     painter.setStrokeStyle(color)
                     painter.setLineWidth(width)
                     painter.stroke(path)
+                elif kind == "fill":
+                    _kind, path, color = command
+                    painter.setFillStyle(color)
+                    painter.fill(path)
+                elif kind == "fill_circle":
+                    _kind, rect, color = command
+                    painter.setFillStyle(color)
+                    painter.beginPath()
+                    painter.ellipse(rect)
+                    painter.fill()
+                elif kind == "round_rect_border":
+                    _kind, rect, radius, fill_color, border_color, width = command
+                    painter.setFillStyle(fill_color)
+                    painter.setStrokeStyle(border_color)
+                    painter.setLineWidth(width)
+                    painter.beginPath()
+                    painter.roundRect(rect, radius)
+                    painter.fill()
+                    painter.stroke()
                 elif kind == "round_rect":
                     _kind, rect, radius, color = command
                     painter.setFillStyle(color)
