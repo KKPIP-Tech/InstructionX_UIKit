@@ -13,9 +13,8 @@ os.environ.pop("QT_QPA_PLATFORM", None)
 os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
 
 import numpy as np
-from PySide6.QtCore import QPoint, Qt, QTimer
-from PySide6.QtGui import QColor, QImage, QPainter
-from PySide6.QtTest import QTest
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QPointF, Qt, QTimer
+from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter
 from PySide6.QtWidgets import QApplication
 from InstructionX_UIKit.charts import ChartWidget
 from InstructionX_UIKit.charts.canvas_item_viewport import CanvasItemLineChartViewport
@@ -72,9 +71,24 @@ def reference(chart, dpr):
     return image.convertToFormat(QImage.Format_RGBA8888)
 
 
-def color_count(image, color):
+def hover(viewport, pos):
+    global_pos = viewport.mapToGlobal(QPoint(round(pos.x()), round(pos.y())))
+    event = QMouseEvent(QEvent.MouseMove, QPointF(pos), QPointF(pos),
+                        QPointF(global_pos), Qt.NoButton, Qt.NoButton, Qt.NoModifier)
+    QCoreApplication.sendEvent(viewport, event)
+
+
+def leave(viewport):
+    QCoreApplication.sendEvent(viewport, QEvent(QEvent.Leave))
+
+
+def color_count(image, color, rect=None):
     pixels = np.frombuffer(image.constBits(), dtype=np.uint8).reshape(
         image.height(), image.width(), 4)
+    if rect is not None:
+        dpr = image.devicePixelRatioF()
+        pixels = pixels[round(rect.top() * dpr):round(rect.bottom() * dpr),
+                        round(rect.left() * dpr):round(rect.right() * dpr)]
     return int(np.count_nonzero(np.all(pixels == np.array(color, dtype=np.uint8), axis=2)))
 
 
@@ -111,7 +125,8 @@ def _():
         viewport._sync_now()
         cached = viewport._static_scene
         point = chart.series_renderers[0]._points[-1]
-        QTest.mouseMove(viewport, QPoint(round(point.x()), round(point.y())))
+        hover(viewport, point)
+        pump(50)
         viewport._sync_now()
         assert chart.tooltip.active
         scene = viewport._tooltip_scene
@@ -125,9 +140,10 @@ def _():
         actual.save(str(destination / "item.png"))
         expected.save(str(destination / "item_reference.png"))
         assert actual.size() == expected.size()
-        assert color_count(actual, QColor(T("color.bg.elevated")).getRgb()) > 0
-        assert color_count(actual, QColor(T("color.text.primary")).getRgb()) > 0
-        QTest.mouseMove(viewport, QPoint(1, 1))
+        assert color_count(actual, QColor(T("color.bg.elevated")).getRgb(), scene.box) > 0
+        assert color_count(actual, QColor(T("color.text.primary")).getRgb(), scene.box) > 0
+        hover(viewport, QPoint(1, 1))
+        pump(50)
         viewport._sync_now()
         assert not chart.tooltip.active
         assert viewport._tooltip_scene is None
@@ -136,7 +152,8 @@ def _():
         chart.anim.set_progress(1.0)
         viewport._sync_now()
         center = chart.primary_coord().plot.center()
-        QTest.mouseMove(viewport, QPoint(round(center.x()), round(center.y())))
+        hover(viewport, center)
+        pump(50)
         viewport._sync_now()
         assert chart.tooltip.active and chart.tooltip.trigger == "axis"
         assert len(chart.tooltip._lines) >= 2
@@ -148,8 +165,10 @@ def _():
         assert scene.box.left() >= 4 and scene.box.right() <= chart.width() - 4
         axis_image = grab(viewport)
         axis_image.save(str(destination / "axis.png"))
-        assert color_count(axis_image, QColor(T("color.bg.elevated")).getRgb()) > 0
-        QTest.mouseMove(viewport, QPoint(1, 1))
+        assert color_count(axis_image, QColor(T("color.bg.elevated")).getRgb(), scene.box) > 0
+        assert color_count(axis_image, QColor(T("color.text.primary")).getRgb(), scene.box) > 0
+        leave(viewport)
+        pump(50)
         viewport._sync_now()
         assert not chart.tooltip.active and viewport._tooltip_scene is None
     finally:
