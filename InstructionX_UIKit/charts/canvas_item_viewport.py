@@ -198,6 +198,7 @@ class _CanvasSceneHost(QObject):
         for viewport in tuple(self._viewports):
             if viewport.isVisible() and viewport._chart._ui_active:
                 viewport.frameSubmitted.emit()
+                viewport.frameSwapped.emit()
 
     def _sync_all(self):
         if self._container is not None and _shiboken_is_valid(self._container):
@@ -218,6 +219,17 @@ class _CanvasSceneHost(QObject):
         return target
 
     def _forward_input(self, event):
+        if event.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+            target = QApplication.focusWidget()
+            if target is None or target in (self._container, self._view):
+                target = self._viewports[0] if self._viewports else None
+            if hasattr(target, "_chart"):
+                target = target._chart
+            if target is None:
+                return False
+            QCoreApplication.sendEvent(target, event)
+            event.accept()
+            return True
         if isinstance(event, QContextMenuEvent):
             global_pos = event.globalPos()
         else:
@@ -245,7 +257,8 @@ class _CanvasSceneHost(QObject):
         if obj is self._view and event.type() in (
                 QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove,
                 QEvent.Type.MouseButtonRelease, QEvent.Type.MouseButtonDblClick,
-                QEvent.Type.Wheel, QEvent.Type.ContextMenu):
+                QEvent.Type.Wheel, QEvent.Type.ContextMenu,
+                QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
             return self._forward_input(event)
         if obj is not self._window:
             return super().eventFilter(obj, event)
@@ -289,6 +302,7 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
     """保持 ChartWidget 公共接口的共享 Scene Graph 内部视口。"""
 
     frameSubmitted = Signal()
+    frameSwapped = Signal()
 
     def __init__(self, chart, parent=None):
         super().__init__(parent)
@@ -459,7 +473,12 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
                 or not _shiboken_is_valid(self._item):
             return
         started = time.perf_counter()
-        self._sync_structure()
+        try:
+            self._sync_structure()
+            component_scene_key(self._chart)
+        except NotImplementedError as exc:
+            self._fallback_to_rhi(exc)
+            return
         self._chart._layout_all()
         for model in self._line_views:
             self._sync_series_model(model)
@@ -477,6 +496,26 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
                              component_scene=self._component_scene)
         self.sync_times.append((time.perf_counter() - started) * 1000)
         del self.sync_times[:-120]
+
+    def _fallback_to_rhi(self, reason):
+        chart = self._chart
+        chart._backend_fallback_reason = str(reason)
+        try:
+            from .rhi_viewport import create_rhi_viewport
+            viewport = create_rhi_viewport(chart)
+        except Exception:
+            from .viewport import _RasterViewport
+            viewport = _RasterViewport(chart)
+        chart._viewport = viewport
+        self.close()
+        self.deleteLater()
+        viewport.setGeometry(chart.rect())
+        viewport.show()
+        viewport.raise_()
+
+    def mean_sync_ms(self, window=60):
+        samples = self.sync_times[-window:]
+        return sum(samples) / len(samples) if samples else 0.0
 
     def api(self):
         return self._view.graphicsApi() if self._view is not None else None

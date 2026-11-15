@@ -99,6 +99,13 @@ def create_viewport(chart) -> QWidget:
     requested = os.environ.get("UIKIT_CHART_BACKEND", "").strip().lower()
     if platform in _SOFTWARE_PLATFORMS or requested == "raster":
         return _RasterViewport(chart)
+    if requested == "canvas":
+        try:
+            from .canvas_factory import create_canvas_viewport
+            return create_canvas_viewport(chart)
+        except NotImplementedError as exc:
+            chart._backend_fallback_reason = str(exc)
+            logger.info("Canvas 图表能力不足，使用完整 RHI 视口: %s", exc)
     try:
         from .rhi_viewport import create_rhi_viewport
         return create_rhi_viewport(chart)
