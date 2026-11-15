@@ -223,7 +223,7 @@ def _():
         points = []
         for name, polygon in renderer._polys:
             point = polygon.boundingRect().center()
-            if polygon.containsPoint(point):
+            if polygon.containsPoint(point, Qt.OddEvenFill):
                 hit = renderer.hit_test(point)
                 assert hit is not None and hit["name"] == name, (name, hit)
                 points.append(point)
