@@ -42,6 +42,7 @@ from .sampling import (
     bucket_count,
     column_aggregate,
     sample_entries,
+    sample_indices,
     sampling_options,
     visible_threshold,
 )
@@ -589,6 +590,8 @@ class LineSeriesRenderer(SeriesRenderer):
         self._points = []        # [QPointF|None]
         self._prev_points = []   # 上一次布局的点（同长度时用于兜底插值）
         self._entries = []       # [(x, y)]
+        self._gpu_geometry = None
+        self._gpu_entries = None
         # 保留 gpuDirect 选项的读取语义；渲染由平台 RHI 统一承载。
         self._gpu_direct = bool(opt.get("gpuDirect", False))
         #: 矢量映射首用自检状态（见 _map_sampled_fast 的护栏说明）
@@ -695,15 +698,66 @@ class LineSeriesRenderer(SeriesRenderer):
         # 曲线两端会凭空少一截。折线采样必须钉住端点。
         return _pin_endpoints(entries, self.data_view(), xs)
 
+    def _numeric_arrays(self, coord, rect):
+        if _np is None or not isinstance(coord, GridCoord):
+            return None
+        if coord.x_axis.type != "value" or coord.y_axis.type != "value":
+            return None
+        data = self.data_view()
+        if not isinstance(data, NumericBuffer) or not isinstance(data.raw, _np.ndarray):
+            return None
+        options = sampling_options(self.opt)
+        viewport_px = self._line_viewport_px(coord, rect)
+        if not options.enabled or not viewport_px:
+            return None
+        threshold = visible_threshold(viewport_px, options.safety)
+        if threshold < 2 or len(data) <= threshold:
+            return None
+        raw = _np.asarray(data.raw, dtype=_np.float64)
+        if raw.ndim != 1:
+            return None
+        indices = sample_indices(raw, bucket_count(viewport_px))
+        mapped = self._map_sampled_fast(coord, indices, raw[indices], as_points=False)
+        if mapped is None:
+            return None
+        return indices, raw[indices], mapped
+
+    def _numeric_layout(self, coord, rect):
+        arrays = self._numeric_arrays(coord, rect)
+        if arrays is None:
+            return None
+        indices, values, (px, py) = arrays
+        self._points = [QPointF(float(x), float(y)) for x, y in zip(px, py)]
+        self._entries = list(zip(indices.astype(_np.float64).tolist(), values.tolist()))
+        return self._points
+
+    def _ensure_legacy_geometry(self):
+        geometry = self._gpu_geometry
+        if geometry is None:
+            return
+        indices, values = self._gpu_entries
+        self._points = [QPointF(float(x), float(y)) for x, y in zip(*geometry)]
+        self._entries = list(zip(indices.astype(_np.float64).tolist(), values.tolist()))
+        self._gpu_geometry = None
+        self._gpu_entries = None
+
     # -- 布局 -------------------------------------------------------------
     def layout(self, rect: QRectF) -> None:
+        gpu_layout = getattr(getattr(self.chart, "_viewport", None), "layout_line", None)
+        if gpu_layout is not None and gpu_layout(self, rect):
+            return
         coord = self.chart.coord_for(self.opt)
+        self._ensure_legacy_geometry()
         self._prev_points = list(self._points)
         self._points = []
         self._entries = []
+        self._gpu_geometry = None
+        self._gpu_entries = None
         if coord is None:
             return
         single = getattr(coord, "kind", "") == "singleAxis"
+        if not single and self._numeric_layout(coord, rect) is not None:
+            return
         # 运行时降采样（§8.2 保真承诺）：可见点数超过视口像素量级时才启用。
         # 阈值用**绘图区像素宽**（GridCoord.plot.width）而非坐标区宽：两者
         # 相差左右边距（实测 480 的坐标区里绘图区只有 408），用坐标区宽会
@@ -738,7 +792,7 @@ class LineSeriesRenderer(SeriesRenderer):
             except Exception:
                 self._points.append(None)
 
-    def _map_sampled_fast(self, coord, xs, ys):
+    def _map_sampled_fast(self, coord, xs, ys, as_points=True):
         """采样点 → 屏幕坐标的**向量化**映射；不适用时返回 ``None``。
 
         逐点调 ``coord.map_point`` 每个点约 2.3 µs（实测 818 点 1.9 ms），
@@ -766,7 +820,7 @@ class LineSeriesRenderer(SeriesRenderer):
                 or str(getattr(y_axis, "type", "")) != "value":
             return None
         plot = getattr(coord, "plot", None)
-        if plot is None or not xs:
+        if plot is None or len(xs) == 0:
             return None
         try:
             ax = _np.asarray(xs, dtype=_np.float64)
@@ -811,6 +865,8 @@ class LineSeriesRenderer(SeriesRenderer):
                 return None
         if self._fast_map_disabled:
             return None
+        if not as_points:
+            return px, py
         return [QPointF(float(a), float(b)) for a, b in zip(px, py)]
 
     def _fast_map_matches(self, coord, ax, ay, px, py) -> bool:
@@ -831,6 +887,7 @@ class LineSeriesRenderer(SeriesRenderer):
 
     def _animated_points(self, anim_t):
         """旧→新插值：长度一致时逐点 lerp；否则返回当前点列。"""
+        self._ensure_legacy_geometry()
         cur = self._points
         if anim_t >= 1.0 or not self.chart.anim.is_running():
             return cur

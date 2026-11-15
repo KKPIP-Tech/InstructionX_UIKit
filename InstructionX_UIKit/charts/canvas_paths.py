@@ -8,7 +8,17 @@ from PySide6.QtCanvasPainter import QCanvasPath
 from PySide6.QtCore import QPointF
 from PySide6.QtGui import QPainterPath
 
-__all__ = ["line_path", "line_paths", "path_from_qpainter"]
+__all__ = ["line_path", "line_paths", "line_path_arrays", "path_from_qpainter"]
+
+
+def line_path_arrays(xs, ys) -> QCanvasPath:
+    """直接把已映射的数值坐标送入路径，避免重复构造 QPointF。"""
+    path = QCanvasPath(len(xs))
+    if len(xs):
+        path.moveTo(float(xs[0]), float(ys[0]))
+        for x, y in zip(xs[1:], ys[1:]):
+            path.lineTo(float(x), float(y))
+    return path
 
 
 def line_path(points) -> QCanvasPath:

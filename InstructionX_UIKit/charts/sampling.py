@@ -30,6 +30,7 @@ __all__ = [
     "visible_threshold",
     "bucket_count",
     "bucket_sample",
+    "sample_indices",
     "sample_entries",
     "column_aggregate",
 ]
@@ -201,6 +202,39 @@ def _blocked_numpy_extrema(values, bounds, block=64):
         min_indices[selected] = selected_starts + _np.argmin(bucket_values, axis=1)
         max_indices[selected] = selected_starts + _np.argmax(bucket_values, axis=1)
     return list(zip(min_indices.tolist(), max_indices.tolist()))
+
+
+def sample_indices(values, buckets: int):
+    """数值序列的像素桶极值下标，保留原顺序、首命中与有效端点。"""
+    if _np is None:
+        raise NotImplementedError("数值下标采样需要 numpy")
+    raw = values.raw if isinstance(values, NumericBuffer) else values
+    values = _np.asarray(raw, dtype=_np.float64)
+    n = len(values)
+    if buckets < 2 or buckets >= n or values.ndim != 1:
+        return _np.arange(n, dtype=_np.int64)
+    columns = _np.arange(buckets, dtype=_np.int64)
+    starts = _np.ceil(columns * (n / buckets)).astype(_np.int64)
+    ends = _np.ceil((columns + 1) * (n / buckets)).astype(_np.int64)
+    ends[-1] = n
+    empty = ends <= starts
+    starts[empty] = _np.minimum(columns[empty], n - 1)
+    ends[empty] = _np.minimum(starts[empty] + 1, n)
+    lengths = ends - starts
+    minima = _np.empty(buckets, dtype=_np.int64)
+    maxima = _np.empty(buckets, dtype=_np.int64)
+    for width in _np.unique(lengths):
+        selected = _np.flatnonzero(lengths == width)
+        selected_starts = starts[selected]
+        positions = selected_starts[:, None] + _np.arange(width)
+        bucket_values = values[positions]
+        minima[selected] = selected_starts + _np.argmin(bucket_values, axis=1)
+        maxima[selected] = selected_starts + _np.argmax(bucket_values, axis=1)
+    indices = _np.unique(_np.stack((minima, maxima), axis=1))
+    endpoints = [index for index in (0, n - 1) if _np.isfinite(values[index])]
+    if endpoints:
+        indices = _np.union1d(indices, _np.asarray(endpoints, dtype=_np.int64))
+    return indices.astype(_np.int64, copy=False)
 
 
 def bucket_sample(values, threshold: int, x_values=None):
