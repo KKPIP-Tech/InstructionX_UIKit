@@ -15,7 +15,7 @@ from shiboken6 import isValid as _shiboken_is_valid
 
 from ..theme import T, ThemeManager
 from .axes import GridCoord
-from .canvas_paths import line_paths, path_from_qpainter
+from .canvas_paths import line_path_arrays, line_paths, path_from_qpainter
 from .series_cartesian import LineSeriesRenderer, _to_float, _with_alpha
 from .viewport import _ViewportMixin
 
@@ -32,6 +32,7 @@ class CanvasLineViewport(QCanvasPainterWidget):
             renderer.chart.coord_for(renderer.opt) if renderer is not None else None)
         self._plot = QRectF(self._coord.plot) if isinstance(self._coord, GridCoord) else QRectF()
         self._points = []
+        self._screen_geometry = None
         self._areas = []
         self._paths = []
         self._dashes = []
@@ -45,6 +46,8 @@ class CanvasLineViewport(QCanvasPainterWidget):
         self._canvas = None
         self._canvas_signature = None
         self._canvas_dirty = True
+        self._capture_requested = False
+        self._capture_callbacks = []
         self.paint_times = []
         self.setMouseTracking(True)
         self.setFillColor(QColor(Qt.transparent))
@@ -76,6 +79,7 @@ class CanvasLineViewport(QCanvasPainterWidget):
             pass
 
     def _rebuild_paths(self, points):
+        self._screen_geometry = None
         if self._renderer is None:
             self._points = list(points)
             self._paths = []
@@ -149,6 +153,15 @@ class CanvasLineViewport(QCanvasPainterWidget):
         stroker.setDashPattern(Qt.DashLine if line_type in ("dashed", "dash") else Qt.DotLine)
         return path_from_qpainter(stroker.createStroke(path))
 
+    def set_arrays(self, geometry):
+        self._screen_geometry = geometry
+        self._points = []
+        self._areas = []
+        self._dashes = []
+        self._paths = [line_path_arrays(*geometry)]
+        self._canvas_dirty = True
+        self.update()
+
     def set_paths(self, points):
         self._rebuild_paths(points)
         self._source_points = points
@@ -211,6 +224,8 @@ class CanvasLineViewport(QCanvasPainterWidget):
             painter.restore()
 
     def prePaint(self, painter):  # noqa: N802
+        if not self._capture_requested:
+            return
         dpr = self.devicePixelRatioF()
         signature = (round(self.width() * dpr), round(self.height() * dpr), dpr)
         if signature[0] <= 0 or signature[1] <= 0:
@@ -232,6 +247,16 @@ class CanvasLineViewport(QCanvasPainterWidget):
             self._draw(painter)
             self.endCanvasPainting()
             self._canvas_dirty = False
+        self._capture_requested = False
+        QTimer.singleShot(0, self._flush_capture_callbacks)
+
+    def _flush_capture_callbacks(self):
+        if self._canvas is None:
+            return
+        callbacks, self._capture_callbacks = self._capture_callbacks, []
+        for callback in callbacks:
+            self.grabCanvas(self._canvas,
+                            lambda image, callback=callback: callback(image.copy()))
 
     def paint(self, painter):
         started = time.perf_counter()
@@ -240,9 +265,10 @@ class CanvasLineViewport(QCanvasPainterWidget):
         del self.paint_times[:-120]
 
     def grab_canvas(self, callback):
-        if self._canvas is None:
-            raise RuntimeError("Canvas 离屏画布尚未初始化")
-        self.grabCanvas(self._canvas, lambda image: callback(image.copy()))
+        self._capture_callbacks.append(callback)
+        self._capture_requested = True
+        self._canvas_dirty = True
+        self.update()
 
     def resizeEvent(self, event):  # noqa: N802
         self._canvas_dirty = True
@@ -304,6 +330,22 @@ class CanvasLineChartViewport(_ViewportMixin, CanvasLineViewport):
         self._renderer_ids = current
         self._renderer = current[0] if current else None
 
+    def layout_line(self, renderer, rect):
+        if self._chart.anim.is_running() or renderer.opt.get("showSymbol") is not False:
+            return False
+        line_style = renderer.opt.get("lineStyle") or {}
+        if str(line_style.get("type") or "solid") not in ("solid", ""):
+            return False
+        if renderer._line_needs_path(False):
+            return False
+        arrays = renderer._numeric_arrays(self._chart.coord_for(renderer.opt), rect)
+        if arrays is None:
+            return False
+        indices, values, geometry = arrays
+        renderer._gpu_geometry = geometry
+        renderer._gpu_entries = (indices, values)
+        return True
+
     def _sync_now(self):
         if not self._chart._ui_active or not self.isVisible():
             return
@@ -313,7 +355,11 @@ class CanvasLineChartViewport(_ViewportMixin, CanvasLineViewport):
         for model in self._line_views:
             model._plot = QRectF(model._coord.plot) \
                 if isinstance(model._coord, GridCoord) else QRectF()
-            if model._source_points is not model._renderer._points:
+            geometry = model._renderer._gpu_geometry
+            if geometry is not None:
+                if model._screen_geometry is not geometry:
+                    model.set_arrays(geometry)
+            elif model._source_points is not model._renderer._points:
                 model.set_paths(model._renderer._points)
         self._canvas_dirty = True
         self.sync_times.append((time.perf_counter() - started) * 1000)

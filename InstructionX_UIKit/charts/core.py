@@ -912,7 +912,9 @@ class ChartWidget(QWidget):
             "physical_width": round(viewport.width() * dpr),
             "physical_height": round(viewport.height() * dpr),
             "raw_points": sum(len(r.data_view()) for r in self._series),
-            "screen_points": sum(len(r._points) for r in self._series),
+            "screen_points": sum(
+                len(r._gpu_geometry[0]) if getattr(r, "_gpu_geometry", None) is not None
+                else len(r._points) for r in self._series),
         })
         return result
 
