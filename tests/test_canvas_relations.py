@@ -210,9 +210,14 @@ def _():
             hit = renderer.hit_test(point)
             assert hit is not None and hit["name"] == node["name"]
         for band in renderer._bands:
-            point = band["path"].pointAtPercent(0.5)
+            point = band["path"].pointAtPercent(0.25)
+            assert band["path"].contains(point)
+            assert not any(node["rect"].contains(point) for node in renderer._nodes)
+            expected = next(candidate for candidate in renderer._bands
+                            if candidate["path"].contains(point))
             hit = renderer.hit_test(point)
-            assert hit is not None and hit.get("source") == band["source"], (band, hit)
+            assert hit is not None and hit.get("source") == expected["source"] \
+                and hit.get("target") == expected["target"], (band, hit)
         assert_matches(viewport, chart, "sankey", points)
         hover(viewport, points[0])
         assert chart.tooltip.active and viewport._tooltip_scene is not None
