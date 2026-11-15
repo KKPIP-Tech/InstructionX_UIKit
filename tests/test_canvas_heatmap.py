@@ -94,6 +94,14 @@ def center_rgb(image, point):
     return pixels(image)[round(point.y() * dpr), round(point.x() * dpr), :3]
 
 
+def ink_bbox(image, rect):
+    dpr = image.devicePixelRatioF()
+    cropped = image.copy(round(rect.left() * dpr), round(rect.top() * dpr),
+                         max(1, round(rect.width() * dpr)),
+                         max(1, round(rect.height() * dpr)))
+    return series_ink_bbox(cropped)
+
+
 def assert_matches(viewport, chart, name):
     actual = grab(viewport)
     expected = reference(chart, viewport.devicePixelRatioF())
@@ -103,14 +111,12 @@ def assert_matches(viewport, chart, name):
     expected.save(str(destination / f"{name}_reference.png"))
     renderer = chart.series_renderers[0]
     assert len(renderer._cells) == len(viewport._line_views[0]._areas)
+    bounds = None
     for index, cell in enumerate(renderer._cells):
-        bounds = cell["rect"].adjusted(-1, -1, 1, 1)
-        actual_bbox = series_ink_bbox(actual.copy(
-            round(bounds.left()), round(bounds.top()),
-            max(1, round(bounds.width())), max(1, round(bounds.height()))))
-        expected_bbox = series_ink_bbox(expected.copy(
-            round(bounds.left()), round(bounds.top()),
-            max(1, round(bounds.width())), max(1, round(bounds.height()))))
+        rect = cell["rect"].adjusted(-1, -1, 1, 1)
+        bounds = rect if bounds is None else bounds.united(rect)
+        actual_bbox = ink_bbox(actual, rect)
+        expected_bbox = ink_bbox(expected, rect)
         assert actual_bbox is not None and expected_bbox is not None, (name, index)
         assert all(abs(a - b) <= 2 for a, b in zip(actual_bbox, expected_bbox)), (
             name, index, actual_bbox, expected_bbox)
@@ -118,11 +124,26 @@ def assert_matches(viewport, chart, name):
         expected_center = center_rgb(expected, cell["rect"].center())
         assert np.max(np.abs(actual_center.astype(int) - expected_center.astype(int))) <= 2, (
             name, index, actual_center, expected_center)
-    actual_bbox = series_ink_bbox(actual)
-    expected_bbox = series_ink_bbox(expected)
-    assert actual_bbox is not None and expected_bbox is not None
-    assert all(abs(a - b) <= 2 for a, b in zip(actual_bbox, expected_bbox)), (
-        name, actual_bbox, expected_bbox)
+    if bounds is not None:
+        actual_bbox = ink_bbox(actual, bounds)
+        expected_bbox = ink_bbox(expected, bounds)
+        assert actual_bbox is not None and expected_bbox is not None
+        assert all(abs(a - b) <= 2 for a, b in zip(actual_bbox, expected_bbox)), (
+            name, actual_bbox, expected_bbox)
+    for component in chart.components:
+        if component.option_key != "visualMap":
+            continue
+        bar = component._bar
+        for fraction in (0.15, 0.5, 0.85):
+            point = bar.center() if component.orient == "vertical" else None
+            if point is None:
+                point = bar.center()
+                point.setX(bar.left() + bar.width() * fraction)
+            else:
+                point.setY(bar.top() + bar.height() * fraction)
+            delta = np.abs(center_rgb(actual, point).astype(int)
+                           - center_rgb(expected, point).astype(int))
+            assert int(delta.max()) <= 2, (name, "visualMap", fraction, delta)
 
 
 def hover(viewport, pos):
