@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """柱状系列的 Canvas 原生几何与共享视口扩展。"""
 
+import math
+
 from PySide6.QtCanvasPainter import QCanvasPath
 from PySide6.QtCore import QRectF
 from PySide6.QtGui import QColor, QTransform
@@ -8,9 +10,16 @@ from PySide6.QtGui import QColor, QTransform
 from ..theme import T
 from .axes import GridCoord
 from .canvas_item_viewport import CanvasItemLineChartViewport
-from .series_cartesian import BarSeriesRenderer, LineSeriesRenderer
+from .series_cartesian import (
+    BarSeriesRenderer,
+    EffectScatterSeriesRenderer,
+    LineSeriesRenderer,
+    ScatterSeriesRenderer,
+    _with_alpha,
+)
 
-__all__ = ["CanvasBarView", "CanvasBarChartViewport"]
+__all__ = ["CanvasBarView", "CanvasBarChartViewport",
+           "CanvasScatterView", "CanvasScatterChartViewport"]
 
 
 class CanvasBarView:
@@ -117,4 +126,136 @@ class CanvasBarChartViewport(CanvasItemLineChartViewport):
         if model._source_bars is not renderer._bars \
                 or model._anim_t != self._chart.anim.t \
                 or model._color != renderer.color():
+            model.set_geometry(renderer, self._chart.anim.t)
+
+
+class CanvasScatterView:
+    def __init__(self, renderer, coord=None):
+        self._renderer = renderer
+        self._coord = coord
+        self._plot = QRectF(coord.plot) if isinstance(coord, GridCoord) else None
+        self._points = []
+        self._screen_geometry = None
+        self._paths = []
+        self._areas = []
+        self._outlines = []
+        self._ripples = []
+        self._dashes = []
+        self._color = QColor(renderer.color())
+        self._symbol_fill = QColor(T("color.bg.elevated"))
+        self._symbol_setting = False
+        self._symbol_size = 6.0
+        self._line_width = 1.0
+        self._anim_t = 1.0
+        self._visible = renderer.visible
+        self._source_dots = None
+        self._aggregated = False
+        self._phase = 0.0
+        self._scale = 2.6
+        self.set_geometry(renderer, self._anim_t)
+
+    def set_geometry(self, renderer, anim_t):
+        coord = renderer.chart.coord_for(renderer.opt)
+        self._coord = coord
+        self._plot = QRectF(coord.plot) if isinstance(coord, GridCoord) else None
+        self._source_dots = renderer._dots
+        self._anim_t = float(anim_t)
+        self._color = QColor(renderer.color())
+        self._aggregated = renderer._aggregated
+        self._phase = getattr(renderer, "_phase", 0.0)
+        self._scale = getattr(renderer, "_scale", 2.6)
+        self._areas = []
+        self._outlines = []
+        self._ripples = []
+        scale = max(0.0, anim_t)
+        for dot in self._source_dots:
+            point = dot["pt"]
+            if self._aggregated:
+                side = 2.0 * scale
+                if side <= 0:
+                    continue
+                alpha = 90 + min(145, 12 * int(math.log2(max(1, dot["count"]))))
+                path = QCanvasPath(4)
+                path.rect(QRectF(point.x() - side / 2, point.y() - side / 2, side, side))
+                self._areas.append((path, _with_alpha(self._color, alpha)))
+                continue
+            radius = dot["r"] * scale
+            if radius <= 0:
+                continue
+            path = QCanvasPath(4)
+            path.ellipse(QRectF(point.x() - radius, point.y() - radius,
+                                radius * 2, radius * 2))
+            self._areas.append((path, _with_alpha(self._color, 190)))
+            self._outlines.append((path, _with_alpha(self._color, 230), 1.0))
+        if isinstance(renderer, EffectScatterSeriesRenderer):
+            for dot in self._source_dots:
+                radius = max(dot["r"], 3.0) * (1.0 + self._phase * (self._scale - 1.0))
+                point = dot["pt"]
+                path = QCanvasPath(4)
+                path.ellipse(QRectF(point.x() - radius, point.y() - radius,
+                                    radius * 2, radius * 2))
+                alpha = 140 * (1.0 - self._phase)
+                self._ripples.append((path, _with_alpha(self._color, alpha), 1.6))
+
+    def _draw(self, painter, scale=None):
+        if not self._visible:
+            return
+        painter.save()
+        try:
+            painter.setTransform(QTransform())
+            painter.scale(1.0 if scale is None else scale)
+            if self._plot is not None:
+                painter.setClipRect(self._plot)
+            else:
+                painter.resetClipping()
+            painter.setAntialias(1.0)
+            for path, brush in self._areas:
+                painter.setFillStyle(brush)
+                painter.fill(path)
+            for path, color, width in self._outlines:
+                painter.setStrokeStyle(color)
+                painter.setLineWidth(width)
+                painter.stroke(path)
+            for path, color, width in self._ripples:
+                painter.setStrokeStyle(color)
+                painter.setLineWidth(width)
+                painter.stroke(path)
+        finally:
+            painter.restore()
+
+    def close(self):
+        pass
+
+    def deleteLater(self):  # noqa: N802
+        pass
+
+
+class CanvasScatterChartViewport(CanvasBarChartViewport):
+    """支持 line、bar、scatter 与 effectScatter 的共享视口。"""
+
+    @staticmethod
+    def _line_models(renderers):
+        supported = (LineSeriesRenderer, BarSeriesRenderer,
+                     ScatterSeriesRenderer, EffectScatterSeriesRenderer)
+        if any(type(renderer) not in supported for renderer in renderers):
+            raise NotImplementedError("CanvasScatterChartViewport 当前仅支持 line、bar、scatter、effectScatter")
+        return list(renderers)
+
+    def _model_for(self, renderer, coord):
+        if isinstance(renderer, ScatterSeriesRenderer):
+            return CanvasScatterView(renderer, coord)
+        return super()._model_for(renderer, coord)
+
+    def _sync_series_model(self, model):
+        if not isinstance(model, CanvasScatterView):
+            super()._sync_series_model(model)
+            return
+        renderer = model._renderer
+        model._visible = renderer.visible
+        if model._source_dots is not renderer._dots \
+                or model._anim_t != self._chart.anim.t \
+                or model._color != renderer.color() \
+                or model._aggregated != renderer._aggregated \
+                or model._phase != getattr(renderer, "_phase", 0.0) \
+                or model._scale != getattr(renderer, "_scale", 2.6):
             model.set_geometry(renderer, self._chart.anim.t)

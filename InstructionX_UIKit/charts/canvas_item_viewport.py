@@ -31,6 +31,8 @@ class _CanvasPaintModel:
         self._screen_geometry = model._screen_geometry
         self._paths = tuple(model._paths)
         self._areas = tuple(model._areas)
+        self._outlines = tuple(getattr(model, "_outlines", ()))
+        self._ripples = tuple(getattr(model, "_ripples", ()))
         self._dashes = tuple(model._dashes)
         self._color = QColor(model._color)
         self._symbol_fill = QColor(model._symbol_fill)
@@ -312,11 +314,13 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
 
     @property
     def paint_times(self):
-        renderer = self._item._renderer if self._item is not None else None
+        renderer = self._item._renderer if self._item is not None \
+            and _shiboken_is_valid(self._item) else None
         return renderer.paint_times if renderer is not None else []
 
     def symbol_count(self, index):
-        renderer = self._item._renderer if self._item is not None else None
+        renderer = self._item._renderer if self._item is not None \
+            and _shiboken_is_valid(self._item) else None
         counts = renderer.symbol_counts if renderer is not None else ()
         return counts[index] if index < len(counts) else 0
 
@@ -327,6 +331,8 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
             self._host = _scene_host(self.window())
         self._host._ensure_view()
         self._view = self._host._view
+        if self._item is not None and not _shiboken_is_valid(self._item):
+            self._item = None
         if self._item is None:
             self._item = _CanvasItem()
         if self._item.parentItem() is not self._view.contentItem():
@@ -349,6 +355,8 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
         host.unregister(self)
 
     def _dispose_item(self):
+        if self._item is not None and not _shiboken_is_valid(self._item):
+            self._item = None
         if self._item is not None:
             renderer = self._item._renderer
             if renderer is not None and self._view is not None \
@@ -361,7 +369,7 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
     def _suspend(self):
         self._sync_timer.stop()
         self._chart.on_ui_deactivated()
-        if self._item is not None:
+        if self._item is not None and _shiboken_is_valid(self._item):
             self._item.setVisible(False)
 
     def _restore(self):
@@ -376,7 +384,7 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
         self._sync_timer.start(0)
 
     def _sync_item_geometry(self):
-        if self._host is None or self._item is None:
+        if self._host is None or self._item is None or not _shiboken_is_valid(self._item):
             return
         position = self.mapTo(self._host._window, QPoint(0, 0))
         self._item.setPosition(QPointF(position))
@@ -432,7 +440,8 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
             model.set_paths(model._renderer._points)
 
     def _sync_now(self):
-        if not self._chart._ui_active or not self.isVisible() or self._item is None:
+        if not self._chart._ui_active or not self.isVisible() or self._item is None \
+                or not _shiboken_is_valid(self._item):
             return
         started = time.perf_counter()
         self._sync_structure()
@@ -460,7 +469,7 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
         return "canvas-item-shared"
 
     def _grab_image(self):
-        if self._host is None or self._item is None:
+        if self._host is None or self._item is None or not _shiboken_is_valid(self._item):
             return QImage()
         image = self._host._view.grabWindow()
         dpr = image.devicePixelRatioF()
