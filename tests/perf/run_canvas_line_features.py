@@ -57,9 +57,17 @@ def grab_pair(viewport, app, points):
 def render_case(app, name, series, dark=False):
     previous_mode = ThemeManager.instance().mode
     chart = ChartWidget()
-    chart.set_option({"animation": False, "xAxis": {"type": "value"},
-                      "yAxis": {"type": "value", "min": -2, "max": 2},
-                      "series": [series]})
+    option = {"animation": False, "xAxis": {"type": "value"},
+              "yAxis": {"type": "value", "min": -2, "max": 2},
+              "series": [series]}
+    if name in ("polar", "polar_area"):
+        option["polar"] = {"shape": "polygon"}
+        option["angleAxis"] = {"type": "category",
+                                "data": ["速", "力", "防", "敏", "智", "运"]}
+        option["radiusAxis"] = {"type": "value"}
+    elif name == "singleAxis":
+        option["singleAxis"] = {"left": 40, "right": 40, "name": "分"}
+    chart.set_option(option)
     chart.anim.stop()
     chart.anim.set_progress(1.0)
     chart.resize(800, 500)
@@ -69,7 +77,7 @@ def render_case(app, name, series, dark=False):
     chart.hide()
     chart._viewport._view.hide()
     renderer = chart.series_renderers[0]
-    coord = chart.primary_coord()
+    coord = chart.coord_for(renderer.opt)
     viewport = CanvasLineViewport(renderer, coord)
     viewport.resize(chart.width(), chart.height())
     if dark:
@@ -101,6 +109,16 @@ def render_case(app, name, series, dark=False):
             and data_size == 2 * commands
     elif name == "area":
         structure_ok = bool(getattr(viewport, "_areas", []))
+    elif name in ("polar", "polar_area"):
+        structure_ok = coord.kind == "polar" and bool(viewport._paths) \
+            and (name != "polar_area" or bool(getattr(viewport, "_areas", [])))
+    elif name == "singleAxis":
+        structure_ok = coord.kind == "singleAxis" and commands > 0
+    elif name == "none":
+        structure_ok = len(viewport._paths) == 2
+    elif name == "nonmonotonic":
+        structure_ok = [(point.x(), point.y()) for point in viewport._points] == [
+            (point.x(), point.y()) for point in renderer._points]
     elif name in ("dash", "dot"):
         structure_ok = bool(getattr(viewport, "_dashes", []))
     elif name in ("symbols", "symbols_dark"):
@@ -116,7 +134,7 @@ def render_case(app, name, series, dark=False):
     actual_ink = int(np.count_nonzero(pixels[:, :, 3]))
     expected_ink = int(np.count_nonzero(expected_pixels[:, :, 3]))
     ink_ratio = actual_ink / expected_ink if expected_ink else 0.0
-    ink_ratio_ok = ink_ratio >= 0.55 if name == "area" else True
+    ink_ratio_ok = ink_ratio >= 0.55 if name in ("area", "polar_area") else True
     outer = QRectF(coord.plot).adjusted(-8, -8, 8, 8)
     left = max(0, int(outer.left() * dpr))
     top = max(0, int(outer.top() * dpr))
@@ -172,6 +190,19 @@ def main():
                 "lineStyle": {"type": "dotted"}, "showSymbol": False},
         "symbols": {"type": "line", "data": values, "showSymbol": True},
         "symbols_dark": {"type": "line", "data": values, "showSymbol": True},
+        "polar": {"type": "line", "coordinateSystem": "polar",
+                  "data": [["速", 80], ["力", 60], ["防", 70],
+                            ["敏", 90], ["智", 65], ["运", 75]], "showSymbol": False},
+        "polar_area": {"type": "line", "coordinateSystem": "polar",
+                       "data": [["速", 80], ["力", 60], ["防", 70],
+                                 ["敏", 90], ["智", 65], ["运", 75]],
+                       "areaStyle": {"opacity": 0.22}, "showSymbol": False},
+        "singleAxis": {"type": "line", "coordinateSystem": "singleAxis",
+                       "data": [10, 40, 25, 70, 55], "showSymbol": False},
+        "none": {"type": "line", "data": [1, 2, None, 1.5, 0.5],
+                 "showSymbol": False},
+        "nonmonotonic": {"type": "line", "data": [[3, 1], [1, 1.5], [2, -1], [0, 0.5]],
+                         "showSymbol": False},
     }
     source_sha = subprocess.check_output(["git", "rev-parse", "uniform_style"],
                                          cwd=ROOT, text=True).strip()
