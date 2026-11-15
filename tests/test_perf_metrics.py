@@ -76,5 +76,17 @@ def _():
     app.quit()
 
 
+@check("交换帧统计明确判定帧率红线")
+def _():
+    from tests.perf.run_realtime import frame_metrics
+
+    good = frame_metrics("good", [index / 120 for index in range(121)])
+    assert good["pass"] is True, good
+    assert good["average_fps"] >= 60
+    slow = frame_metrics("slow", [index / 30 for index in range(61)])
+    assert slow["pass"] is False, slow
+    assert frame_metrics("empty", [0.0])["pass"] is False
+
+
 if __name__ == "__main__":
     raise SystemExit(1 if _FAILURES else 0)

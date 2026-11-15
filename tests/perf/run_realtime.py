@@ -171,17 +171,22 @@ def frame_metrics(name, frames):
         return {"viewport": name, "frames": len(frames), "pass": False}
     intervals = np.diff(frames) * 1000
     elapsed = frames[-1] - frames[0]
+    average_fps = (len(frames) - 1) / elapsed if elapsed > 0 else 0
+    p95 = float(np.percentile(intervals, 95))
+    p99 = float(np.percentile(intervals, 99))
     return {
         "viewport": name,
         "frames": len(frames),
         "seconds": elapsed,
-        "average_fps": (len(frames) - 1) / elapsed if elapsed > 0 else 0,
+        "average_fps": average_fps,
         "p50_ms": float(np.percentile(intervals, 50)),
-        "p95_ms": float(np.percentile(intervals, 95)),
-        "p99_ms": float(np.percentile(intervals, 99)),
+        "p95_ms": p95,
+        "p99_ms": p99,
         "max_ms": float(intervals.max()),
         "over_16_67_ms": int((intervals > 16.67).sum()),
         "over_33_33_ms": int((intervals > 33.33).sum()),
+        "pass": bool(elapsed > 0 and average_fps >= 60
+                     and p95 <= 16.67 and p99 <= 33.33),
     }
 
 
