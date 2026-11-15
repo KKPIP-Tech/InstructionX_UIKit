@@ -14,11 +14,12 @@
 - 所有者已按首选路线批准 Qt Canvas Painter 的 GPLv3 许可；发布文档必须补充该许可，不得误导为 LGPL，也不得使用付费依赖。
 - 范围为 Chart 与 Blueprint 的内置图元；普通 QWidget/QSS 组件和任意用户 QWidget 子树不在本轮全 GPU 承诺内。
 - 公共 QWidget 构造、方法、属性、信号、返回值、dataIndex、焦点与键盘行为不得改变。
-- 禁止每帧 QPainter 全帧 QImage 快照、QQuickPaintedItem、QML Canvas、强制 OpenGL、降低 DPR、减少数据、隐藏组件或接受像素差异换取性能。
+- 禁止每帧 QPainter 全帧 QImage 快照、QQuickPaintedItem、QML Canvas 和强制 OpenGL。
+- 禁止降低 DPR、减少数据、隐藏组件、关闭必要效果或降低画质换取性能。所有者已明确允许 QCanvasPainter 的新光栅化结果，允许其与 QPainter 在抗锯齿覆盖、端帽和连接处存在差异；不得把这种差异称为逐像素兼容，也不得接受漏画、错图、黑帧、闪烁、错误颜色、错误几何或功能缺失。
 - CPU 负责逻辑与数据准备，GPU 负责实际图元绘制；不得宣称路径与文本不需要任何 CPU 准备。
 - 源码只在 `uniform_style` 修改；测试只在 `uniform_test` 修改。禁止 worktree，原 `test` 分支不动。
 - 每个小项先写失败测试，验证后提交，再从 `uniform_style` 合并到 `uniform_test` 复验。不得自动合并 `dev`、发布或修改 InstructionX 主仓库。
-- 任一像素、功能、性能或许可门禁失败均不得标为完成；许可或 PresentMon 权限不足必须标为阻塞，不得绕过。
+- 任一绘制正确性、功能、性能或许可门禁失败均不得标为完成；许可或 PresentMon 权限不足必须标为阻塞，不得绕过。
 
 ---
 
@@ -44,7 +45,7 @@ Expected: 输出实际 `api()`、回读图像尺寸、差异像素数和退出�
 - [ ] **Step 3: 记录初始像素差异**
 
 Run: 读取 `temp/rhi_visibility/canvas_hello.json` 与实际回读 PNG。
-Expected: 报告包含 `changed`、`max_delta`、`backend`、`physical_size`。若 `changed != 0`，后续 Task 1 必须先解决实线像素差异，不得替换正式后端。
+Expected: 报告包含 `changed`、`max_delta`、`backend`、`physical_size`，同时记录墨迹范围、基础颜色与裁剪。与 QPainter 的抗锯齿差异只作记录；后续 Task 1 以几何、颜色、数据、内容、稳定性和性能为门禁，不得把差异误写为漏画或渲染错误。
 
 ### Task 1: 建立实线路径与真实像素回归
 
@@ -60,7 +61,7 @@ Expected: 报告包含 `changed`、`max_delta`、`backend`、`physical_size`。�
 
 - [ ] **Step 1: 先写失败的路径与像素测试**
 
-路径测试必须覆盖空输入、单点、重复点、反向折线、None 分段和命令数量；真实测试覆盖 DPR 1/1.25/1.5/2、线宽 1/2/4/8、锐角、自相交和多条系列的原顺序合成。断言 `changed == 0 and max_delta == 0`。
+路径测试必须覆盖空输入、单点、重复点、反向折线、None 分段和命令数量；真实测试覆盖 DPR 1/1.25/1.5/2、线宽 1/2/4/8、锐角、自相交和多条系列的原顺序合成。与 QPainter 的差异单独记录；同一 Canvas 状态重复绘制必须逐像素自一致，几何、颜色、裁剪、数据和内容必须正确。
 
 - [ ] **Step 2: 确认测试先失败**
 
@@ -76,7 +77,7 @@ Expected: 因 `InstructionX_UIKit.charts.canvas_paths` 不存在而失败，不�
 Run: `QT_QPA_PLATFORM=offscreen QT_QPA_FONTDIR='C:\Windows\Fonts' .venv/Scripts/python.exe -u tests/test_canvas_paths.py`
 Expected: 全部通过。
 Run: `PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe -u tests/perf/run_canvas_line.py`
-Expected: 真实 QRhi 后端创建、绘制、回读与销毁成功；所有规定用例零像素差异；记录单帧耗时及资源上界。任一像素或稳定性失败则停止扩展。
+Expected: 真实 QRhi 后端创建、绘制、回读与销毁成功；几何、颜色、数据和内容正确；重复绘制自一致；记录与 QPainter 的差异、单帧耗时及资源上界。任一绘制正确性或稳定性失败则停止扩展。
 
 - [ ] **Step 5: 提交并合并复验**
 
@@ -119,7 +120,7 @@ git merge --no-ff --no-commit uniform_style
 - [ ] 按直角坐标、层级、文本与组件逐项写失败测试，保持原绘制顺序与 dataIndex。
 - [ ] 运行 `test_chart_core`、`test_chart_cartesian`、`test_chart_hierarchy`、`test_chart_components`、`test_perf_scatter`、`test_perf_symbols`、`test_charts_gallery`。
 - [ ] 全部 option 有实现后才替换真实窗口快照视口；离屏 QPainter 仅作参考验证，不作为真实窗口生产后端。
-- [ ] 最终像素不全为零则停止，不启用半成品。
+- [ ] 几何、颜色、数据与内容不完整，或出现错图、漏图、黑帧、闪烁、错误合成时停止，不启用半成品。
 
 ### Task 4: Blueprint 原生绘制
 
@@ -142,7 +143,7 @@ git merge --no-ff --no-commit uniform_style
 - Modify: `docs/superpowers/plans/2026-11-14-gui-performance-acceptance.md`
 - Modify: `tests/perf/final-evidence.json`
 
-- [ ] 全量独立脚本与原始亮暗 160 状态零像素对照通过。
+- [ ] 全量独立脚本通过；原始亮暗 160 状态的布局、几何、配色、数据与内容正确，与 QPainter 的差异单独记录，同一 GPU 状态的重复绘制逐像素自一致。
 - [ ] 真实 3840×2160、八个 2 万点系列至少 5×60 秒：平均 FPS≥60、P95≤16.67ms、P99≤33.33ms，且无应用自身≥100ms 长任务。
 - [ ] 窗口操作每类至少 5×30 秒，系统与手动路径、跨屏、最大化及资源生命周期均通过。
 - [ ] 资源、音频、退出与 PresentMon 权限证据齐全；权限不足只能标为阻塞。
@@ -151,6 +152,6 @@ git merge --no-ff --no-commit uniform_style
 ## Stop Conditions
 
 - 不接受 GPLv3，或不能公开安装同一 PySide6 能力。
-- 任一必需像素比较不为零，或真实图形后端、生命周期、option 覆盖不完整。
+- 必需几何、颜色、数据或内容不正确，或真实图形后端、生命周期、option 覆盖不完整。
 - 需要引入被禁止的编译组件、付费依赖、降低画质、减少数据或隐藏功能才能继续。
 - 真实 4K、窗口、资源或权限门禁未通过。此时只交付原始证据与阻塞说明，不宣称完成。
