@@ -63,7 +63,7 @@ class _CanvasItemRenderer(QCanvasPainterItemRenderer):
     def synchronizeData(self, item):  # noqa: N802
         self._views = tuple(_CanvasPaintModel(model) for model in item._line_views)
         self._static_scene = item._static_scene
-        self._component_scene = item._component_scene
+        self._component_scene = getattr(item, "_component_scene", None)
         self._overlay_scene = item._overlay_scene
 
     def paint(self, painter):
