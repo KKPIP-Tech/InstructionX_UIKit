@@ -34,27 +34,35 @@ class _ViewportMixin:
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         self._chart.mousePressEvent(event)
+        event.accept()
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         self._chart.mouseMoveEvent(event)
+        event.accept()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         self._chart.mouseReleaseEvent(event)
+        event.accept()
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
         self._chart.mouseDoubleClickEvent(event)
+        event.accept()
 
     def wheelEvent(self, event) -> None:  # noqa: N802
         self._chart.wheelEvent(event)
+        event.accept()
 
     def leaveEvent(self, event) -> None:  # noqa: N802
         self._chart.leaveEvent(event)
+        event.accept()
 
     def enterEvent(self, event) -> None:  # noqa: N802
         self._chart.enterEvent(event)
+        event.accept()
 
     def contextMenuEvent(self, event) -> None:  # noqa: N802
         self._chart.contextMenuEvent(event)
+        event.accept()
 
 
 class _RasterViewport(_ViewportMixin, QWidget):
