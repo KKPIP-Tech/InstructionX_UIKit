@@ -175,7 +175,7 @@ def _reference_blocked_extrema(values, bounds, block=64):
     return output
 
 
-@check("reduceat 极值索引逐项一致且降低分块成本")
+@check("极值索引逐项一致且降低分块成本")
 def _():
     rng = np.random.default_rng(20261115)
     for n, threshold in ((3, 2), (17, 4), (100, 7), (1000, 31),
