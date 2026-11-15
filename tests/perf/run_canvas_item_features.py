@@ -42,7 +42,7 @@ class ItemLineAdapter(CanvasItemLineChartViewport):
 
     @property
     def _last_symbol_count(self):
-        return self._model()._last_symbol_count
+        return self.symbol_count(0)
 
     def set_paths(self, points):
         self._model().set_paths(points)
