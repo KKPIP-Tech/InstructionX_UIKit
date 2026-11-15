@@ -81,9 +81,9 @@ def _():
     expected = path_from_qpainter(stroker.createStroke(path))
     actual = commands[0][1]
     assert actual.commandsSize() == expected.commandsSize()
-    for fraction in (0.0, 0.25, 0.5, 0.75, 1.0):
-        delta = actual.positionAt(fraction) - expected.positionAt(fraction)
-        assert delta.manhattanLength() < 1e-6, (fraction, delta)
+    for index in range(actual.commandsSize()):
+        delta = actual.positionAt(index) - expected.positionAt(index)
+        assert delta.manhattanLength() < 1e-6, (index, delta)
 
 
 if __name__ == "__main__":
