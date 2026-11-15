@@ -46,7 +46,12 @@ _DASH_CACHE = weakref.WeakKeyDictionary()
 _DASH_CACHE_MAX_PHASES = 32
 
 
-def _dashed(commands, edge):
+def _dashed(commands, path, color, width, pattern, offset=0.0):
+    for dash in dashed_paths(path, pattern, offset):
+        _stroke(commands, dash, color, width, cap=QCanvasPainter.LineCap.Round)
+
+
+def _cached_dashed(commands, edge):
     """按边几何、主题色与周期相位复用既有弧长虚线路径。"""
     color = QColor(T("color.primary"))
     phase = round(edge._dash_offset % 6.0, 9)
@@ -155,7 +160,7 @@ def _edges(commands, canvas, flowing=None):
         if flowing is not None and edge.flowing != flowing:
             continue
         if edge.flowing:
-            _dashed(commands, edge)
+            _cached_dashed(commands, edge)
             continue
         path = path_from_qpainter(edge.path())
         color = QColor(T("color.primary")) if edge.selected else edge._color()
