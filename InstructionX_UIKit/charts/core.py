@@ -1483,7 +1483,7 @@ class ChartWidget(QWidget):
             self._preview_capturing = True
             if hasattr(vp, "grab_canvas"):
                 vp.setGeometry(self.rect())
-                vp.grab_canvas(self._begin_resize_preview)
+                vp.grab_resize_preview(self._begin_resize_preview)
                 self.update()
                 return
             try:
