@@ -83,8 +83,13 @@ def render_case(app, name, series):
     geometry_ok = actual_bbox is not None and expected_bbox is not None and all(
         abs(a - b) <= 2 for a, b in zip(actual_bbox, expected_bbox))
     commands = sum(path.commandsSize() for path in viewport._paths)
-    if name in ("smooth", "step"):
-        structure_ok = commands == 3 * len(renderer._points) - 2
+    data_size = sum(path.commandsDataSize() for path in viewport._paths)
+    if name == "smooth":
+        structure_ok = commands == len(renderer._points) \
+            and data_size == 2 + 6 * (len(renderer._points) - 1)
+    elif name == "step":
+        structure_ok = commands == 3 * len(renderer._points) - 2 \
+            and data_size == 2 * commands
     elif name == "area":
         structure_ok = bool(getattr(viewport, "_areas", []))
     else:

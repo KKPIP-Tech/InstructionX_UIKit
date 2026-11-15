@@ -87,7 +87,7 @@ def _():
     source.lineTo(3, 4)
     source.cubicTo(QPointF(5, 6), QPointF(7, 8), QPointF(9, 10))
     path = path_from_qpainter(source)
-    assert path.commandsSize() == 5
+    assert path.commandsSize() == 3
     assert path.commandsDataSize() == 10
     point = path.currentPosition()
     assert point.x() == 9 and point.y() == 10
