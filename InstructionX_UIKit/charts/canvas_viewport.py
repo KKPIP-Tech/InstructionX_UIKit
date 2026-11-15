@@ -30,7 +30,7 @@ class CanvasLineViewport(QCanvasPainterWidget):
         self._renderer = renderer
         self._coord = coord if coord is not None else (
             renderer.chart.coord_for(renderer.opt) if renderer is not None else None)
-        self._plot = QRectF(self._coord.plot) if isinstance(self._coord, GridCoord) else QRectF()
+        self._plot = QRectF(self._coord.plot) if isinstance(self._coord, GridCoord) else None
         self._points = []
         self._screen_geometry = None
         self._areas = []
@@ -57,12 +57,17 @@ class CanvasLineViewport(QCanvasPainterWidget):
     def _sync_color(self):
         if self._renderer is None:
             self._color = QColor(T("color.text.primary"))
-            return
-        color = self._renderer.color()
-        line_style = self._renderer.opt.get("lineStyle") or {}
-        if isinstance(line_style.get("color"), str) and line_style["color"]:
-            color = QColor(line_style["color"])
-        self._color = QColor(color)
+            self._symbol_setting = False
+            self._symbol_size = 6.0
+        else:
+            color = self._renderer.color()
+            line_style = self._renderer.opt.get("lineStyle") or {}
+            if isinstance(line_style.get("color"), str) and line_style["color"]:
+                color = QColor(line_style["color"])
+            self._color = QColor(color)
+            self._symbol_setting = self._renderer.opt.get("showSymbol", True)
+            self._symbol_size = _to_float(self._renderer.opt.get("symbolSize"), 6.0)
+        self._symbol_fill = QColor(T("color.bg.elevated"))
 
     def _on_theme_changed(self):
         if not _shiboken_is_valid(self):
@@ -175,18 +180,16 @@ class CanvasLineViewport(QCanvasPainterWidget):
 
     def _draw_symbols(self, painter):
         self._last_symbol_count = 0
-        if self._renderer is None:
-            return
-        setting = self._renderer.opt.get("showSymbol", True)
         valid = [point for point in self._points if point is not None]
-        enabled = len(valid) <= 512 if setting == "auto" else bool(setting)
+        enabled = len(valid) <= 512 if self._symbol_setting == "auto" \
+            else bool(self._symbol_setting)
         if not enabled:
             return
-        radius = max(1.0, _to_float(self._renderer.opt.get("symbolSize"), 6.0) / 2)
+        radius = max(1.0, self._symbol_size / 2)
         radius *= max(0.2, self._anim_t)
         painter.setStrokeStyle(self._color)
         painter.setLineWidth(1.5)
-        painter.setFillStyle(QColor(T("color.bg.elevated")))
+        painter.setFillStyle(self._symbol_fill)
         for point in valid:
             painter.beginPath()
             painter.circle(point, radius)
@@ -194,12 +197,12 @@ class CanvasLineViewport(QCanvasPainterWidget):
             painter.stroke()
             self._last_symbol_count += 1
 
-    def _draw(self, painter):
+    def _draw(self, painter, scale=None):
         painter.save()
         try:
             painter.setTransform(QTransform())
-            painter.scale(self.devicePixelRatioF())
-            if isinstance(self._coord, GridCoord):
+            painter.scale(self.devicePixelRatioF() if scale is None else scale)
+            if self._plot is not None:
                 painter.setClipRect(self._plot)
             else:
                 painter.resetClipping()
@@ -354,7 +357,7 @@ class CanvasLineChartViewport(_ViewportMixin, CanvasLineViewport):
         self._chart._layout_all()
         for model in self._line_views:
             model._plot = QRectF(model._coord.plot) \
-                if isinstance(model._coord, GridCoord) else QRectF()
+                if isinstance(model._coord, GridCoord) else None
             geometry = model._renderer._gpu_geometry
             if geometry is not None:
                 if model._screen_geometry is not geometry:
