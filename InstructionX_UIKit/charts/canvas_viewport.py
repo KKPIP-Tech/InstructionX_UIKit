@@ -9,16 +9,17 @@ from PySide6.QtCanvasPainter import (
     QCanvasPainter,
     QCanvasPainterWidget,
 )
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QPainterPath, QPainterPathStroker, QTransform
 from shiboken6 import isValid as _shiboken_is_valid
 
 from ..theme import T, ThemeManager
 from .axes import GridCoord
 from .canvas_paths import line_paths, path_from_qpainter
-from .series_cartesian import _to_float, _with_alpha
+from .series_cartesian import LineSeriesRenderer, _to_float, _with_alpha
+from .viewport import _ViewportMixin
 
-__all__ = ["CanvasLineViewport"]
+__all__ = ["CanvasLineViewport", "CanvasLineChartViewport", "create_canvas_viewport"]
 
 
 class CanvasLineViewport(QCanvasPainterWidget):
@@ -27,7 +28,8 @@ class CanvasLineViewport(QCanvasPainterWidget):
     def __init__(self, renderer, coord=None, parent=None):
         super().__init__(parent)
         self._renderer = renderer
-        self._coord = coord if coord is not None else renderer.chart.coord_for(renderer.opt)
+        self._coord = coord if coord is not None else (
+            renderer.chart.coord_for(renderer.opt) if renderer is not None else None)
         self._plot = QRectF(self._coord.plot) if isinstance(self._coord, GridCoord) else QRectF()
         self._points = []
         self._areas = []
@@ -35,10 +37,11 @@ class CanvasLineViewport(QCanvasPainterWidget):
         self._dashes = []
         self._anim_t = 1.0
         self._last_symbol_count = 0
-        line_style = renderer.opt.get("lineStyle") or {}
+        line_style = (renderer.opt.get("lineStyle") or {}) if renderer is not None else {}
         self._line_width = _to_float(line_style.get("width"), 2.0)
         self._sync_color()
-        self._rebuild_paths(renderer._points)
+        self._rebuild_paths(renderer._points if renderer is not None else [])
+        self._points_id = id(renderer._points) if renderer is not None else None
         self._canvas = None
         self._canvas_signature = None
         self._canvas_dirty = True
@@ -49,6 +52,9 @@ class CanvasLineViewport(QCanvasPainterWidget):
         self.destroyed.connect(self._disconnect_theme)
 
     def _sync_color(self):
+        if self._renderer is None:
+            self._color = QColor(T("color.text.primary"))
+            return
         color = self._renderer.color()
         line_style = self._renderer.opt.get("lineStyle") or {}
         if isinstance(line_style.get("color"), str) and line_style["color"]:
@@ -70,6 +76,12 @@ class CanvasLineViewport(QCanvasPainterWidget):
             pass
 
     def _rebuild_paths(self, points):
+        if self._renderer is None:
+            self._points = list(points)
+            self._paths = []
+            self._areas = []
+            self._dashes = []
+            return
         polar = getattr(self._coord, "kind", "") == "polar"
         self._points = list(points)
         self._areas = []
@@ -139,15 +151,19 @@ class CanvasLineViewport(QCanvasPainterWidget):
 
     def set_paths(self, points):
         self._rebuild_paths(points)
+        self._points_id = id(points)
         self._canvas_dirty = True
         self.update()
 
     def set_animation_progress(self, value):
         self._anim_t = float(value)
-        self.set_paths(self._renderer._animated_points(self._anim_t))
+        if self._renderer is not None:
+            self.set_paths(self._renderer._animated_points(self._anim_t))
 
     def _draw_symbols(self, painter):
         self._last_symbol_count = 0
+        if self._renderer is None:
+            return
         setting = self._renderer.opt.get("showSymbol", True)
         valid = [point for point in self._points if point is not None]
         enabled = len(valid) <= 512 if setting == "auto" else bool(setting)
@@ -249,3 +265,115 @@ class CanvasLineViewport(QCanvasPainterWidget):
         self._canvas_signature = None
         self._canvas_dirty = True
         super().closeEvent(event)
+
+
+class CanvasLineChartViewport(_ViewportMixin, CanvasLineViewport):
+    """仅由 line 系列组成的 ChartWidget 原生 Canvas 视口。"""
+
+    def __init__(self, chart, parent=None):
+        renderers = self._line_models(chart.series_renderers)
+        first = renderers[0] if renderers else None
+        coord = chart.coord_for(first.opt) if first is not None else chart.primary_coord()
+        super().__init__(first, coord, parent)
+        self._init_viewport(chart)
+        self._renderer_ids = tuple(renderers)
+        self._line_views = [CanvasLineViewport(
+            renderer, chart.coord_for(renderer.opt), self) for renderer in renderers]
+        self.sync_times = []
+        self._sync_timer = QTimer(self)
+        self._sync_timer.setSingleShot(True)
+        self._sync_timer.timeout.connect(self._sync_now)
+
+    @staticmethod
+    def _line_models(renderers):
+        if any(not isinstance(renderer, LineSeriesRenderer) for renderer in renderers):
+            raise NotImplementedError("CanvasLineChartViewport 当前仅支持 line 系列")
+        return list(renderers)
+
+    def _sync_structure(self):
+        renderers = self._line_models(self._chart.series_renderers)
+        current = tuple(renderers)
+        if current == self._renderer_ids:
+            return
+        for model in self._line_views:
+            model.close()
+            model.deleteLater()
+        self._line_views = [CanvasLineViewport(
+            renderer, self._chart.coord_for(renderer.opt), self)
+            for renderer in current]
+        self._renderer_ids = current
+        self._renderer = current[0] if current else None
+
+    def _sync_now(self):
+        started = time.perf_counter()
+        self._sync_structure()
+        self._chart._layout_all()
+        for model in self._line_views:
+            model._plot = QRectF(model._coord.plot) \
+                if isinstance(model._coord, GridCoord) else QRectF()
+            if model._points_id != id(model._renderer._points):
+                model.set_paths(model._renderer._points)
+        self._canvas_dirty = True
+        self.sync_times.append((time.perf_counter() - started) * 1000)
+        del self.sync_times[:-120]
+
+    def update(self, *args):
+        if not self._chart._ui_active:
+            return
+        self._sync_timer.start(0)
+        super().update(*args)
+
+    def _draw(self, painter):
+        for model in self._line_views:
+            model._draw(painter)
+
+    def set_paths(self, points):
+        if self._line_views:
+            self._line_views[0].set_paths(points)
+        self._canvas_dirty = True
+        self.update()
+
+    def set_animation_progress(self, value):
+        self._anim_t = float(value)
+        for model in self._line_views:
+            model.set_animation_progress(value)
+        self._canvas_dirty = True
+        self.update()
+
+    def _on_theme_changed(self):
+        if not _shiboken_is_valid(self):
+            return
+        for model in self._line_views:
+            model._on_theme_changed()
+        self._canvas_dirty = True
+        self.update()
+
+    def showEvent(self, event):  # noqa: N802
+        self._chart.on_ui_activated()
+        self._sync_timer.start(0)
+        super().showEvent(event)
+
+    def hideEvent(self, event):  # noqa: N802
+        self._sync_timer.stop()
+        self._chart.on_ui_deactivated()
+        super().hideEvent(event)
+
+    def closeEvent(self, event):  # noqa: N802
+        self._sync_timer.stop()
+        for model in self._line_views:
+            model.close()
+            model.deleteLater()
+        self._line_views.clear()
+        super().closeEvent(event)
+
+    def rhi_api(self):
+        return getattr(self.api(), "name", str(self.api()))
+
+    def active_backend(self):
+        return "canvas"
+
+
+def create_canvas_viewport(chart):
+    """创建仅含 line 系列的 Canvas 视口，不静默丢弃其他系列。"""
+    CanvasLineChartViewport._line_models(chart.series_renderers)
+    return CanvasLineChartViewport(chart, parent=chart)
