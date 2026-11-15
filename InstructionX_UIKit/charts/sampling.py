@@ -180,30 +180,31 @@ def _bucket_bounds(n: int, threshold: int):
 
 
 def _blocked_numpy_extrema(values, bounds, block=64):
-    """分块计算每桶 argmin/argmax，临时内存受块宽限制。"""
-    output = []
-    for offset in range(0, len(bounds), block):
-        part = bounds[offset:offset + block]
-        extrema = [None] * len(part)
-        valid_rows = []
-        width = max(end - start for start, end in part)
-        lows = _np.full((len(part), width), _np.inf)
-        highs = _np.full((len(part), width), -_np.inf)
-        for row, (start, end) in enumerate(part):
-            segment = values[start:end]
-            if _np.isnan(segment).any():
-                extrema[row] = (start + int(_np.argmin(segment)),
-                                start + int(_np.argmax(segment)))
-                continue
-            lows[row, :end - start] = segment
-            highs[row, :end - start] = segment
-            valid_rows.append(row)
-        for row in valid_rows:
-            start, _ = part[row]
-            extrema[row] = (start + int(_np.argmin(lows[row])),
-                            start + int(_np.argmax(highs[row])))
-        output.extend(extrema)
-    return output
+    """用 ``reduceat`` 计算每桶 argmin/argmax，保持首命中与 NaN 语义。
+
+    与原逐桶分块实现的输出逐项一致；额外数组规模只取决于输入点数，
+    不保留历史数据。``block`` 仅为旧调用签名保留，不影响分桶边界。
+    """
+    del block
+    if not bounds:
+        return []
+    starts = _np.asarray([start for start, _end in bounds], dtype=_np.int64)
+    ends = _np.asarray([end for _start, end in bounds], dtype=_np.int64)
+    indices = _np.arange(len(values))
+    min_values = _np.minimum.reduceat(values, starts)
+    expanded_min = _np.repeat(min_values, ends - starts)
+    min_indices = _np.minimum.reduceat(
+        _np.where(values == expanded_min, indices, len(values)), starts)
+    max_values = _np.maximum.reduceat(values, starts)
+    expanded_max = _np.repeat(max_values, ends - starts)
+    max_indices = -_np.maximum.reduceat(
+        _np.where(values == expanded_max, -indices, -len(values)), starts)
+    nan_indices = _np.minimum.reduceat(
+        _np.where(_np.isnan(values), indices, len(values)), starts)
+    has_nan = nan_indices < ends
+    min_indices = _np.where(has_nan, nan_indices, min_indices)
+    max_indices = _np.where(has_nan, nan_indices, max_indices)
+    return list(zip(min_indices.tolist(), max_indices.tolist()))
 
 
 def bucket_sample(values, threshold: int, x_values=None):
