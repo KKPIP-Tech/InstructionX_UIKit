@@ -245,7 +245,7 @@ def _():
         assert component.current == 1 and timer is not component._timer
         assert not timer.isActive()
         assert viewport._component_scene is not previous_scene
-        assert chart.series_renderers[0]._points[1].y() < chart.primary_coord().plot.center().y()
+        assert chart.series_renderers[0].data() == [3, 5, 4]
         assert_matches(viewport, chart, "timeline_2025")
         QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, point(component._play_rect))
         sync(viewport)
