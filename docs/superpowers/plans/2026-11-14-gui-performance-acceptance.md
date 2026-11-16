@@ -27,10 +27,10 @@
 | 包版本 | `alpha-v1.0.3` |
 | 原始视觉证据 | `temp/performance/949b7288a50b6ed5beed744db3c8bf46a13c00ef/visual/manifest.json`：亮暗各 80 张，含 RGBA 哈希 |
 | 原始源码快照 | `temp/performance/949b7288a50b6ed5beed744db3c8bf46a13c00ef/source/`，仅用于同机 A/B，不是 worktree |
-| 当前实现 | 默认仍为 `QQuickView + Scene Graph + RHI` 完整快照；可选 `canvas` 使用局部 `QCanvasPainterWidget + QRhi`，Qt 自动选择平台 API，Windows 实测 Direct3D 11 |
-| 最近运行时修复 | `4f8da89` 直接 Canvas 视口；`d9b2f72` 避免 Blueprint 缩放重复落位；`f136e13` 公共 grab 返回真实视口；`59e76d1` 删除旧输入转发 |
-| 候选运行逻辑 | `uniform_style@59e76d1`；尚未获得所有者对最终候选 SHA 的确认，不能视为验收通过 |
-| 当前全量功能证据 | `temp/performance/59e76d1/functional/full-tests.log`：85 个独立脚本、0 失败；含 248 个公开导出兼容与 160 个旧 QWidget 页面状态 RGBA 零差异 |
+| 当前实现 | 真实窗口默认 `QCanvasPainterWidget + QRhi` 直接绘制；显式 `rhi` 与能力不足回退使用 `QQuickView + Scene Graph` 完整快照；Qt 自动选择平台 API，Windows 实测 Direct3D 11 |
+| 最近运行时修复 | `154601d` 清理 Demo 旧 GL 逻辑；`d6506d6` 默认直接 Canvas；`cd50019` 文档 Mermaid 无原生窗口画布；`2d57942` 修正 RHI 蓝图坐标；`2aee131` 显示前匹配顶层 RHI 表面 |
+| 候选运行逻辑 | `uniform_style@2aee131`；尚未获得所有者对最终候选 SHA 的确认，不能视为验收通过 |
+| 当前全量功能证据 | 历史 `59e76d1` 为 85 个独立脚本、0 失败；当前增量巡检为 80 个亮色页 + 11 个暗色页、0 错误，并完成默认 Canvas、显式 RHI、Mermaid 与三页切换真实回归。最终 SHA 全量重跑仍未完成 |
 | 工作方式 | 仓库根目录；禁止 worktree；源码在 `uniform_style`，测试在 `uniform_test`；原 `test` 不动 |
 | 私有契约 | 所有者已豁免四份 `private_docs/*_SPEC.md` 原文恢复；以当前源码、公开 API 与设计文档为准，不用过期副本 |
 | 合并与发布 | 未合并 `dev`、未推送、未发布、未修改 InstructionX 主仓库；P4 未获授权 |
@@ -77,10 +77,10 @@
 | T15 QSS | `[通过]` | 当前运行逻辑的 `test_visual_compat` 完成 160 个旧 QWidget 页面状态 RGBA 零差异；历史真实透明弹窗亮暗 16 状态零差异证据保留 |
 | T16 Markdown 与生命周期 | `[通过]` | 分片、统计、隐藏恢复、窗口及动画闭包销毁回归通过；长期资源另列 T22 验收 |
 | T17 动画资源 | `[通过]` | 固定帧、缓存上界、隐藏取消与原动画测试通过；长期播放资源另列 T22 验收 |
-| T18 Scene Graph 门禁 | `[通过]` | 默认仅局部 QQuickView；完整快照覆盖 option，offscreen／初始化失败软件回退；可选 Canvas 为直接 QCanvasPainterWidget，无新依赖 |
-| T19 图表后端 | `[失败]` | 默认 RHI 功能与像素证据保留；可选 Canvas 全系列功能与视觉近似通过，但真实 4K 短测约 53.69 FPS、P95 约 30.67ms，未达到门槛 |
-| T20 Blueprint 后端 | `[通过]` | 默认 RHI 与直接 Canvas 的节点、边、拖动、连线、缩放、嵌入文本、Delete、菜单、resize、主题与生命周期通过；按最新视觉近似口径，既有像素差异计数仅作追踪 |
-| T21 全组件终验 | `[通过]` | 当前运行逻辑 85/85 脚本正常退出；248 个公开导出、160 个旧 QWidget 页面状态、CodeEditor/Diff、公共 grab 与生命周期回归通过 |
+| T18 Scene Graph 门禁 | `[通过]` | 默认直接 QCanvasPainterWidget；显式 RHI 完整快照覆盖 option，offscreen／初始化失败软件回退；无新依赖，显式 RHI 真实回归通过 |
+| T19 图表后端 | `[失败]` | 默认 Canvas 全系列功能、28 个真实首帧与视觉近似通过；显式 RHI 像素证据保留；真实 4K 短测约 53.69 FPS、P95 约 30.67ms，未达到门槛 |
+| T20 Blueprint 后端 | `[通过]` | 默认直接 Canvas 与显式 RHI 的节点、边、拖动、连线、缩放、嵌入文本、Delete、菜单、resize、主题与生命周期通过；空白画布坐标警告已修复 |
+| T21 全组件终验 | `[未验证]` | 历史运行逻辑 85/85 脚本通过；当前增量巡检 80 亮色 + 11 暗色为 0 错误，真实新增回归通过；最终 SHA 的全量脚本重跑尚未完成 |
 | T22 真实性能终验 | `[失败]` | 默认旧路径五轮失败已保留；直接 Canvas 真实短测未达到 FPS／P95 门槛，正式 5×60 秒未完成；完整窗口长测、长期资源／音频与 PresentMon 未闭环 |
 | T23 最终 SHA 复验 | `[阻塞]` | 功能与视觉近似回归通过，但性能失败、完整原生窗口和长期资源未完成，且未获得所有者对最终候选的确认，不能完成 Goal |
 | T24 交付停止 | `[阻塞]` | 只能交付当前证据与失败／阻塞说明，不能作为验收成品；不合并 dev、不发布、不接入 InstructionX |
@@ -124,6 +124,6 @@
 ## 回退与停止条件
 
 - 软件 QWidget 视口只用于 offscreen／minimal 或 RHI 初始化失败，复用同一绘制体；不是恢复旧 OpenGL 后端。
-- 直接 Canvas 仅显式 `canvas` 选项启用，不默认启用，不用降低负载或接受像素差异换性能。
+- 真实窗口默认使用直接 Canvas；显式 `rhi` 保留完整快照回退。不得用降低负载、隐藏内容或放宽性能红线换取通过；Canvas 的视觉近似豁免不等于性能豁免。
 - 原始 `949b728` 仅作为 A/B 和版本回退参考。是否回退、合并或发布由所有者决定，不自动执行。
 - 只有 P0–P3 与 T00–T24 全部标为 `[通过]`，且最终 `uniform_style` SHA 上重新验收通过，Goal 才可完成。任何 `[失败]`、`[阻塞]` 或必要场景 `[未验证]` 都不能把整体描述为完成。

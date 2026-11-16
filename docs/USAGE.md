@@ -599,7 +599,7 @@ view.linkActivated.connect(print)                  # 点击链接信号（默认
 
 **LaTeX 数学公式**：支持 `$...$` 行内公式、`$$...$$` / `\[...\]` / `\(...\)` 与 `\begin{equation}` 等环境的块级公式。公式由 matplotlib mathtext 引擎在后台线程异步渲染为透明底图片（2x 超采样，高 DPI 清晰），结果按（源码, 颜色, 字号）LRU 缓存（上限 512 条）——流式追加触发全文重渲染时命中缓存零耗时。渲染期间公式以等宽源码占位，完成后自动重排；渲染失败回退为源码显示。代码围栏 / 行内代码中的 `$...$` 不会被当作公式，货币写法（`$5`）遵循 Pandoc 规则不误判。块级公式独占段落时自动居中。主题切换后公式按新文本色自动重绘。
 
-**Mermaid 图表**：闭合的 ` ```mermaid ` 代码围栏渲染为**交互式图表**（`MermaidView` 查看器叠加在文档中的图位上）：拖动平移、Ctrl+滚轮缩放（普通滚轮留给页面滚动）、右上角工具条（放大 / 缩小 / 复位 / 适宽），像 GitHub 的 Mermaid 展示一样可随意调整。图位块级居中，按视口可用宽度的 80% 适配，视口尺寸变化时自动重适配。渲染由 `InstructionX_UIKit.mermaid` 子包完成：默认经 QWebEnginePage 执行**官方 mermaid.js**（v10.9.3，随包分发不联网；这是项目内唯一破例使用 Web 技术的位置），排版与光栅化都在 Chromium 内完成（SVG → canvas 2x → PNG，透明底）——官方全量图型可用（flowchart、sequenceDiagram、pie、gantt、classDiagram、stateDiagram、erDiagram、mindmap 等），且与官方渲染逐像素一致；WebEngine 不可用时自动降级为内置 QPainter 自绘渲染器（flowchart / sequenceDiagram / pie 子集，查看器降级为自绘画布，交互保留）。渲染经 LRU 缓存 + 后台异步执行，与公式共享同一套占位 → 就地资源替换管线；流式追加中未闭合的 mermaid 围栏按普通代码块降级显示，闭合后重排为图表。图表颜色全部来自主题令牌（mermaid `theme: 'base'` + `themeVariables`），主题切换自动重绘。语法错误时显示失败占位图（不叠加查看器）。已知限制：`erDiagram` 中含中文的实体名 / 关系标签需加双引号；WebEngine 首次渲染有页面加载延迟（后续命中缓存零耗时）。
+**Mermaid 图表**：闭合的 ` ```mermaid ` 代码围栏渲染为**交互式图表**（`MermaidView` 查看器叠加在文档中的图位上）：拖动平移、Ctrl+滚轮缩放（普通滚轮留给页面滚动）、右上角工具条（放大 / 缩小 / 复位 / 适宽），像 GitHub 的 Mermaid 展示一样可随意调整。图位块级居中，按视口可用宽度的 80% 适配，视口尺寸变化时自动重适配。渲染由 `InstructionX_UIKit.mermaid` 子包完成：默认经隐藏 QWebEnginePage 执行**官方 mermaid.js**（v10.9.3，随包分发不联网；这是项目内唯一破例使用 Web 技术的位置），排版与光栅化都在 Chromium 内完成（SVG → canvas 2x → PNG，透明底）——官方全量图型可用（flowchart、sequenceDiagram、pie、gantt、classDiagram、stateDiagram、erDiagram、mindmap 等）。文档内叠加层复用该 QImage，以普通 QWidget 画布完成缩放和平移，不创建可见 WebEngine 子窗口；独立 MermaidView 仍默认使用 WebEngine 交互页面。WebEngine 不可用时自动降级为内置 QPainter 自绘渲染器（flowchart / sequenceDiagram / pie 子集，交互保留）。渲染经 LRU 缓存 + 异步执行，与公式共享占位 → 就地资源替换管线；流式追加中未闭合的 mermaid 围栏按普通代码块降级显示，闭合后重排为图表。图表颜色全部来自主题令牌，主题切换自动重绘。语法错误时显示失败占位图。已知限制：`erDiagram` 中含中文的实体名 / 关系标签需加双引号；WebEngine 首次渲染有页面加载延迟，重负载下宽限期为 60 秒，后续命中缓存零耗时。
 
 `MermaidView` 也可脱离 MarkdownView 单独使用（交互查看器）：
 
@@ -609,7 +609,7 @@ v = MermaidView("flowchart LR\n    A[开始] --> B[结束]")
 v.render_failed.connect(print)     # 语法错误信号；rendered() 为成功信号（无参数，尺寸经 v.natural_size() 获取）
 ```
 
-注意：`QWebEngineView` 与默认 Chart／Blueprint 的 `QQuickView` 共用 Qt Quick RHI，由 Qt 自动选择平台图形 API；当前 Windows 实测为 Direct3D 11。不要在 `QApplication` 前调用 `QQuickWindow.setGraphicsApi()` 强制 OpenGL，也不需要旧版 GL 预热。默认原生嵌入使用 `QSG_RENDER_LOOP=basic`，避免本机 `QSGRenderThread` 与 GUI 线程互相等待；可选直接 Canvas 是独立 `QCanvasPainterWidget`，不经过 QQuickWindow，也不依赖该设置。
+Chart／Blueprint 在真实窗口默认使用 `QCanvasPainterWidget + QRhi` 直接绘制，由 Qt 自动选择平台图形 API；当前 Windows 实测为 Direct3D 11。显式 `UIKIT_CHART_BACKEND=rhi` / `UIKIT_BLUEPRINT_BACKEND=rhi` 可启用 `QQuickView + Scene Graph` 完整快照回退，`raster` 用于软件验证。不要强制 OpenGL，也不需要旧版 GL 预热。只有 QQuickView 回退路径使用 `QSG_RENDER_LOOP=basic`；直接 Canvas 不经过 QQuickWindow，也不依赖该设置。Demo 主窗口在显示前让顶层表面匹配 Qt 自动选择的 RHI API，避免首次进入重型页面时销毁并重建可见窗口。
 
 ### 4.3 导航与反馈
 
@@ -1155,7 +1155,7 @@ chart.update_option({"series": [{"data": [130, 120, 150, 160, 170, 240]}]})  # �
 
 ### 7.7 与 QtCharts 的关系
 
-- **推荐 `InstructionX_UIKit.charts`**：纯原生 QPainter 自绘，无 WebView / JS 桥接，主题令牌实时联动，ECharts 风格 option 覆盖面更广（21 系列 + 4 坐标系 + 标注/缩放/刷选/时间轴等组件）。
+- **推荐 `InstructionX_UIKit.charts`**：原生 QWidget API 与 RHI 视口，无 WebView / JS 桥接，主题令牌实时联动，ECharts 风格 option 覆盖面更广（21 系列 + 4 坐标系 + 标注/缩放/刷选/时间轴等组件）。
 - Demo「图表」页已全面切换到 `InstructionX_UIKit.charts` 演示；`PySide6.QtCharts` 不再是图表页依赖，仅当你已有基于 QtCharts 的旧代码时才需要它，两者可共存互不影响。
 - 引擎契约见仓库 `CHART_SPEC.md`；可经 `register_series` / `register_component` 扩展自定义系列与组件。
 
@@ -1164,15 +1164,15 @@ chart.update_option({"series": [{"data": [130, 120, 150, 160, 170, 240]}]})  # �
 本节所有能力均为**加法式扩展**：既有 `set_option` / `update_option` 语义与调用方式完全不变，
 只在数据规模或刷新频率需要时才启用。
 
-### 8.1 渲染后端：RHI 与软件视口
+### 8.1 渲染后端：直接 Canvas、RHI 快照与软件视口
 
 图表绘制由内部视口承载，**公共 QWidget API 不变**：
 
-- **RHI 默认后端**：真实窗口使用 `QQuickView + Scene Graph + RHI`，由 Qt 自动选择平台图形 API；当前 Windows 实测为 Direct3D 11，不强制 OpenGL。
-- **可选直接 Canvas**：在控件创建前设置 `UIKIT_CHART_BACKEND=canvas` / `UIKIT_BLUEPRINT_BACKEND=canvas`，使用局部 `QCanvasPainterWidget + QRhi`，不经过 QQuickWindow。现有系列、交互、生命周期与视觉近似回归已通过；允许不同光栅化器的轻微像素差异，但真实 4K 性能门槛尚未通过，暂不作为默认后端。
+- **默认直接 Canvas**：真实窗口使用 `QCanvasPainterWidget + QRhi`，由 Qt 自动选择平台图形 API；当前 Windows 实测为 Direct3D 11，不强制 OpenGL，也不经过 QQuickWindow。
+- **显式 RHI 快照回退**：设置 `UIKIT_CHART_BACKEND=rhi` / `UIKIT_BLUEPRINT_BACKEND=rhi` 使用 `QQuickView + Scene Graph` 完整快照；Canvas 能力不足时也回退到该路径。现有系列、交互、生命周期与视觉近似回归已通过，但真实 4K 性能门槛尚未通过。
 - **软件视口**：offscreen／minimal 平台或 RHI 初始化失败时使用普通 QWidget，复用同一绘制体，供功能与像素回归使用。
 
-默认后端中，完整系列、坐标轴、组件与 tooltip 在 GUI 线程由 QPainter 生成最终帧，再通过纹理节点呈现；RHI 不等于自动加速 QPainter。可选 Canvas 复用相同布局与数据管线，以 QCanvasPainter 命令直接绘制。诊断时可设置 `UIKIT_CHART_BACKEND=raster` 强制软件参考，但不能把软件计时当作真实交换帧。旧 `UIKIT_CHART_GL`、`gl_available()`、`QOpenGLWidget` 与 VBO / GLSL 管线已移除。
+显式 RHI 快照中，完整系列、坐标轴、组件与 tooltip 在 GUI 线程由 QPainter 生成最终帧，再通过纹理节点呈现；RHI 不等于自动加速 QPainter。默认 Canvas 复用相同布局与数据管线，以 QCanvasPainter 命令直接绘制。诊断时可设置 `UIKIT_CHART_BACKEND=raster` 强制软件参考，但不能把软件计时当作真实交换帧。旧 `UIKIT_CHART_GL`、`gl_available()`、`QOpenGLWidget` 与 VBO / GLSL 管线已移除。
 
 ```python
 viewport = chart._viewport       # 私有诊断入口，不属于稳定公共 API
