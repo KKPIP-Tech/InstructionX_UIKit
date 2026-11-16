@@ -7,7 +7,7 @@ from pathlib import Path
 from shiboken6 import isValid as _shiboken_is_valid
 
 from PySide6.QtCore import QCoreApplication, QEvent, QPointF, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QHelpEvent, QKeyEvent, QMouseEvent, QPixmap, QWheelEvent
+from PySide6.QtGui import QHelpEvent, QImage, QKeyEvent, QMouseEvent, QPixmap, QWheelEvent
 from PySide6.QtQml import qmlRegisterType
 from PySide6.QtQuick import QQuickView
 from PySide6.QtWidgets import QApplication, QWidget
@@ -264,9 +264,11 @@ class _RhiViewport(_ViewportMixin, QWidget):
         return False
 
     def grab(self):
-        return QPixmap.fromImage(self._view.grabWindow())
+        return QPixmap.fromImage(self.grabFramebuffer())
 
     def grabFramebuffer(self):
+        if self._view.width() <= 0 or self._view.height() <= 0:
+            return QImage()
         return self._view.grabWindow()
 
 
