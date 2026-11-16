@@ -48,12 +48,25 @@ finally {
     Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
 }
 $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds + 30)
-while (-not (Test-Path $resultPath)) {
+$result = $null
+while ($null -eq $result) {
     if ([DateTime]::UtcNow -ge $deadline) {
         throw "交互测试没有返回退出结果: $resultPath"
     }
-    Start-Sleep -Milliseconds 100
+    if (Test-Path $resultPath) {
+        try {
+            $candidate = [System.IO.File]::ReadAllText($resultPath) | ConvertFrom-Json
+            if ($null -ne $candidate.returncode) {
+                $result = $candidate
+            }
+        }
+        catch [System.IO.IOException] {
+            $result = $null
+        }
+    }
+    if ($null -eq $result) {
+        Start-Sleep -Milliseconds 100
+    }
 }
-$result = [System.IO.File]::ReadAllText($resultPath) | ConvertFrom-Json
 Write-Output $result
 exit [int]$result.returncode
