@@ -149,7 +149,7 @@ def _():
                 viewport._sync_now()
                 assert len(viewport._line_views) == len(chart.series_renderers), name
                 assert all(model._visible for model in viewport._line_views), name
-                assert viewport.active_backend() == "canvas-item-shared"
+                assert viewport.active_backend() == "canvas-item-widget"
                 assert "direct" in viewport.rhi_api().lower(), (name, viewport.rhi_api())
             finally:
                 chart.close()
@@ -231,8 +231,9 @@ def _():
         viewport._sync_now()
         assert viewport.mean_sync_ms() >= 0
         assert hasattr(viewport, "frameSwapped")
-        viewport._view.requestActivate()
-        viewport._view.contentItem().setFocus(True)
+        chart.activateWindow()
+        viewport._view.setFocus(Qt.OtherFocusReason)
+        viewport._host.root_item().setFocus(True)
         QTest.keyClick(viewport._view, Qt.Key_A)
         pump()
         assert Qt.Key_A in chart.keys, chart.keys

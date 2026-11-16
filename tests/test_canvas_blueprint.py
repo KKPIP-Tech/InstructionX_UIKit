@@ -220,8 +220,9 @@ def _():
         assert node.pos != original and moved, (node.pos, moved)
         canvas._selected_nodes = ["a"]
         canvas.node_widget("a").set_selected(True)
-        viewport._view.requestActivate()
-        viewport._view.contentItem().setFocus(True)
+        canvas.activateWindow()
+        viewport._view.setFocus(Qt.OtherFocusReason)
+        viewport._host.root_item().setFocus(True)
         QTest.keyClick(viewport._view, Qt.Key_Delete)
         viewport._sync_now()
         assert graph.node("a") is None
@@ -264,6 +265,8 @@ def _():
     canvas.resize(900, 600)
     canvas.show()
     viewport = replace_viewport(canvas)
+    canvas.activateWindow()
+    app.processEvents()
     try:
         widget = canvas.node_widget("body")
         widget._body.setAttribute(Qt.WA_TransparentForMouseEvents, False)
