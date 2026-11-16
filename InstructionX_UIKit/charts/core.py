@@ -1471,6 +1471,16 @@ class ChartWidget(QWidget):
         super().resizeEvent(event)
         vp = getattr(self, "_viewport", None)
         enabled = self._preview_enabled()
+        if vp is not None and getattr(vp, "supports_direct_resize", False):
+            if self._resize_preview.active:
+                self._finish_resize_preview()
+            self._resize_preview.cancel()
+            self._preview_capturing = False
+            self._preview_animation = None
+            vp.setGeometry(self.rect())
+            self._layout_all()
+            self.update()
+            return
         if self._preview_capturing:
             if vp is not None:
                 vp.setGeometry(self.rect())

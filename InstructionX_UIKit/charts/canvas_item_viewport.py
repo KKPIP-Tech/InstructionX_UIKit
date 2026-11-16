@@ -336,6 +336,7 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
     """保持 ChartWidget 公共接口的共享 Scene Graph 内部视口。"""
 
     _continuous_sync = False
+    supports_direct_resize = True
 
     frameSubmitted = Signal()
     frameSwapped = Signal()
