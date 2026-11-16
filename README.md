@@ -13,8 +13,8 @@
 - **59 个组件**：输入 / 展示 / 反馈三大类，动态属性 + 全局 QSS 驱动，统一 sm / md / lg 尺寸体系与状态矩阵（hover / pressed / disabled / focus）。
 - **13 个响应式布局预设**：API 驱动的工厂函数（`create_card_grid(items=...)` 等），基于断点的响应式重排，空数据自动显示优雅占位。
 - **52 个动画预设**：28 个属性动画（快照覆盖层方案，规避 Qt6 + QSS + 高 DPI 下 QGraphicsEffect 失效问题）+ 24 个 QTimer 自绘动画组件。
-- **原生图表引擎**：纯 QPainter 实现的 ECharts 风格图表，不依赖 WebView / JavaScript；`set_option` 数据驱动，**21 种系列**（直角坐标 / 层级占比 / 关系流向 / 极坐标 / 日历 / 地图 / 平行坐标）、9 种组件（标题 / 图例 / tooltip / markPoint / markLine / markArea / graphic / map / toolbox），主题感知实时换肤。
-- **RHI 与大规模数据**：Chart 与 Blueprint 默认由 `QQuickView + Scene Graph + RHI` 承载，Qt 自动选择 Direct3D 11 / Metal / Vulkan 等平台 API，不强制 OpenGL；公共 QWidget API 与视觉设计保持不变。运行时按「绘图区像素宽」自动降采样并保留逐像素列极值，紧凑存储与零拷贝摄入避免深拷贝大数组。当前系列仍由 QPainter 生成最终快照后上传纹理，`gpuDirect` 仅保留 option 兼容，不再创建 VBO / GLSL 管线；复杂 4K 实时场景尚未达到 60 FPS 验收线，详见验收记录。
+- **原生图表引擎**：ECharts 风格图表，不依赖 WebView / JavaScript；`set_option` 数据驱动，**21 种系列**（直角坐标 / 层级占比 / 关系流向 / 极坐标 / 日历 / 地图 / 平行坐标）、9 种组件（标题 / 图例 / tooltip / markPoint / markLine / markArea / graphic / map / toolbox），主题感知实时换肤。默认由 QPainter 生成完整快照，可选直接 Canvas 原生绘制仍在验收中。
+- **RHI 与大规模数据**：Chart 与 Blueprint 默认由 `QQuickView + Scene Graph + RHI` 承载，Qt 自动选择 Direct3D 11 / Metal / Vulkan 等平台 API，不强制 OpenGL；公共 QWidget API 与视觉设计保持不变。可选 `canvas` 后端使用局部 `QCanvasPainterWidget + QRhi` 直接绘制，不经过 QQuickWindow；其功能回归已通过，但零像素与真实 4K 门禁尚未通过，不能作为默认后端。运行时按「绘图区像素宽」自动降采样并保留逐像素列极值，紧凑存储与零拷贝摄入避免深拷贝大数组。`gpuDirect` 仅保留 option 兼容，不再创建 VBO / GLSL 管线；详见验收记录。
 - **实时数据接入**：`chart.stream()` 提供无锁环形缓冲（单写单读）+ 帧合并（不丢点）+ 定时入图；生产者在任意线程写入、界面按刷新节奏取数，滚动窗口写满丢最旧。
 - **蓝图节点图**：类 UE5 Blueprint / ComfyUI 的节点图编辑器，支持右键建节点、引脚拖线、类型校验、序列化与执行状态模拟。
 - **代码编辑器**：纯 PySide6（无 WebView）对齐 VS Code 编辑区体验——语法高亮（9 种内置语言 + 注册表扩展）、小地图、查找替换、诊断 / 断点 / 折叠、补全与悬停 provider、Ctrl+D 多选批量编辑，另含并排 / 内联 / 自动断点的 Diff 对比编辑器。
@@ -118,8 +118,10 @@ python main.py
 │   ├── charts/                  # 原生图表引擎（ECharts 风格）
 │   │   ├── core.py              #   ChartWidget（set_option / update_option）+ 分层渲染缓存
 │   │   ├── viewport.py          #   默认 RHI 与离屏软件视口
-│   │   ├── rhi_viewport.py      #   QQuickView 原生容器、输入与生命周期
-│   │   ├── scene_snapshot.py    #   GUI 线程完整最终帧快照
+│   │   ├── rhi_viewport.py      #   默认 QQuickView 容器、输入与生命周期
+│   │   ├── canvas_item_viewport.py # 可选 QCanvasPainterWidget 直接 RHI 视口
+│   │   ├── canvas_*.py          #   各系列的原生 Canvas 绘制命令
+│   │   ├── scene_snapshot.py    #   默认后端的 GUI 线程完整最终帧快照
 │   │   ├── data.py              #   紧凑存储与零拷贝摄入（大规模数据管线）
 │   │   ├── sampling.py          #   运行时降采样与「逐像素列极值一致」保真承诺
 │   │   ├── stream.py            #   实时接入：RingBuffer / FrameCoalescer / StreamSession

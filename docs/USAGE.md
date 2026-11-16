@@ -609,7 +609,7 @@ v = MermaidView("flowchart LR\n    A[开始] --> B[结束]")
 v.render_failed.connect(print)     # 语法错误信号；rendered() 为成功信号（无参数，尺寸经 v.natural_size() 获取）
 ```
 
-注意：`QWebEngineView`、Chart 与 Blueprint 的 `QQuickView` 共用 Qt Quick RHI，由 Qt 自动选择平台图形 API；当前 Windows 实测为 Direct3D 11。不要在 `QApplication` 前调用 `QQuickWindow.setGraphicsApi()` 强制 OpenGL，也不需要旧版 GL 预热。原生嵌入使用 `QSG_RENDER_LOOP=basic`，避免本机 `QSGRenderThread` 与 GUI 线程互相等待；该设置不固定图形 API。
+注意：`QWebEngineView` 与默认 Chart／Blueprint 的 `QQuickView` 共用 Qt Quick RHI，由 Qt 自动选择平台图形 API；当前 Windows 实测为 Direct3D 11。不要在 `QApplication` 前调用 `QQuickWindow.setGraphicsApi()` 强制 OpenGL，也不需要旧版 GL 预热。默认原生嵌入使用 `QSG_RENDER_LOOP=basic`，避免本机 `QSGRenderThread` 与 GUI 线程互相等待；可选直接 Canvas 是独立 `QCanvasPainterWidget`，不经过 QQuickWindow，也不依赖该设置。
 
 ### 4.3 导航与反馈
 
@@ -1169,9 +1169,10 @@ chart.update_option({"series": [{"data": [130, 120, 150, 160, 170, 240]}]})  # �
 图表绘制由内部视口承载，**公共 QWidget API 不变**：
 
 - **RHI 默认后端**：真实窗口使用 `QQuickView + Scene Graph + RHI`，由 Qt 自动选择平台图形 API；当前 Windows 实测为 Direct3D 11，不强制 OpenGL。
+- **可选直接 Canvas**：在控件创建前设置 `UIKIT_CHART_BACKEND=canvas` / `UIKIT_BLUEPRINT_BACKEND=canvas`，使用局部 `QCanvasPainterWidget + QRhi`，不经过 QQuickWindow。现有系列、交互与生命周期回归已通过，但零像素与真实 4K 门槛尚未通过，暂不作为默认后端。
 - **软件视口**：offscreen／minimal 平台或 RHI 初始化失败时使用普通 QWidget，复用同一绘制体，供功能与像素回归使用。
 
-完整系列、坐标轴、组件与 tooltip 在 GUI 线程由 QPainter 生成最终帧，再通过纹理节点呈现；RHI 不等于自动加速 QPainter。诊断时可设置 `UIKIT_CHART_BACKEND=raster` 强制软件参考，但不能把软件计时当作真实交换帧。旧 `UIKIT_CHART_GL`、`gl_available()`、`QOpenGLWidget` 与 VBO / GLSL 管线已移除。
+默认后端中，完整系列、坐标轴、组件与 tooltip 在 GUI 线程由 QPainter 生成最终帧，再通过纹理节点呈现；RHI 不等于自动加速 QPainter。可选 Canvas 复用相同布局与数据管线，以 QCanvasPainter 命令直接绘制。诊断时可设置 `UIKIT_CHART_BACKEND=raster` 强制软件参考，但不能把软件计时当作真实交换帧。旧 `UIKIT_CHART_GL`、`gl_available()`、`QOpenGLWidget` 与 VBO / GLSL 管线已移除。
 
 ```python
 viewport = chart._viewport       # 私有诊断入口，不属于稳定公共 API
@@ -1255,7 +1256,7 @@ from InstructionX_UIKit.charts.stream import RingBuffer, FrameCoalescer
 
 ### 8.4 RHI 快照与 `gpuDirect` 兼容
 
-既有 option 可以保留 `gpuDirect` 与 `gpuVersion`，流式更新不会丢失这些字段，但最终图像统一由完整 QPainter 快照承载。**当前不再创建 VBO / GLSL 管线，该选项不是独立的 GPU 加速开关。**
+既有 option 可以保留 `gpuDirect` 与 `gpuVersion`，流式更新不会丢失这些字段；默认后端由完整 QPainter 快照承载，可选 Canvas 则使用原生绘制命令。**当前不创建旧 VBO / GLSL 管线，该选项本身不是独立加速开关。**
 
 ```python
 {"type": "line", "name": "信号", "data": ys, "gpuDirect": True}
@@ -1274,22 +1275,28 @@ RHI 负责平台呈现，但不会自动加速 QPainter 的 CPU 路径光栅化�
 | Chart `_layout_all` | 约 17.61ms |
 | RHI `updatePaintNode` | 约 0.0866ms |
 
-普通实线的 `RoundJoin` 与整帧快照是主要成本。真实 3840×2160、八个 2 万点系列的初步短测中，一张 Chart 约 1.19 FPS，另一张仅 1 帧，Blueprint 约 2.39 FPS，且有多个 286–455ms UI 长任务，**当前不满足 60 FPS 门槛**。原生几何、渐变描边和改变笔型均产生像素差异；零像素线程分片最快仍约 154ms，独立进程分片约 62ms，均未作为正式加速路径接入。
+普通实线的 `RoundJoin` 与整帧快照是默认后端的主要成本。上述数值属于默认快照路径的历史测量，不是直接 Canvas 的正式结果。真实 3840×2160、八个 2 万点系列的初步短测中，一张 Chart 约 1.19 FPS，另一张仅 1 帧，Blueprint 约 2.39 FPS，且有多个 286–455ms UI 长任务，**默认路径不满足 60 FPS 门槛**。原生几何、渐变描边和改变笔型均产生像素差异；零像素线程分片最快仍约 154ms，独立进程分片约 62ms，均未作为正式加速路径接入。
 
-### 8.6 RHI、缩放回退与真实验收
+可选 Canvas 候选已覆盖现有系列与交互，但与 QPainter 参考仍有逐像素差异，不能默认启用。真实 4K 正式测量受当前 Windows 前台与原生指针条件限制，未形成符合门槛的完整证据。
 
-Chart 与 Blueprint 默认使用 RHI，不需要 `UIKIT_CHART_BACKEND=quick`，也不存在旧 `UIKIT_CHART_GL` / `UIKIT_BLUEPRINT_GL` 开关。原生嵌入使用 `QSG_RENDER_LOOP=basic` 保护 GUI 线程调度，不固定平台图形 API。
+### 8.6 RHI、缩放与真实验收
 
-Chart 与 Blueprint 连续 resize 时先复用旧帧，停顿约 100ms 后只重建一次高清帧；设置 `UIKIT_RESIZE_PREVIEW=off` 可恢复全质量逐事件路径。诊断可设置 `UIKIT_CHART_BACKEND=raster`，但软件参考结果不能作为真实呈现通过证据。设计与门禁见 `docs/superpowers/plans/2026-11-14-scene-graph-chart-design.md`。
+Chart 与 Blueprint 默认使用 RHI，不需要 `UIKIT_CHART_BACKEND=quick`，也不存在旧 `UIKIT_CHART_GL` / `UIKIT_BLUEPRINT_GL` 开关。默认原生嵌入使用 `QSG_RENDER_LOOP=basic` 保护 GUI 线程调度，不固定平台图形 API。
+
+默认快照路径连续 resize 时可复用旧帧并在停顿约 100ms 后恢复；设置 `UIKIT_RESIZE_PREVIEW=off` 可关闭该预览。可选 Canvas 路径直接更新布局和 GPU 绘制，不使用旧帧拉伸。诊断可设置 `UIKIT_CHART_BACKEND=raster`，但软件参考结果不能作为真实呈现通过证据。设计与门禁见 `docs/superpowers/plans/2026-11-14-scene-graph-chart-design.md`。
 
 真实验收脚本位于 `tests/perf/`（仅在 `uniform_test` 分支）：
 
 ```powershell
-# 3840×2160 复杂场景：预热 5 秒，5 轮各 60 秒，保存 frameSwapped 原始数据
+# 3840×2160 复杂场景：预热 5 秒，5 轮各 60 秒，保存帧提交原始数据
 .venv\Scripts\python.exe tests\perf\run_realtime.py --seconds 60 --rounds 5 --enforce
+
+# 可选 Canvas 候选也执行同一负载、时长与门槛
+.venv\Scripts\python.exe tests\perf\run_realtime.py --seconds 60 --rounds 5 --backend canvas --tag formal-canvas --enforce
 
 # A–H 隔离：静止、移动、缩放、恢复各 30 秒，并播放低振幅测试音
 .venv\Scripts\python.exe tests\perf\run_window_matrix.py --phase-seconds 30 --audio
+.venv\Scripts\python.exe tests\perf\run_window_matrix.py --phase-seconds 30 --audio --backend canvas
 
 # 原 gpuDirect option 的 RHI 兼容、样式、像素与资源生命周期
 .venv\Scripts\python.exe tests\perf\run_gpu_direct.py
@@ -1308,7 +1315,7 @@ Chart 与 Blueprint 连续 resize 时先复用旧帧，停顿约 100ms 后只重
 .venv\Scripts\python.exe tests\perf\check_presentmon.py
 ```
 
-这些脚本不会把离屏绘制耗时冒充实际 FPS。窗口矩阵使用真实客户区截图与 `QQuickView.frameSwapped`；程序几何变化不等于原生鼠标验收，普通 QWidget 宿主也没有 `QWindow.frameSwapped` 可用于呈现帧率统计。原生移动优先使用 Win32 `SetCursorPos`，失败时回退绝对 `SendInput`，按键仍由 `SendInput` 注入。自有前台 Qt 窗口中的真实移动、按下与释放已验证；系统跨屏已完成 5×30 秒功能长测，每轮 120 次往返。当前后续预检因测试窗口无法取得前台而阻塞，完整原生窗口长测与帧率验收仍未通过。PresentMon 需要管理员权限或 `Performance Log Users` 用户组，当前启动跟踪返回 `access denied`，没有外部呈现数据；预检脚本不会自动提权。
+这些脚本不会把离屏绘制耗时冒充实际 FPS。窗口矩阵使用真实客户区截图与相应后端的帧提交信号（默认 `QQuickView.frameSwapped`，Canvas 为 `QRhiWidget.frameSubmitted`）；程序几何变化不等于原生鼠标验收，帧提交也不能替代 PresentMon 外部呈现数据。原生移动优先使用 Win32 `SetCursorPos`，失败时回退绝对 `SendInput`，按键仍由 `SendInput` 注入。自有前台 Qt 窗口中的真实移动、按下与释放已验证；系统跨屏历史完成 5×30 秒功能长测，每轮 120 次往返。当前后续预检因测试窗口无法取得前台且原生指针未移动而阻塞，完整原生窗口长测与帧率验收仍未通过。PresentMon 需要管理员权限或 `Performance Log Users` 用户组，当前启动跟踪返回 `access denied`，没有外部呈现数据；预检脚本不会自动提权。
 
 ## 9. 蓝图模式（InstructionX_UIKit.blueprint 节点图）
 
