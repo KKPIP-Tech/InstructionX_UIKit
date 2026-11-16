@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
 os.environ.pop("QSG_RHI_BACKEND", None)
 os.environ.pop("QT_QUICK_BACKEND", None)
+os.environ["UIKIT_CHART_BACKEND"] = "rhi"
 
 import numpy as np
 from PySide6.QtGui import QImage, QPainter

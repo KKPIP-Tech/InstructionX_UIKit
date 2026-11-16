@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 os.environ.pop("QT_QPA_PLATFORM", None)
 os.environ.pop("QSG_RHI_BACKEND", None)
 os.environ.pop("QT_QUICK_BACKEND", None)
+os.environ["UIKIT_CHART_BACKEND"] = "rhi"
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QImage, QPainter, QWheelEvent
