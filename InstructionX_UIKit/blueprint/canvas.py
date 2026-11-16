@@ -1044,8 +1044,10 @@ class BlueprintCanvas(QWidget):
             if widget is not None:
                 widget.setVisible(visible)
         self._preview_nodes = {}
-        self._settle_view_gesture()
-        self._update_view()
+        if self._gesture_deferred:
+            self._settle_view_gesture()
+        else:
+            self._update_view()
         if self._preview_flow:
             self._ensure_flow_timer()
         self._preview_flow = False
