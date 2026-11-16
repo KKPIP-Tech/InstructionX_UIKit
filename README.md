@@ -14,7 +14,7 @@
 - **13 个响应式布局预设**：API 驱动的工厂函数（`create_card_grid(items=...)` 等），基于断点的响应式重排，空数据自动显示优雅占位。
 - **52 个动画预设**：28 个属性动画（快照覆盖层方案，规避 Qt6 + QSS + 高 DPI 下 QGraphicsEffect 失效问题）+ 24 个 QTimer 自绘动画组件。
 - **原生图表引擎**：ECharts 风格图表，不依赖 WebView / JavaScript；`set_option` 数据驱动，**21 种系列**（直角坐标 / 层级占比 / 关系流向 / 极坐标 / 日历 / 地图 / 平行坐标）、9 种组件（标题 / 图例 / tooltip / markPoint / markLine / markArea / graphic / map / toolbox），主题感知实时换肤。默认由 QPainter 生成完整快照，可选直接 Canvas 原生绘制仍在验收中。
-- **RHI 与大规模数据**：Chart 与 Blueprint 默认由 `QQuickView + Scene Graph + RHI` 承载，Qt 自动选择 Direct3D 11 / Metal / Vulkan 等平台 API，不强制 OpenGL；公共 QWidget API 与视觉设计保持不变。可选 `canvas` 后端使用局部 `QCanvasPainterWidget + QRhi` 直接绘制，不经过 QQuickWindow；其功能回归已通过，但零像素与真实 4K 门禁尚未通过，不能作为默认后端。运行时按「绘图区像素宽」自动降采样并保留逐像素列极值，紧凑存储与零拷贝摄入避免深拷贝大数组。`gpuDirect` 仅保留 option 兼容，不再创建 VBO / GLSL 管线；详见验收记录。
+- **RHI 与大规模数据**：Chart 与 Blueprint 默认由 `QQuickView + Scene Graph + RHI` 承载，Qt 自动选择 Direct3D 11 / Metal / Vulkan 等平台 API，不强制 OpenGL；公共 QWidget API 与视觉设计保持不变。可选 `canvas` 后端使用局部 `QCanvasPainterWidget + QRhi` 直接绘制，不经过 QQuickWindow；其功能与视觉近似回归已通过，但真实 4K 性能门槛尚未通过，不能作为默认后端。运行时按「绘图区像素宽」自动降采样并保留逐像素列极值，紧凑存储与零拷贝摄入避免深拷贝大数组。`gpuDirect` 仅保留 option 兼容，不再创建 VBO / GLSL 管线；详见验收记录。
 - **实时数据接入**：`chart.stream()` 提供无锁环形缓冲（单写单读）+ 帧合并（不丢点）+ 定时入图；生产者在任意线程写入、界面按刷新节奏取数，滚动窗口写满丢最旧。
 - **蓝图节点图**：类 UE5 Blueprint / ComfyUI 的节点图编辑器，支持右键建节点、引脚拖线、类型校验、序列化与执行状态模拟。
 - **代码编辑器**：纯 PySide6（无 WebView）对齐 VS Code 编辑区体验——语法高亮（9 种内置语言 + 注册表扩展）、小地图、查找替换、诊断 / 断点 / 折叠、补全与悬停 provider、Ctrl+D 多选批量编辑，另含并排 / 内联 / 自动断点的 Diff 对比编辑器。

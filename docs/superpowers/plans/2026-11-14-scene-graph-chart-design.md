@@ -6,8 +6,8 @@
 - 可选路径使用 `QCanvasPainterWidget + QCanvasPainter + QRhi`，由 Qt 自动选择平台 API。每个视口本身就是普通 QWidget 子控件，不再经过 `QQuickWidget`、离屏 `QQuickWindow`、人工鼠标转发或独立原生透明覆盖窗口。
 - `charts/canvas_item_viewport.py` 复用现有布局、坐标映射、采样、option、主题、信号和命中逻辑，绘制静态层、系列、组件与 tooltip；`blueprint/canvas_viewport.py` 只更新 Blueprint 场景，真实节点子控件继续接收 Qt 原生输入。
 - 缩放直接更新布局并绘制，不使用旧帧拉伸。`ChartWidget.grab()` / `BlueprintCanvas.grab()` 委托真实视口，支持 QWidget 风格的矩形裁剪；显式导出与测试通过真实控件合成回读，不进入正常帧循环。
-- 当前 Canvas 功能集合（`tests/test_canvas_*.py` 与 `test_blueprint_grid_texture.py`）全部通过；但同尺寸 RGBA 精确比较仍有静态图表 26,705、旭日图 10,588、Blueprint 32,699 个差异像素，**零像素门禁失败**。
-- 真实 4K 正式测量仍受 Windows 前台／原生指针条件限制；原型数据不能代替复杂场景 5×60 秒验收。该候选不得标记为最终成品，也不自动合并或发布。
+- 当前 Canvas 功能集合（`tests/test_canvas_*.py` 与 `test_blueprint_grid_texture.py`）全部通过。静态图表、旭日图与 Blueprint 的精确 RGBA 差异数量已保留；所有者已明确将视觉验收改为**内容完整、视觉近似且无明显伪影**，不再把不同光栅化器的单纯像素差异判为失败。当前真实截图 `temp/canvas_widget_current.png` 没有黑底或明显错位。
+- 普通交互启动器 `tests/perf/run_interactive.ps1` 已解决自动化进程的前台／原生指针限制，不提升管理员权限。当前 Canvas 真实 4K 短测约 53.7 FPS、P95 约 30.67ms，仍未达标；正式复杂场景 5×60 秒不能由短测或原型代替。该候选不得标记为最终成品，也不自动合并或发布。
 
 ## 当前边界
 
