@@ -187,6 +187,12 @@ def _():
             direct = canvas._viewport.grab().toImage()
             asynchronous = grab_async(canvas._viewport)
             assert not direct.isNull()
+            if direct != asynchronous:
+                print("QImage_META", direct.format(), asynchronous.format(),
+                      direct.devicePixelRatioF(), asynchronous.devicePixelRatioF(),
+                      direct.colorSpace().isValid(), asynchronous.colorSpace().isValid(), flush=True)
+                direct.save(str(ROOT / "temp" / "canvas_sync_direct.png"))
+                asynchronous.save(str(ROOT / "temp" / "canvas_sync_async.png"))
             assert direct == asynchronous
             assert canvas._viewport.grabFramebuffer() == direct
     finally:
