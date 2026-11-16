@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""每个 QWidget 视口独立承载 QCanvasPainterItem Scene Graph。"""
+"""顶层窗口共享 QCanvasPainterItem Scene Graph 的折线视口。"""
 
 import time
 import weakref
@@ -11,7 +11,6 @@ from PySide6.QtGui import QColor, QContextMenuEvent, QImage, QMouseEvent, QPixma
 from PySide6.QtQuick import QQuickView
 from PySide6.QtWidgets import QApplication, QWidget
 
-from ..theme import T, ThemeManager
 from .axes import GridCoord
 from .canvas_components import build_tooltip_scene
 from .canvas_static import build_static_scene, static_scene_key
@@ -165,7 +164,7 @@ class _CanvasSceneHost(QObject):
         if self._view is not None and _shiboken_is_valid(self._view):
             return
         self._view = QQuickView()
-        self._view.setColor(QColor(T("color.bg.base")))
+        self._view.setColor(Qt.transparent)
         self._view.setResizeMode(QQuickView.SizeRootObjectToView)
         self._view.frameSwapped.connect(self._emit_frames)
         self._view.installEventFilter(self)
@@ -173,11 +172,6 @@ class _CanvasSceneHost(QObject):
         self._container.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self._container.setGeometry(self._window.rect())
         self._container.show()
-        ThemeManager.instance().theme_changed.connect(self._on_theme_changed)
-
-    def _on_theme_changed(self, *_args):
-        if self._view is not None and _shiboken_is_valid(self._view):
-            self._view.setColor(QColor(T("color.bg.base")))
 
     def _release_view(self):
         view = self._view
@@ -339,7 +333,7 @@ def _scene_host(window):
 
 
 class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
-    """保持 ChartWidget 公共接口的独立 Scene Graph 内部视口。"""
+    """保持 ChartWidget 公共接口的共享 Scene Graph 内部视口。"""
 
     _continuous_sync = False
     supports_direct_resize = True
@@ -402,7 +396,7 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
         if not self._ready:
             return
         if self._host is None:
-            self._host = _scene_host(self)
+            self._host = _scene_host(self.window())
         self._host._ensure_view()
         self._view = self._host._view
         if self._item is not None and not _shiboken_is_valid(self._item):
@@ -604,7 +598,6 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
             image = result.image().convertToFormat(QImage.Format_ARGB32_Premultiplied)
             image.setDevicePixelRatio(dpr)
             result.ready.disconnect(captured)
-            result.deleteLater()
             callback(image)
 
         result.ready.connect(captured)
@@ -625,7 +618,6 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
             image = result.image().convertToFormat(QImage.Format_ARGB32_Premultiplied)
             image.setDevicePixelRatio(dpr)
             result.ready.disconnect(captured)
-            result.deleteLater()
             loop.quit()
 
         result.ready.connect(captured)
