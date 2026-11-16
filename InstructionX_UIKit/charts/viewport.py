@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """图表的 RHI 视口与离屏软件验证视口。
 
-真实窗口默认使用 ``QQuickView + Scene Graph``，由 Qt 按平台选择
-Direct3D 11、Metal、Vulkan 或 OpenGL，不在本库强制图形 API。
+真实窗口默认使用 ``QCanvasPainterWidget + QRhi`` 直接绘制，由 Qt 按平台
+选择 Direct3D 11、Metal、Vulkan 或 OpenGL，不强制图形 API；能力不足时回退
+``QQuickView + Scene Graph`` 完整快照路径。
 离屏平台没有可呈现窗口，使用同一绘制体的软件视口验证像素和交互。
 """
 
@@ -93,10 +94,10 @@ class _RasterViewport(_ViewportMixin, QWidget):
 
 
 def create_viewport(chart) -> QWidget:
-    """默认创建 RHI 视口；仅在无窗口平台或初始化失败时使用软件绘制。"""
+    """默认直接 Canvas 绘制；离屏或初始化失败时使用软件绘制。"""
     app = QGuiApplication.instance()
     platform = app.platformName() if app is not None else ""
-    requested = os.environ.get("UIKIT_CHART_BACKEND", "").strip().lower()
+    requested = os.environ.get("UIKIT_CHART_BACKEND", "canvas").strip().lower()
     if platform in _SOFTWARE_PLATFORMS or requested == "raster":
         return _RasterViewport(chart)
     if requested == "canvas":
