@@ -588,7 +588,7 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
             QTimer.singleShot(0, lambda: callback(QImage()))
             return
         dpr = self.devicePixelRatioF()
-        target_size = QSize(round(self.width() * dpr), round(self.height() * dpr))
+        target_size = QSize(self.width(), self.height())
         result = self._item.grabToImage(target_size)
         if result is None:
             QTimer.singleShot(0, lambda: callback(QImage()))
