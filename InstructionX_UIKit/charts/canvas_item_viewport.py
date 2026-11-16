@@ -6,7 +6,7 @@ import weakref
 
 from shiboken6 import isValid as _shiboken_is_valid
 from PySide6.QtCanvasPainter import QCanvasPainterItem, QCanvasPainterItemRenderer
-from PySide6.QtCore import QCoreApplication, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSizeF, Qt, QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, QSizeF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QContextMenuEvent, QImage, QMouseEvent, QPixmap, QWheelEvent
 from PySide6.QtQuick import QQuickView
 from PySide6.QtWidgets import QApplication, QWidget
@@ -584,18 +584,22 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
 
     def grab_canvas(self, callback):
         self._sync_now()
-        if self._host is None:
-            QTimer.singleShot(0, lambda: callback(self._grab_image()))
+        if self._host is None or self._item is None or not _shiboken_is_valid(self._item):
+            QTimer.singleShot(0, lambda: callback(QImage()))
+            return
+        dpr = self.devicePixelRatioF()
+        target_size = QSize(round(self.width() * dpr), round(self.height() * dpr))
+        result = self._item.grabToImage(target_size)
+        if result is None:
+            QTimer.singleShot(0, lambda: callback(QImage()))
             return
 
         def captured():
-            try:
-                self.frameSwapped.disconnect(captured)
-            except (RuntimeError, TypeError):
-                pass
-            callback(self._grab_image())
+            image = result.image()
+            image.setDevicePixelRatio(dpr)
+            callback(image)
 
-        self.frameSwapped.connect(captured)
+        result.ready.connect(captured)
 
     def grab(self):
         if self._host is None:
