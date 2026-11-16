@@ -604,6 +604,7 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
     def _grab_sync(self):
         if self._host is None or self._item is None or not _shiboken_is_valid(self._item):
             return QImage()
+        self._sync_now()
         dpr = self.devicePixelRatioF()
         result = self._item.grabToImage(QSize(self.width(), self.height()))
         if result is None:
