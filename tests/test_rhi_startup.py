@@ -12,6 +12,9 @@ if os.environ.get("QT_QPA_PLATFORM", "").lower() in ("offscreen", "minimal"):
     print("[跳过] 空 Scene Graph 回读仅存在于真实窗口 RHI 路径")
     sys.exit(0)
 
+os.environ["UIKIT_CHART_BACKEND"] = "rhi"
+os.environ["UIKIT_BLUEPRINT_BACKEND"] = "rhi"
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
