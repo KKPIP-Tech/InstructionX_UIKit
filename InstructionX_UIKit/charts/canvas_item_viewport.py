@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""每个 QWidget 视口独立承载 QCanvasPainterItem Scene Graph。"""
+"""顶层窗口共享 QCanvasPainterItem Scene Graph 的折线视口。"""
 
 import time
 import weakref
@@ -333,7 +333,7 @@ def _scene_host(window):
 
 
 class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
-    """保持 ChartWidget 公共接口的独立 Scene Graph 内部视口。"""
+    """保持 ChartWidget 公共接口的共享 Scene Graph 内部视口。"""
 
     _continuous_sync = False
     supports_direct_resize = True
@@ -396,7 +396,7 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
         if not self._ready:
             return
         if self._host is None:
-            self._host = _scene_host(self)
+            self._host = _scene_host(self.window())
         self._host._ensure_view()
         self._view = self._host._view
         if self._item is not None and not _shiboken_is_valid(self._item):
