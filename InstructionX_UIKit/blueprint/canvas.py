@@ -979,6 +979,15 @@ class BlueprintCanvas(QWidget):
     # ------------------------------------------------------------------
     # 绘制（由内部视口承载，见 viewport.py）
     # ------------------------------------------------------------------
+    def grab(self, rectangle=QRect()):
+        pixmap = self._viewport.grab()
+        if rectangle.isNull():
+            return pixmap
+        dpr = self.devicePixelRatioF()
+        x, y, width, height = rectangle.getRect()
+        return pixmap.copy(QRect(round(x * dpr), round(y * dpr),
+                                 round(width * dpr), round(height * dpr)))
+
     def paintEvent(self, _event) -> None:
         # 画布本体被视口 1:1 覆盖；此处仅在视口尚未就位时兜底填底。
         p = QPainter(self)
