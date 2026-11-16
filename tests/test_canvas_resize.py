@@ -78,6 +78,20 @@ def forbid_resize_grab(viewport):
     return original, calls
 
 
+def grab_async(viewport):
+    result = {}
+
+    def captured(image):
+        result["image"] = image.copy()
+
+    viewport.grab_canvas(captured)
+    for _index in range(500):
+        if "image" in result:
+            return result["image"]
+        pump(2)
+    raise AssertionError("Canvas 异步回读超时")
+
+
 @check("Canvas 图表连续缩放直接渲染且动画与数据不中断")
 def _():
     os.environ["UIKIT_CHART_BACKEND"] = "canvas"
@@ -99,12 +113,13 @@ def _():
         chart.anim.set_progress(1.0)
         viewport.grab = original_grab
         pump(50)
-        final = viewport.grab().toImage()
+        final = grab_async(viewport)
         os.environ["UIKIT_RESIZE_PREVIEW"] = "off"
         reference = make_chart()
+        reference.set_stream_data([2, 4, 1, 5, 3])
         reference.resize(1000, 440)
         pump(50)
-        expected = reference._viewport.grab().toImage()
+        expected = grab_async(reference._viewport)
         if final != expected:
             final.save(str(ROOT / "temp" / "canvas_resize_chart_final.png"))
             expected.save(str(ROOT / "temp" / "canvas_resize_chart_expected.png"))
@@ -143,12 +158,12 @@ def _():
         canvas.update()
         viewport.grab = original_grab
         pump(50)
-        final = viewport.grab().toImage()
+        final = grab_async(viewport)
         os.environ["UIKIT_RESIZE_PREVIEW"] = "off"
         reference, reference_canvas = make_blueprint()
         reference_canvas.resize(1000, 540)
         pump(50)
-        expected = reference_canvas._viewport.grab().toImage()
+        expected = grab_async(reference_canvas._viewport)
         if final != expected:
             final.save(str(ROOT / "temp" / "canvas_resize_blueprint_final.png"))
             expected.save(str(ROOT / "temp" / "canvas_resize_blueprint_expected.png"))
