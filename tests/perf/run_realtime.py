@@ -245,6 +245,10 @@ def main():
     window.resize(2560, 1440)
     window.move(0, 0)
     window.showFullScreen()
+    app.processEvents()
+    from native_input import activate_window
+    if not activate_window(window) or not window.windowHandle().isExposed():
+        raise RuntimeError("真实性能窗口未取得前台或未暴露，不能开始测量")
     viewports = {}
     if args.only in ("complex", "charts", "single-chart", "no-chat"):
         viewports["chart_left"] = charts[0]._viewport
@@ -425,7 +429,7 @@ def main():
             "gc_times_ms": timing_summary([event[1] * 1000 for event in state["gc"]]),
             "failures": state["failures"],
             "pass": passed,
-            "measurement": "QQuickView.frameSwapped + UI 快照同步耗时；不是 PresentMon",
+            "measurement": "局部 Scene Graph 帧完成信号 + UI 数据同步耗时；不是 PresentMon",
         }
         round_name = f"round_{round_index + 1:02d}"
         (destination / f"{round_name}.json").write_text(
