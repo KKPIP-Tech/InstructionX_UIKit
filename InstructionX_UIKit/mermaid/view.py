@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
 """MermaidView：可交互 Mermaid 图查看器（SPEC 禁 WebView/JS 约束经用户显式豁免，仅限本子包内部）。
 
-与 ``hub`` 的「渲染成静态 QImage」不同，本控件内嵌**实时渲染**的
-``QWebEngineView``（每个实例一个隐藏加载 viewer 页面）：mermaid 渲染出的
-SVG 放进页面 wrapper div，缩放 / 平移用 CSS transform 作用于 wrapper，
-交互（拖动平移、Ctrl+滚轮以光标为中心缩放、双击复位）全部在 JS 内完成，
-排版与交互同一引擎，行为对齐 GitHub / mermaid.live。
+独立查看器默认内嵌**实时渲染**的 ``QWebEngineView``：SVG 放进页面 wrapper，
+缩放 / 平移用 CSS transform，拖动、Ctrl+滚轮与双击复位在 JS 内完成。
+``MarkdownView`` 的文档内叠加层则复用官方 Hub 的 QImage，以 QWidget 画布承载
+同一组缩放 / 平移操作，避免创建原生 WebEngine 子窗口导致宿主页面闪烁。
 
 - 右上角悬浮工具条：放大 / 缩小 / 复位 / 适应宽度四个按钮。
   主路径下工具条**画在 viewer HTML 页面内**（QWebEngineView 是原生窗口
@@ -555,7 +554,7 @@ class MermaidView(QWidget):
     #: 渲染成功（尺寸可能变化，宿主可据此调整高度）
     rendered = Signal()
 
-    def __init__(self, code: str = "", parent: QWidget = None):
+    def __init__(self, code: str = "", parent: QWidget = None, _embed_web=True):
         super().__init__(parent)
         self._code = ""
         self._natural = QSize()
@@ -577,7 +576,9 @@ class MermaidView(QWidget):
         # ---- 主题热切换 ----
         ThemeManager.instance().theme_changed.connect(self._on_theme_changed)
         # ---- 渲染路径选择 ----
-        if _webengine_available():
+        if not _embed_web:
+            self._enter_canvas("", report=False)
+        elif _webengine_available():
             self._create_web()
         else:
             self._enter_canvas("PySide6 WebEngine 组件不可用")
@@ -835,12 +836,13 @@ class MermaidView(QWidget):
         return True
 
     # ==================================================== 降级自绘路径
-    def _enter_canvas(self, reason: str) -> None:
-        """切换为自绘画布路径（每个实例切换时打印一次提示，经 hub 的降级后端取图）。"""
+    def _enter_canvas(self, reason: str, report=True) -> None:
+        """使用 QWidget 图像画布；仅实际降级时打印提示。"""
         if self._canvas is not None:
             return
-        print(f"[MermaidView] {reason}，降级为静态图画布（缩放/平移交互一致，"
-              f"渲染能力随 MermaidRenderHub 后端）", file=sys.stderr)
+        if report:
+            print(f"[MermaidView] {reason}，降级为静态图画布（缩放/平移交互一致，"
+                  f"渲染能力随 MermaidRenderHub 后端）", file=sys.stderr)
         self._canvas = _FallbackCanvas(self)
         self._layout.addWidget(self._canvas)
         # 降级路径没有原生窗口遮挡，用 Qt 自绘工具条
