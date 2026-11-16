@@ -10,6 +10,7 @@ import traceback
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.pop("QT_QPA_PLATFORM", None)
+os.environ["UIKIT_BLUEPRINT_BACKEND"] = "canvas"
 os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
 
 from PySide6.QtCore import QPointF
@@ -51,14 +52,9 @@ def _():
     canvas = BlueprintCanvas(graph)
     canvas.resize(900, 600)
     canvas.show()
-    viewport = CanvasBlueprintViewport(canvas, parent=canvas)
-    old = canvas._viewport
-    canvas._viewport = viewport
-    for widget in canvas._node_widgets.values():
-        widget.setParent(viewport)
-    old.close()
-    old.deleteLater()
-    viewport.show()
+    viewport = canvas._viewport
+    assert isinstance(viewport, CanvasBlueprintViewport)
+    canvas.activateWindow()
     try:
         viewport._sync_now()
         commands = viewport._static_scene.commands
@@ -67,7 +63,7 @@ def _():
                        for command in commands)
         pump(150)
         viewport._sync_now()
-        renderer = viewport._item._renderer
+        renderer = viewport._canvas_renderer
         assert len(renderer._grid_cache) == 1
         assert "direct" in viewport.rhi_api().lower()
     finally:

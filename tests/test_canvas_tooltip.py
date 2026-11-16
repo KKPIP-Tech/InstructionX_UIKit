@@ -10,6 +10,7 @@ import traceback
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.pop("QT_QPA_PLATFORM", None)
+os.environ["UIKIT_CHART_BACKEND"] = "canvas"
 os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
 
 import numpy as np
@@ -113,12 +114,9 @@ def _():
     chart.anim.set_progress(1.0)
     chart.resize(900, 600)
     chart.show()
-    viewport = CanvasItemLineChartViewport(chart, parent=chart)
-    old = chart._viewport
-    chart._viewport = viewport
-    old.close()
-    old.deleteLater()
-    viewport.show()
+    viewport = chart._viewport
+    assert isinstance(viewport, CanvasItemLineChartViewport)
+    chart.activateWindow()
     destination = ROOT / "temp" / "canvas_tooltip"
     destination.mkdir(parents=True, exist_ok=True)
     try:
