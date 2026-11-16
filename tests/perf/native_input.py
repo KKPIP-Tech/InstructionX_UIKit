@@ -139,7 +139,9 @@ def is_foreground(widget):
 
 
 def activate_window(widget):
-    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtCore import QCoreApplication, QPoint
+    from PySide6.QtGui import QCursor
+    from PySide6.QtWidgets import QApplication
 
     window = widget.window()
     window.raise_()
@@ -151,7 +153,19 @@ def activate_window(widget):
         if is_foreground(widget):
             return True
         time.sleep(0.02)
-    return False
+    previous = cursor_pos()
+    try:
+        move_to(*client_to_physical(window, QPoint(5, 5)))
+        hit = QApplication.widgetAt(QCursor.pos())
+        if hit is None or hit.window() is not window:
+            return False
+        left_button(True)
+        left_button(False)
+        QCoreApplication.processEvents()
+    finally:
+        if cursor_pos() != previous:
+            move_to(*previous)
+    return is_foreground(widget)
 
 
 def window_rect(widget):
