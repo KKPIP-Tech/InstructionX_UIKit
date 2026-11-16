@@ -221,8 +221,7 @@ def _():
         canvas._selected_nodes = ["a"]
         canvas.node_widget("a").set_selected(True)
         canvas.activateWindow()
-        viewport._view.setFocus(Qt.OtherFocusReason)
-        viewport._host.root_item().setFocus(True)
+        viewport.setFocus(Qt.OtherFocusReason)
         QTest.keyClick(viewport._view, Qt.Key_Delete)
         viewport._sync_now()
         assert graph.node("a") is None
@@ -243,7 +242,7 @@ def _():
         viewport.close()
         canvas.close()
         pump()
-    assert viewport._item is None
+    assert viewport._view is None
 
 
 @check("自定义节点体保持真实控件输入能力")

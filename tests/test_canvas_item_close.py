@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import time
 import traceback
+import weakref
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -39,7 +40,7 @@ def check(name):
     return decorate
 
 
-@check("视图销毁后释放 renderer 且不滞留宿主")
+@check("直接视口销毁后释放绘制数据与控件")
 def _():
     chart = ChartWidget()
     chart.set_option({"animation": False, "series": [
@@ -53,11 +54,13 @@ def _():
     viewport.show()
     pump()
     viewport._sync_now()
-    assert viewport._item._renderer is not None
+    assert viewport._canvas_renderer._views
+    reference = weakref.ref(viewport)
     viewport.close()
     pump()
     try:
-        assert not canvas_item._RETIREMENTS
+        assert viewport._view is None
+        assert not viewport._canvas_renderer._views
         chart.close()
         old.close()
         pump(100)
@@ -66,7 +69,7 @@ def _():
         old = None
         gc.collect()
         pump(100)
-        assert not canvas_item._HOSTS
+        assert reference() is None
     finally:
         if viewport is not None:
             viewport.close()

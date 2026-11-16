@@ -58,11 +58,11 @@ def _():
         viewport._sync_now()
         viewport._sync_timer.stop()
         assert not viewport._sync_timer.isActive()
-        viewport._host._emit_frames()
+        viewport._emit_frames()
         assert viewport._sync_timer.isActive()
         viewport._suspend()
         viewport._sync_timer.stop()
-        viewport._host._emit_frames()
+        viewport._emit_frames()
         assert not viewport._sync_timer.isActive()
     finally:
         viewport.close()
@@ -95,7 +95,7 @@ def _():
         viewport._sync_timer.stop()
         viewport.update()
         assert not viewport._sync_timer.isActive(), "数据更新不应越过下一次交换帧额外同步"
-        viewport._host._emit_frames()
+        viewport._emit_frames()
         assert viewport._sync_timer.isActive(), "交换帧必须调度包含最新数据的同步"
         viewport._sync_now()
         viewport.update()
@@ -124,19 +124,19 @@ def _():
     try:
         viewport._sync_now()
         viewport._sync_timer.stop()
-        viewport._host._emit_frames()
+        viewport._emit_frames()
         assert not viewport._sync_timer.isActive(), "无变化图表不应重复同步"
         assert len(frames) == 1, "跳过同步不得跳过真实交换帧通知"
         chart.update()
-        viewport._host._emit_frames()
+        viewport._emit_frames()
         assert viewport._sync_timer.isActive(), "update 后必须在下一帧同步"
         viewport._sync_now()
         chart.resize(720, 420)
-        viewport._host._emit_frames()
+        viewport._emit_frames()
         assert viewport._sync_timer.isActive(), "尺寸变化必须在下一帧同步"
         viewport._sync_now()
         assert chart.set_stream_data([1, 0, 1])
-        viewport._host._emit_frames()
+        viewport._emit_frames()
         assert viewport._sync_timer.isActive(), "流式数据必须在下一帧同步"
     finally:
         chart.close()

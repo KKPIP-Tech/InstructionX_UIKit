@@ -74,14 +74,11 @@ def _():
     pump()
     try:
         first, second = viewports
-        assert first._view is not None and first._view is not second._view
-        assert first._item.parentItem() is not second._item.parentItem()
+        assert first._view is first and second._view is second
         for chart, viewport in zip(charts, viewports):
-            assert viewport._item.size() == QSizeF(chart.size())
-            expected = QPointF(0, 0)
-            assert viewport._item.position() == expected, (
-                viewport._item.position(), expected, chart.pos(), viewport.pos(),
-                viewport._host._container.pos())
+            assert viewport.size() == chart.size()
+            assert viewport.pos() == QPointF(0, 0).toPoint(), (
+                viewport.pos(), chart.pos(), viewport.pos())
             assert viewport.rhi_api() == "Direct3D11"
         received = []
         original_press = charts[0].keyPressEvent
@@ -96,21 +93,18 @@ def _():
         window.showMinimized()
         pump()
         assert all(not chart._ui_active for chart in charts)
-        assert all(viewport._view is None or not viewport._view.isVisible()
-                   for viewport in viewports)
+        assert all(not viewport._sync_timer.isActive() for viewport in viewports)
         window.showNormal()
         pump()
         assert all(chart._ui_active for chart in charts)
-        assert first._view is not None and first._view.isVisible()
-        host = first._host
+        assert first._view is first and first.isVisible()
         charts[0].hide()
         pump()
-        assert first._view is None
-        assert second._host is not host
-        assert second._view is not None and second._view.isVisible()
+        assert not first.isVisible()
+        assert second._view is second and second.isVisible()
         charts[0].show()
         pump()
-        assert first._view is not second._view
+        assert first._view is first and first.isVisible()
         assert first._line_views[0]._points == charts[0].series_renderers[0]._points
     finally:
         window.close()

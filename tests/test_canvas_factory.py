@@ -234,8 +234,7 @@ def _():
         assert viewport.mean_sync_ms() >= 0
         assert hasattr(viewport, "frameSwapped")
         chart.activateWindow()
-        viewport._view.setFocus(Qt.OtherFocusReason)
-        viewport._host.root_item().setFocus(True)
+        viewport.setFocus(Qt.OtherFocusReason)
         QTest.keyClick(viewport._view, Qt.Key_A)
         pump()
         assert Qt.Key_A in chart.keys, chart.keys
