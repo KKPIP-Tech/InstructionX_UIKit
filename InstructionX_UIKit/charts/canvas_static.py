@@ -320,7 +320,8 @@ def _calendar(commands, coord):
 
 def build_static_scene(chart):
     chart._layout_all()
-    commands = [("fill_rect", QRectF(chart.rect()), QColor(T("color.bg.base")))]
+    commands = [("fill_rect", QRectF(chart.rect()).adjusted(-1, -1, 1, 1),
+                 QColor(T("color.bg.base")))]
     for coord in chart.coords:
         if isinstance(coord, GridCoord):
             _grid(commands, coord)

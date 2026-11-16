@@ -3,6 +3,7 @@
 
 import time
 
+from PySide6.QtCanvasPainter import QCanvasPainterWidget
 from PySide6.QtCore import QCoreApplication, QEvent, QPointF, Qt
 from PySide6.QtGui import QColor, QMouseEvent, QWheelEvent
 from PySide6.QtWidgets import QApplication
@@ -67,7 +68,7 @@ class CanvasBlueprintViewport(CanvasItemLineChartViewport):
         self._chart = canvas
 
     def _sync_now(self):
-        if not self._canvas._ui_active or not self.isVisible() or self._item is None:
+        if not self._canvas._ui_active or not self.isVisible() or self._view is None:
             return
         self._sync_timer.stop()
         self._sync_dirty = False
@@ -88,8 +89,7 @@ class CanvasBlueprintViewport(CanvasItemLineChartViewport):
             scene = build_blueprint_flow(self._canvas)
             self._line_views = () if scene is None else (_FlowView(scene),)
             self._flow_key = flow_key
-        self._item.set_views(self._line_views, self._static_scene, self._overlay_scene,
-                             component_scene=self._component_scene)
+        QCanvasPainterWidget.update(self)
         for widget in self._canvas._node_widgets.values():
             widget.raise_()
         self.sync_times.append((time.perf_counter() - started) * 1000)
