@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""真实窗口共享 Canvas Scene Graph 与生命周期回归。"""
+"""真实窗口独立 Canvas Scene Graph 与生命周期回归。"""
 
 import os
 from pathlib import Path
@@ -49,7 +49,7 @@ def check(name):
     return decorate
 
 
-@check("同窗口共享一个 RHI 视图并保持各自几何与生命周期")
+@check("同窗口独立 RHI 视图并保持各自几何与生命周期")
 def _():
     window = QMainWindow()
     central = QWidget(window)
@@ -74,11 +74,11 @@ def _():
     pump()
     try:
         first, second = viewports
-        assert first._view is not None and first._view is second._view
-        assert first._item.parentItem() is second._item.parentItem()
+        assert first._view is not None and first._view is not second._view
+        assert first._item.parentItem() is not second._item.parentItem()
         for chart, viewport in zip(charts, viewports):
             assert viewport._item.size() == QSizeF(chart.size())
-            expected = QPointF(chart.mapTo(window, chart.rect().topLeft()))
+            expected = QPointF(0, 0)
             assert viewport._item.position() == expected, (
                 viewport._item.position(), expected, chart.pos(), viewport.pos(),
                 viewport._host._container.pos())
@@ -106,10 +106,11 @@ def _():
         charts[0].hide()
         pump()
         assert first._view is None
-        assert second._view is host._view
+        assert second._host is not host
+        assert second._view is not None and second._view.isVisible()
         charts[0].show()
         pump()
-        assert first._view is second._view
+        assert first._view is not second._view
         assert first._line_views[0]._points == charts[0].series_renderers[0]._points
     finally:
         window.close()
