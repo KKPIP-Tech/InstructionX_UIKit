@@ -184,8 +184,8 @@ class _RhiViewport(_ViewportMixin, QWidget):
 
     def _mouse_event(self, target, event):
         view_position = event.position().toPoint()
-        local = target.mapFrom(self, view_position)
         global_position = self._container.mapToGlobal(view_position)
+        local = target.mapFromGlobal(global_position)
         return QMouseEvent(event.type(), QPointF(local), QPointF(global_position),
                            event.button(), event.buttons(), event.modifiers())
 
@@ -236,8 +236,8 @@ class _RhiViewport(_ViewportMixin, QWidget):
 
     def _send_tooltip(self, event):
         target = self._target_at(event.position())
-        local = target.mapFrom(self, event.position().toPoint())
         global_position = self._container.mapToGlobal(event.position().toPoint())
+        local = target.mapFromGlobal(global_position)
         return QCoreApplication.sendEvent(
             target, QHelpEvent(event.type(), local, global_position))
 
