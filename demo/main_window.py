@@ -13,7 +13,8 @@
 import re
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QIcon, QPainter, QPen
+from PySide6.QtGui import QGuiApplication, QColor, QFont, QFontMetricsF, QIcon, QPainter, QPen, QSurface
+from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -427,11 +428,32 @@ class _Sidebar(QWidget):
 # 主窗口
 # ---------------------------------------------------------------------------
 
+def _prepare_rhi_surface(window):
+    app = QGuiApplication.instance()
+    if app is None or app.platformName() in ("offscreen", "minimal", "minimalegl"):
+        return
+    api = QQuickWindow.graphicsApi()
+    surface = {
+        QSGRendererInterface.GraphicsApi.Direct3D11: QSurface.Direct3DSurface,
+        QSGRendererInterface.GraphicsApi.Vulkan: QSurface.VulkanSurface,
+        QSGRendererInterface.GraphicsApi.Metal: QSurface.MetalSurface,
+        QSGRendererInterface.GraphicsApi.OpenGL: QSurface.OpenGLSurface,
+    }.get(api)
+    if surface is None:
+        return
+    window.winId()
+    handle = window.windowHandle()
+    if handle is not None and handle.surfaceType() != surface:
+        # 首次嵌入 RHI 子控件时再切换会销毁重建可见顶层窗口。
+        handle.setSurfaceType(surface)
+
+
 class MainWindow(QMainWindow):
     """Demo 主窗口（1440x900）。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        _prepare_rhi_surface(self)
         self.setWindowTitle("InstructionX_UIKit · Demo")
         self.resize(1440, 900)
         self.setMinimumSize(1080, 680)
