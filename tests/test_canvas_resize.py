@@ -157,10 +157,13 @@ def _():
         edge.set_flowing(False)
         canvas.update()
         viewport.grab = original_grab
+        page.resize(1232, 800)
+        canvas.resize(1000, 540)
         pump(50)
         final = grab_async(viewport)
         os.environ["UIKIT_RESIZE_PREVIEW"] = "off"
         reference, reference_canvas = make_blueprint()
+        reference.resize(1232, 800)
         reference_canvas.resize(1000, 540)
         pump(50)
         expected = grab_async(reference_canvas._viewport)
