@@ -485,6 +485,9 @@ def main():
 
     def start_round():
         state["round"] = 0
+        state["tasks"] = []
+        state["gc"] = []
+        state["gc_started"] = None
         state["recording"] = True
         sample_resource()
         QTimer.singleShot(int(args.seconds * 1000), finish_round)
