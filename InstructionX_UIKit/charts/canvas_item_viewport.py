@@ -167,7 +167,8 @@ class _CanvasSceneHost(QObject):
         self._view = QQuickWidget(self._window)
         self._view.setClearColor(QColor(T("color.bg.base")))
         self._view.setResizeMode(QQuickWidget.SizeRootObjectToView)
-        self._view.quickWindow().frameSwapped.connect(self._emit_frames)
+        self._view.quickWindow().afterFrameEnd.connect(
+            self._emit_frames, Qt.ConnectionType.QueuedConnection)
         self._view.installEventFilter(self)
         self._container = self._view
         self._container.setGeometry(self._window.rect())
