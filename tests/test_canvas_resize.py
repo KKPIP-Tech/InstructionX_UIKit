@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""真实 Canvas 视口连续缩放、异步捕获与窗口组合回归。"""
+"""真实 Canvas 视口连续缩放、直接动态渲染与窗口组合回归。"""
 
 import os
 from pathlib import Path
@@ -66,29 +66,40 @@ def make_blueprint():
     return page, canvas
 
 
-def wait_preview(canvas, active):
-    for _index in range(200):
-        if canvas._resize_preview.active == active:
-            return
-        if active:
-            canvas.resize(1000, 440)
-        pump(10)
-    raise AssertionError(f"缩放预览状态超时: active={active}")
+def forbid_resize_grab(viewport):
+    original = viewport.grab
+    calls = []
+
+    def forbidden(*_args, **_kwargs):
+        calls.append(1)
+        raise AssertionError("Canvas 缩放不得生成旧帧截图")
+
+    viewport.grab = forbidden
+    return original, calls
 
 
-@check("Canvas 图表连续缩放捕获且最终像素一致")
+@check("Canvas 图表连续缩放直接渲染且动画与数据不中断")
 def _():
     os.environ["UIKIT_CHART_BACKEND"] = "canvas"
     chart = make_chart()
     reference = None
+    viewport = chart._viewport
+    original_grab, calls = forbid_resize_grab(viewport)
     try:
-        chart.resize(900, 420)
-        chart.resize(1000, 440)
-        wait_preview(chart, True)
-        assert chart._preview_capturing is False
-        wait_preview(chart, False)
+        chart.anim.start()
+        for size in ((900, 420), (1000, 440), (960, 460), (1000, 440)):
+            chart.resize(*size)
+            pump(20)
+        assert not calls
+        assert not chart._resize_preview.active
+        assert not chart._preview_capturing
+        assert chart.anim.is_running(), "直接缩放不得暂停动画"
+        assert chart.set_stream_data([2, 4, 1, 5, 3]), "直接缩放不得中断流式数据"
+        chart.anim.stop()
+        chart.anim.set_progress(1.0)
+        viewport.grab = original_grab
         pump(50)
-        final = chart._viewport.grab().toImage()
+        final = viewport.grab().toImage()
         os.environ["UIKIT_RESIZE_PREVIEW"] = "off"
         reference = make_chart()
         reference.resize(1000, 440)
@@ -97,8 +108,9 @@ def _():
         if final != expected:
             final.save(str(ROOT / "temp" / "canvas_resize_chart_final.png"))
             expected.save(str(ROOT / "temp" / "canvas_resize_chart_expected.png"))
-        assert final == expected, "预览恢复后的最终图像与全质量路径不一致"
+        assert final == expected, "直接缩放后的最终图像与全质量路径不一致"
     finally:
+        viewport.grab = original_grab
         chart.close()
         if reference is not None:
             reference.close()
@@ -106,22 +118,32 @@ def _():
         os.environ.pop("UIKIT_RESIZE_PREVIEW", None)
 
 
-@check("Canvas Blueprint 连续缩放捕获且最终完整清晰")
+@check("Canvas Blueprint 直接缩放保持真实控件与流动动画")
 def _():
     os.environ["UIKIT_BLUEPRINT_BACKEND"] = "canvas"
     page, canvas = make_blueprint()
     reference = None
     reference_canvas = None
+    viewport = canvas._viewport
+    original_grab, calls = forbid_resize_grab(viewport)
     try:
-        canvas.resize(900, 520)
-        canvas.resize(1000, 540)
-        wait_preview(canvas, True)
-        assert canvas._preview_capturing is False
-        wait_preview(canvas, False)
+        edge = next(iter(canvas._edge_widgets.values()))
+        edge.set_flowing(True)
+        canvas._ensure_flow_timer()
+        for size in ((900, 520), (1000, 540), (960, 560), (1000, 540)):
+            canvas.resize(*size)
+            pump(20)
+        assert not calls
+        assert not canvas._resize_preview.active
+        assert not canvas._preview_capturing
         assert not canvas._gesture_deferred
         assert all(widget.isVisible() for widget in canvas._node_widgets.values())
+        assert canvas._flow_timer.isActive(), "直接缩放不得停止流动动画"
+        edge.set_flowing(False)
+        canvas.update()
+        viewport.grab = original_grab
         pump(50)
-        final = canvas._viewport.grab().toImage()
+        final = viewport.grab().toImage()
         os.environ["UIKIT_RESIZE_PREVIEW"] = "off"
         reference, reference_canvas = make_blueprint()
         reference_canvas.resize(1000, 540)
@@ -132,6 +154,7 @@ def _():
             expected.save(str(ROOT / "temp" / "canvas_resize_blueprint_expected.png"))
         assert final == expected
     finally:
+        viewport.grab = original_grab
         page.close()
         if reference is not None:
             reference.close()
@@ -139,7 +162,7 @@ def _():
         os.environ.pop("UIKIT_RESIZE_PREVIEW", None)
 
 
-@check("WindowHost 连续更新与几何变化不阻塞同步回读")
+@check("WindowHost 连续更新与几何变化不阻塞直接渲染")
 def _():
     from run_window_matrix import AudioProbe, measure_case
     os.environ["UIKIT_CHART_BACKEND"] = "canvas"
