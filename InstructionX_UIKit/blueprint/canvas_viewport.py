@@ -53,7 +53,7 @@ class _FlowView:
 
 class CanvasBlueprintViewport(CanvasItemLineChartViewport):
     supports_node_proxy = True
-    _continuous_sync = False
+    _continuous_sync = True
 
     def __init__(self, canvas, parent=None):
         super().__init__(canvas, parent)
