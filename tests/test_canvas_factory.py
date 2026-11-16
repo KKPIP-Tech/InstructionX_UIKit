@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 os.environ.pop("QT_QPA_PLATFORM", None)
 os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
 
+from PySide6.QtCanvasPainter import QCanvasPainterWidget
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -149,7 +150,8 @@ def _():
                 viewport._sync_now()
                 assert len(viewport._line_views) == len(chart.series_renderers), name
                 assert all(model._visible for model in viewport._line_views), name
-                assert viewport.active_backend() == "canvas-item-widget"
+                assert isinstance(viewport, QCanvasPainterWidget), (name, type(viewport))
+                assert viewport.active_backend() == "canvas-widget"
                 assert "direct" in viewport.rhi_api().lower(), (name, viewport.rhi_api())
             finally:
                 chart.close()
