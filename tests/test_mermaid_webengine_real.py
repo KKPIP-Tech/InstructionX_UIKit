@@ -49,13 +49,8 @@ def poll():
         finish("MermaidRenderHub 已降级为受限自绘后端")
         return
     views = window.findChildren(MermaidView)
-    if any(v._web is None and v._canvas is not None for v in views):
-        finish("MermaidView 已降级")
-        return
     if (hub._web_ready and views and not hub._pending
-            and all(v._web_ready and v._natural.isValid() for v in views)
-            and all(v._poll_timer is None or not v._poll_timer.isActive()
-                    for v in views)):
+            and all(v._canvas is not None and v._natural.isValid() for v in views)):
         finish("")
     else:
         QTimer.singleShot(250, poll)
@@ -81,13 +76,15 @@ def finish(error):
 
 def capture():
     global success
+    from PySide6.QtWebEngineWidgets import QWebEngineView
     from InstructionX_UIKit.components import MarkdownView
     from InstructionX_UIKit.mermaid import MermaidRenderHub, MermaidView
     hub = MermaidRenderHub.instance()
     views = window.findChildren(MermaidView)
-    if hub._web_failed or any(v._web is None for v in views):
+    native = window.findChildren(QWebEngineView)
+    if hub._web_failed or any(v._canvas is None for v in views) or native:
         success = False
-        print("[失败] 滚动后 Mermaid 发生降级", flush=True)
+        print(f"[失败] 文档图像画布异常或存在原生 WebEngine: {len(native)}", flush=True)
         close()
         return
     if time.monotonic() >= deadline:
@@ -96,20 +93,33 @@ def capture():
         close()
         return
     if (hub._pending or not views or any(
-            not v._web_ready or not v._natural.isValid()
-            or (v._poll_timer is not None and v._poll_timer.isActive())
-            for v in views)):
+            not v._natural.isValid() for v in views)):
         QTimer.singleShot(250, capture)
         return
     keys = [key for document in window.findChildren(MarkdownView)
             for key in document._diagram_keys]
+    if len(keys) < 6:
+        QTimer.singleShot(250, capture)
+        return
     missing = [(key, hub.last_error(key)) for key in keys if hub.get(key) is None]
-    if len(keys) < 6 or missing:
+    if missing:
         success = False
         print(f"[失败] 图表缓存不完整 keys={len(keys)} missing={missing}", flush=True)
         close()
         return
-    print(f"[验收] 查看器={len(views)}，缓存图表={len(keys)}", flush=True)
+    before = views[0]._canvas._scale
+    views[0]._toolbar.btn_zoom_in.click()
+    if views[0]._canvas._scale <= before:
+        success = False
+        print("[失败] 文档图像画布的缩放按钮无效", flush=True)
+        close()
+        return
+    print(f"[验收] 查看器={len(views)}，缓存图表={len(keys)}，原生 WebEngine=0", flush=True)
+    from tests.perf.native_input import activate_window
+    if not activate_window(window):
+        success = False
+        close()
+        return
     from tests.perf.native_screen import grab_native_window
     target = ROOT / "tests" / "shots" / "mermaid_webengine_real.png"
     target.parent.mkdir(parents=True, exist_ok=True)
