@@ -37,7 +37,7 @@ def check(name):
     return decorate
 
 
-@check("交换帧继续调度下一次同步且保持隐藏暂停")
+@check("交换帧仅在状态变化后调度同步且隐藏暂停")
 def _():
     graph = BlueprintGraph()
     node = BlueprintNode("perf", "静态节点", node_id="a")
@@ -59,7 +59,9 @@ def _():
         viewport._sync_timer.stop()
         assert not viewport._sync_timer.isActive()
         viewport._emit_frames()
-        assert viewport._sync_timer.isActive()
+        assert not viewport._sync_timer.isActive(), "无变化时不应重复同步"
+        viewport.update()
+        assert viewport._sync_timer.isActive(), "真实变化后必须调度同步"
         viewport._suspend()
         viewport._sync_timer.stop()
         viewport._emit_frames()
