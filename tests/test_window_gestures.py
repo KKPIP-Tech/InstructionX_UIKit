@@ -71,11 +71,13 @@ def _():
 @check("系统不可用时手动移动窗口")
 def _():
     host = make_host()
+    host.gesture._system_move = lambda handle: False
     origin = host.geometry()
     QTest.mousePress(host._titlebar, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(50, 24))
     manual_origin = host.gesture._manual[1]
-    target_global = host.mapToGlobal(QPoint(50, 50))
-    QTest.mouseMove(host, target_global)
+    target_local = QPoint(50, 50)
+    target_global = host.mapToGlobal(target_local)
+    QTest.mouseMove(host, target_local)
     assert host.geometry().topLeft() == origin.topLeft() + (
         target_global - manual_origin), (host.geometry(), origin, manual_origin)
     QTest.mouseRelease(host._titlebar, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(50, 50))
@@ -85,12 +87,14 @@ def _():
 @check("手动右下角缩放保留最小尺寸")
 def _():
     host = make_host()
+    host.gesture._system_resize = lambda handle, edges: False
     origin = host.geometry()
     QTest.mousePress(host._titlebar, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
                      host._titlebar.rect().bottomRight() - QPoint(1, 1))
     manual_origin = host.gesture._manual[1]
-    target_global = host.mapToGlobal(QPoint(920, 70))
-    QTest.mouseMove(host, target_global)
+    target_local = QPoint(920, 70)
+    target_global = host.mapToGlobal(target_local)
+    QTest.mouseMove(host, target_local)
     delta = target_global - manual_origin
     assert host.width() == origin.width() + delta.x(), (
         host.width(), origin.width(), delta)
