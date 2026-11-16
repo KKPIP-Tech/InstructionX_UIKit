@@ -936,7 +936,11 @@ class ChartWidget(QWidget):
             _reattach_big_data(self._option, buffers)
         self._opt_version += 1
         self._rebuild()
-        self.anim.start()
+        if self._option.get("animation", True):
+            self.anim.start()
+        else:
+            self.anim.stop()
+            self.anim.set_progress(1.0)
         self.update()
         self._perf.add("option_update_ms", time.perf_counter() - started)
 
@@ -969,7 +973,11 @@ class ChartWidget(QWidget):
             if prev is None and i < len(prev_list):
                 prev = prev_list[i]
             r.prev_data = prev
-        self.anim.start()
+        if self._option.get("animation", True):
+            self.anim.start()
+        else:
+            self.anim.stop()
+            self.anim.set_progress(1.0)
         self.update()
         self._perf.add("option_update_ms", time.perf_counter() - started)
 
