@@ -1,6 +1,6 @@
 # Chart / Blueprint 的 RHI 后端设计与验收现状
 
-## 当前默认直接 Canvas（`uniform_style@2aee131`）
+## 当前默认直接 Canvas（`uniform_style@0d21e64`）
 
 - 真实窗口默认使用 `QCanvasPainterWidget + QCanvasPainter + QRhi` 直接绘制，由 Qt 自动选择平台 API。显式 `rhi` 选项保留下述 `QQuickView + Scene Graph` 完整快照路径；Canvas 能力不足时也回退到该路径。公共 QWidget API 不变，不做全组件 QML 迁移。
 - 每个 Canvas 视口都是普通 QWidget 子控件，不经过 `QQuickWidget`、离屏 `QQuickWindow`、人工鼠标转发或独立原生透明覆盖窗口。28 个图表演示与 2 个蓝图画布的默认后端、真实首帧和重复切换已由 `tests/test_canvas_default_pages.py` 验证。
@@ -8,7 +8,7 @@
 - 缩放直接更新布局并绘制，不使用旧帧拉伸。`ChartWidget.grab()` / `BlueprintCanvas.grab()` 委托真实视口，支持 QWidget 风格的矩形裁剪；显式导出与测试通过真实控件合成回读，不进入正常帧循环。
 - Canvas 功能集合（`tests/test_canvas_*.py` 与 `test_blueprint_grid_texture.py`）全部通过。所有者将 Canvas 视觉验收定为**内容完整、视觉近似且无明显伪影**；不同光栅化器的单纯像素差异不单独判失败。`tests/shots/canvas_default_charts.png` 与 `canvas_default_blueprint.png` 保存了当前真实画面。
 - Demo 主窗口在显示前将顶层表面映射到 Qt 自动选择的 RHI API，避免首次嵌入重型视口时销毁并重建可见窗口。`tests/test_page_switch_real.py` 九次顺序真实点击中主窗口销毁为 0、蓝图 `mapFrom` 警告为 0。
-- 文档内 Mermaid 复用官方隐藏 Hub 的 QImage，以 QWidget 画布完成缩放和平移，不创建可见 WebEngine 子窗口；独立 MermaidView 的 WebEngine 路径由 `tests/test_mermaid_standalone_real.py` 单独验证。
+- 文档内 Mermaid 使用实时 SVG / WebEngine；查看器就绪后底层 PNG 必须透明，避免拖动和缩放重影。`tests/test_mermaid_live_vector.py` 验证状态图真实拖动、缩放与底层互斥；独立 MermaidView 由 `tests/test_mermaid_standalone_real.py` 单独验证。
 - 普通交互启动器 `tests/perf/run_interactive.ps1` 不提升管理员权限。Canvas 真实 4K 短测约 53.7 FPS、P95 约 30.67ms，仍未达标；正式复杂场景 5×60 秒不能由短测代替。当前代码不得标记为最终验收成品，也不自动合并或发布。
 
 ## 当前边界
