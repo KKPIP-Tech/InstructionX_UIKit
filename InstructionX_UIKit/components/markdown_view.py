@@ -1208,13 +1208,12 @@ a {{ color: {T("color.primary")}; }}
                 continue
             view = self._diagram_overlays.get(key)
             if view is None:
-                view = cls(self._diagram_codes.get(key, ""), self.viewport(),
-                           _embed_web=False)
+                view = cls(self._diagram_codes.get(key, ""), self.viewport())
                 # 查看器就绪后把底层 PNG 换为透明图，消除双层重影
                 view.rendered.connect(
                     lambda *_args, k=key: self._blank_underlay(k))
                 self._diagram_overlays[key] = view
-            # 图像查看器仅在几何变化时落位，避免不必要的显隐与重绘
+            # 原生子控件反复 setGeometry/show 会闪烁：仅在变化时落位
             if view.geometry() != rect:
                 view.setGeometry(rect)
             if not view.isVisible():
