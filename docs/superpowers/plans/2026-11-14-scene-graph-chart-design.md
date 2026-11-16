@@ -1,5 +1,14 @@
 # Chart / Blueprint 的 RHI 后端设计与验收现状
 
+## 当前直接 Canvas 候选（`uniform_style@59e76d1`）
+
+- 默认后端仍是下述 `QQuickView + Scene Graph + RHI` 完整快照路径，保持既有公共 API 与视觉基线。直接 Canvas 仅在显式设置 `UIKIT_CHART_BACKEND=canvas` / `UIKIT_BLUEPRINT_BACKEND=canvas` 时启用，尚未达到默认启用门槛。
+- 可选路径使用 `QCanvasPainterWidget + QCanvasPainter + QRhi`，由 Qt 自动选择平台 API。每个视口本身就是普通 QWidget 子控件，不再经过 `QQuickWidget`、离屏 `QQuickWindow`、人工鼠标转发或独立原生透明覆盖窗口。
+- `charts/canvas_item_viewport.py` 复用现有布局、坐标映射、采样、option、主题、信号和命中逻辑，绘制静态层、系列、组件与 tooltip；`blueprint/canvas_viewport.py` 只更新 Blueprint 场景，真实节点子控件继续接收 Qt 原生输入。
+- 缩放直接更新布局并绘制，不使用旧帧拉伸。`ChartWidget.grab()` / `BlueprintCanvas.grab()` 委托真实视口，支持 QWidget 风格的矩形裁剪；显式导出与测试通过真实控件合成回读，不进入正常帧循环。
+- 当前 Canvas 功能集合（`tests/test_canvas_*.py` 与 `test_blueprint_grid_texture.py`）全部通过；但同尺寸 RGBA 精确比较仍有静态图表 26,705、旭日图 10,588、Blueprint 32,699 个差异像素，**零像素门禁失败**。
+- 真实 4K 正式测量仍受 Windows 前台／原生指针条件限制；原型数据不能代替复杂场景 5×60 秒验收。该候选不得标记为最终成品，也不自动合并或发布。
+
 ## 当前边界
 
 - Chart 与 Blueprint 默认使用 `QQuickView + QWidget.createWindowContainer + Scene Graph + RHI`，不是全组件 QML 层。公共 QWidget 构造、option、信号槽、命中和返回类型保持兼容。
@@ -15,7 +24,7 @@
 
 ## 许可与模块
 
-使用项目已有 PySide6 附带的 QtQuick、QtQml、QtQuickWidgets 与 Scene Graph，不新增 Python 依赖，不使用 Qt Charts／Qt Graphs，不要求 qsb／Qt Shader Tools。本机 PySide6 `6.11.1` 的 `METADATA` 声明 `LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only`，同时提供商业许可；分发继续履行既有 Qt/PySide6 许可与源码提供义务，本文件不替代法律审查。
+使用项目已有 PySide6 附带的 QtQuick、QtQml、QtQuickWidgets、Scene Graph、QtCanvasPainter 与 QRhiWidget，不新增 Python 依赖，不使用 Qt Charts／Qt Graphs，不要求 qsb／Qt Shader Tools 或额外原生插件。QtCanvasPainter 的 GPLv3／商业许可边界记录于 `THIRD-PARTY.md`，不得误写成 LGPL；其他组件继续履行既有 Qt/PySide6 许可与源码提供义务。本文件不替代法律审查。
 
 ## 功能与像素证据
 
