@@ -432,16 +432,17 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
         host.unregister(self)
 
     def _dispose_item(self):
-        if self._item is not None and not _shiboken_is_valid(self._item):
-            self._item = None
-        if self._item is not None:
-            renderer = self._item._renderer
+        item = getattr(self, "_item", None)
+        if item is not None and not _shiboken_is_valid(item):
+            item = None
+        if item is not None:
+            renderer = item._renderer
             if renderer is not None and self._view is not None \
                     and _shiboken_is_valid(self._view):
                 _RendererRetirement(renderer, self._view)
-            self._item.setVisible(False)
-            self._item.setParentItem(None)
-            self._item = None
+            item.setVisible(False)
+            item.setParentItem(None)
+        self._item = None
 
     def _suspend(self):
         self._sync_timer.stop()
