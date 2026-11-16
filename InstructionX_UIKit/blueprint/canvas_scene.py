@@ -114,7 +114,8 @@ def _grid_scene(canvas):
             y += step
         x += step
     commands = [
-        ("fill_rect", QRectF(canvas.rect()), QColor(T("color.bg.base"))),
+        ("fill_rect", QRectF(canvas.rect()).adjusted(-1, -1, 1, 1),
+         QColor(T("color.bg.base"))),
         ("grid_pattern", QRectF(canvas.rect()), path, ox, oy, step, QColor(T("color.border"))),
     ]
     return CanvasStaticScene(commands, ("grid", step, ox, oy, canvas.width(),
