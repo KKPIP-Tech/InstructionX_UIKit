@@ -595,7 +595,7 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
             return
 
         def captured():
-            image = result.image()
+            image = result.image().convertToFormat(QImage.Format_ARGB32_Premultiplied)
             image.setDevicePixelRatio(dpr)
             callback(image)
 
