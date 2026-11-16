@@ -32,6 +32,7 @@ import time
 from PySide6.QtCore import (
     QObject,
     QPointF,
+    QRect,
     QRectF,
     Qt,
     QVariantAnimation,
@@ -1639,6 +1640,15 @@ class ChartWidget(QWidget):
         info["cpu_ms"] = best
         info["ok"] = bool(best is not None and best <= info["budget_ms"])
         return info
+
+    def grab(self, rectangle=QRect()):
+        pixmap = self._viewport.grab()
+        if rectangle.isNull():
+            return pixmap
+        dpr = self.devicePixelRatioF()
+        x, y, width, height = rectangle.getRect()
+        return pixmap.copy(QRect(round(x * dpr), round(y * dpr),
+                                 round(width * dpr), round(height * dpr)))
 
     def paintEvent(self, event) -> None:
         """父控件只铺底色，完整内容由重合的子视口绘制，避免整窗更新时画两遍。"""
