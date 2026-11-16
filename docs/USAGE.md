@@ -1169,7 +1169,7 @@ chart.update_option({"series": [{"data": [130, 120, 150, 160, 170, 240]}]})  # �
 图表绘制由内部视口承载，**公共 QWidget API 不变**：
 
 - **RHI 默认后端**：真实窗口使用 `QQuickView + Scene Graph + RHI`，由 Qt 自动选择平台图形 API；当前 Windows 实测为 Direct3D 11，不强制 OpenGL。
-- **可选直接 Canvas**：在控件创建前设置 `UIKIT_CHART_BACKEND=canvas` / `UIKIT_BLUEPRINT_BACKEND=canvas`，使用局部 `QCanvasPainterWidget + QRhi`，不经过 QQuickWindow。现有系列、交互与生命周期回归已通过，但零像素与真实 4K 门槛尚未通过，暂不作为默认后端。
+- **可选直接 Canvas**：在控件创建前设置 `UIKIT_CHART_BACKEND=canvas` / `UIKIT_BLUEPRINT_BACKEND=canvas`，使用局部 `QCanvasPainterWidget + QRhi`，不经过 QQuickWindow。现有系列、交互、生命周期与视觉近似回归已通过；允许不同光栅化器的轻微像素差异，但真实 4K 性能门槛尚未通过，暂不作为默认后端。
 - **软件视口**：offscreen／minimal 平台或 RHI 初始化失败时使用普通 QWidget，复用同一绘制体，供功能与像素回归使用。
 
 默认后端中，完整系列、坐标轴、组件与 tooltip 在 GUI 线程由 QPainter 生成最终帧，再通过纹理节点呈现；RHI 不等于自动加速 QPainter。可选 Canvas 复用相同布局与数据管线，以 QCanvasPainter 命令直接绘制。诊断时可设置 `UIKIT_CHART_BACKEND=raster` 强制软件参考，但不能把软件计时当作真实交换帧。旧 `UIKIT_CHART_GL`、`gl_available()`、`QOpenGLWidget` 与 VBO / GLSL 管线已移除。
@@ -1277,7 +1277,7 @@ RHI 负责平台呈现，但不会自动加速 QPainter 的 CPU 路径光栅化�
 
 普通实线的 `RoundJoin` 与整帧快照是默认后端的主要成本。上述数值属于默认快照路径的历史测量，不是直接 Canvas 的正式结果。真实 3840×2160、八个 2 万点系列的初步短测中，一张 Chart 约 1.19 FPS，另一张仅 1 帧，Blueprint 约 2.39 FPS，且有多个 286–455ms UI 长任务，**默认路径不满足 60 FPS 门槛**。原生几何、渐变描边和改变笔型均产生像素差异；零像素线程分片最快仍约 154ms，独立进程分片约 62ms，均未作为正式加速路径接入。
 
-可选 Canvas 候选已覆盖现有系列与交互，但与 QPainter 参考仍有逐像素差异，不能默认启用。真实 4K 正式测量受当前 Windows 前台与原生指针条件限制，未形成符合门槛的完整证据。
+可选 Canvas 候选已覆盖现有系列、交互与视觉近似检查；所有者允许不同光栅化器存在轻微像素差异，但不能有错图、明显错位或缺失内容。普通交互启动器已解决自动化前台与原生指针限制；当前真实 4K 短测约 53.7 FPS、P95 约 30.67ms，仍未达标，正式 5×60 秒结果不能以短测代替。
 
 ### 8.6 RHI、缩放与真实验收
 
@@ -1315,7 +1315,16 @@ Chart 与 Blueprint 默认使用 RHI，不需要 `UIKIT_CHART_BACKEND=quick`，�
 .venv\Scripts\python.exe tests\perf\check_presentmon.py
 ```
 
-这些脚本不会把离屏绘制耗时冒充实际 FPS。窗口矩阵使用真实客户区截图与相应后端的帧提交信号（默认 `QQuickView.frameSwapped`，Canvas 为 `QRhiWidget.frameSubmitted`）；程序几何变化不等于原生鼠标验收，帧提交也不能替代 PresentMon 外部呈现数据。原生移动优先使用 Win32 `SetCursorPos`，失败时回退绝对 `SendInput`，按键仍由 `SendInput` 注入。自有前台 Qt 窗口中的真实移动、按下与释放已验证；系统跨屏历史完成 5×30 秒功能长测，每轮 120 次往返。当前后续预检因测试窗口无法取得前台且原生指针未移动而阻塞，完整原生窗口长测与帧率验收仍未通过。PresentMon 需要管理员权限或 `Performance Log Users` 用户组，当前启动跟踪返回 `access denied`，没有外部呈现数据；预检脚本不会自动提权。
+当自动化进程处于低完整性、无法操作前台窗口时，可用当前用户的普通交互权限运行同一脚本，不提升管理员权限：
+
+```powershell
+# 位置参数依次为脚本、超时秒数、标签；-- 后为原测试参数
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\perf\run_interactive.ps1 tests\perf\run_realtime.py 600 formal-canvas -- --seconds 60 --rounds 5 --backend canvas --tag formal-canvas --enforce
+```
+
+启动器自动注销临时计划任务，保存日志、退出码与超时结果。`ExecutionPolicy Bypass` 只用于当前测试进程，不修改系统策略；也不能绕过 PresentMon 自身的权限要求。
+
+这些脚本不会把离屏绘制耗时冒充实际 FPS。窗口矩阵使用真实客户区截图与相应后端的帧提交信号（默认 `QQuickView.frameSwapped`，Canvas 为 `QRhiWidget.frameSubmitted`）；程序几何变化不等于原生鼠标验收，帧提交也不能替代 PresentMon 外部呈现数据。原生移动优先使用 Win32 `SetCursorPos`，失败时回退绝对 `SendInput`，按键仍由 `SendInput` 注入。普通交互探针已验证真实前台、点击、鼠标移动与恢复；系统跨屏历史完成 5×30 秒功能长测，每轮 120 次往返。当前源码的完整原生窗口长测与帧率验收仍需完成。PresentMon 需要管理员权限或 `Performance Log Users` 用户组，当前启动跟踪返回 `access denied`，没有外部呈现数据；预检脚本不会自动提权。
 
 ## 9. 蓝图模式（InstructionX_UIKit.blueprint 节点图）
 
