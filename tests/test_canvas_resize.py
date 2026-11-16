@@ -177,6 +177,23 @@ def _():
         os.environ.pop("UIKIT_RESIZE_PREVIEW", None)
 
 
+@check("Blueprint 同步 grab 与异步回读保持像素一致")
+def _():
+    os.environ["UIKIT_BLUEPRINT_BACKEND"] = "canvas"
+    page, canvas = make_blueprint()
+    try:
+        pump(100)
+        for _index in range(3):
+            direct = canvas._viewport.grab().toImage()
+            asynchronous = grab_async(canvas._viewport)
+            assert not direct.isNull()
+            assert direct == asynchronous
+            assert canvas._viewport.grabFramebuffer() == direct
+    finally:
+        page.close()
+        os.environ.pop("UIKIT_BLUEPRINT_BACKEND", None)
+
+
 @check("WindowHost 连续更新与几何变化不阻塞直接渲染")
 def _():
     from run_window_matrix import AudioProbe, measure_case
