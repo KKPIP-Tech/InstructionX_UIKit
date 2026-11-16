@@ -1,19 +1,20 @@
 # Chart / Blueprint 的 RHI 后端设计与验收现状
 
-## 当前直接 Canvas 候选（`uniform_style@59e76d1`）
+## 当前默认直接 Canvas（`uniform_style@2aee131`）
 
-- 默认后端仍是下述 `QQuickView + Scene Graph + RHI` 完整快照路径，保持既有公共 API 与视觉基线。直接 Canvas 仅在显式设置 `UIKIT_CHART_BACKEND=canvas` / `UIKIT_BLUEPRINT_BACKEND=canvas` 时启用，尚未达到默认启用门槛。
-- 可选路径使用 `QCanvasPainterWidget + QCanvasPainter + QRhi`，由 Qt 自动选择平台 API。每个视口本身就是普通 QWidget 子控件，不再经过 `QQuickWidget`、离屏 `QQuickWindow`、人工鼠标转发或独立原生透明覆盖窗口。
+- 真实窗口默认使用 `QCanvasPainterWidget + QCanvasPainter + QRhi` 直接绘制，由 Qt 自动选择平台 API。显式 `rhi` 选项保留下述 `QQuickView + Scene Graph` 完整快照路径；Canvas 能力不足时也回退到该路径。公共 QWidget API 不变，不做全组件 QML 迁移。
+- 每个 Canvas 视口都是普通 QWidget 子控件，不经过 `QQuickWidget`、离屏 `QQuickWindow`、人工鼠标转发或独立原生透明覆盖窗口。28 个图表演示与 2 个蓝图画布的默认后端、真实首帧和重复切换已由 `tests/test_canvas_default_pages.py` 验证。
 - `charts/canvas_item_viewport.py` 复用现有布局、坐标映射、采样、option、主题、信号和命中逻辑，绘制静态层、系列、组件与 tooltip；`blueprint/canvas_viewport.py` 只更新 Blueprint 场景，真实节点子控件继续接收 Qt 原生输入。
 - 缩放直接更新布局并绘制，不使用旧帧拉伸。`ChartWidget.grab()` / `BlueprintCanvas.grab()` 委托真实视口，支持 QWidget 风格的矩形裁剪；显式导出与测试通过真实控件合成回读，不进入正常帧循环。
-- 当前 Canvas 功能集合（`tests/test_canvas_*.py` 与 `test_blueprint_grid_texture.py`）全部通过。静态图表、旭日图与 Blueprint 的精确 RGBA 差异数量已保留；所有者已明确将视觉验收改为**内容完整、视觉近似且无明显伪影**，不再把不同光栅化器的单纯像素差异判为失败。当前真实截图 `temp/canvas_widget_current.png` 没有黑底或明显错位。
-- 普通交互启动器 `tests/perf/run_interactive.ps1` 已解决自动化进程的前台／原生指针限制，不提升管理员权限。当前 Canvas 真实 4K 短测约 53.7 FPS、P95 约 30.67ms，仍未达标；正式复杂场景 5×60 秒不能由短测或原型代替。该候选不得标记为最终成品，也不自动合并或发布。
+- Canvas 功能集合（`tests/test_canvas_*.py` 与 `test_blueprint_grid_texture.py`）全部通过。所有者将 Canvas 视觉验收定为**内容完整、视觉近似且无明显伪影**；不同光栅化器的单纯像素差异不单独判失败。`tests/shots/canvas_default_charts.png` 与 `canvas_default_blueprint.png` 保存了当前真实画面。
+- Demo 主窗口在显示前将顶层表面映射到 Qt 自动选择的 RHI API，避免首次嵌入重型视口时销毁并重建可见窗口。`tests/test_page_switch_real.py` 九次顺序真实点击中主窗口销毁为 0、蓝图 `mapFrom` 警告为 0。
+- 文档内 Mermaid 复用官方隐藏 Hub 的 QImage，以 QWidget 画布完成缩放和平移，不创建可见 WebEngine 子窗口；独立 MermaidView 的 WebEngine 路径由 `tests/test_mermaid_standalone_real.py` 单独验证。
+- 普通交互启动器 `tests/perf/run_interactive.ps1` 不提升管理员权限。Canvas 真实 4K 短测约 53.7 FPS、P95 约 30.67ms，仍未达标；正式复杂场景 5×60 秒不能由短测代替。当前代码不得标记为最终验收成品，也不自动合并或发布。
 
 ## 当前边界
 
-- Chart 与 Blueprint 默认使用 `QQuickView + QWidget.createWindowContainer + Scene Graph + RHI`，不是全组件 QML 层。公共 QWidget 构造、option、信号槽、命中和返回类型保持兼容。
 - Qt 自动选择 Direct3D 11、Metal、Vulkan 或平台支持的其他 RHI 后端，不强制 OpenGL。旧 `QOpenGLWidget`、GL 探测、VBO / GLSL 管线、`gl_series.py`、`quick_viewport.py` 与 `quick_scene.qml` 已移除。
-- `QSG_RENDER_LOOP=basic` 是原生嵌入的线程调度保护，不是图形 API 选择。离屏或 RHI 初始化失败时使用同一绘制体的 QWidget 软件视口；软件结果不能冒充真实呈现性能。
+- `QSG_RENDER_LOOP=basic` 只服务于显式 QQuickView 快照路径，不是图形 API 选择。离屏或 RHI 初始化失败时使用同一绘制体的 QWidget 软件视口；软件结果不能冒充真实呈现性能。
 
 ## 结构与所有权
 
@@ -36,7 +37,7 @@
 
 ## 性能结论：当前未通过
 
-当前实现由 QPainter 生成完整帧图像，再交给 RHI 纹理节点。RHI 负责平台呈现，不会自动加速 QPainter 的 CPU 路径光栅化。初步分段测量中，Chart `_series_pixmap` 平均约 283.77ms，而纹理节点更新约 0.0866ms；瓶颈在普通实线的 `RoundJoin` 光栅化与整帧快照，不在平台 API 名称。
+显式 `rhi` 快照路径由 QPainter 生成完整帧图像，再交给 RHI 纹理节点；默认直接 Canvas 不走这段整帧快照。RHI 呈现不会自动加速 QPainter 的 CPU 路径光栅化。快照路径的初步分段测量中，Chart `_series_pixmap` 平均约 283.77ms，而纹理节点更新约 0.0866ms；瓶颈在普通实线的 `RoundJoin` 光栅化与整帧快照，不在平台 API 名称。
 
 真实 3840×2160、DPR 1.5、八个 2 万点系列的初步短测记录为：一张 Chart 约 1.19 FPS，另一张仅 1 帧，Blueprint 约 2.39 FPS，并出现多个 286–455ms UI 长任务。该结果远低于 60 FPS 门槛，不能宣称升级完成。
 
@@ -50,8 +51,8 @@
 
 ## 必须继续满足的门禁
 
-- 最终图像零像素差异；全量公开 API、组件交互和生命周期无回归。
+- Canvas 要求内容完整、视觉近似且无明显伪影；显式 RHI 快照仍要求最终图像零像素差异。全量公开 API、组件交互和生命周期不得回归。
 - 真实 3840×2160 复杂场景每轮至少 60 秒、至少 5 轮，平均 FPS≥60、P95≤16.67ms、P99≤33.33ms，且无应用自身≥100ms 长任务。
 - 窗口操作每类至少 30 秒、至少 5 轮，无黑帧、闪烁、假死、音频异常或资源无界增长。
-- 当前 Win32 原生指针预检失败，`SetCursorPos` 返回 False 且光标不动，`SendInput` 也没有移动光标；原生鼠标验收仍为未验证。PresentMon 另行因权限不足而没有数据，二者不得混淆。
+- 普通交互启动器已解决前台与原生指针探针；完整手势、跨屏、时长与资源矩阵仍未闭环。PresentMon 因权限不足没有数据，不能与前台权限问题混淆。
 - 只有最终 SHA 上完整证据全部通过才可交付为验收成品；不得自动合并 `dev`、发布或接入 InstructionX。
