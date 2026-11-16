@@ -6,7 +6,7 @@ import weakref
 
 from shiboken6 import isValid as _shiboken_is_valid
 from PySide6.QtCanvasPainter import QCanvasPainterItem, QCanvasPainterItemRenderer
-from PySide6.QtCore import QCoreApplication, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, QSizeF, Qt, QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QEvent, QEventLoop, QObject, QPoint, QPointF, QRect, QRectF, QSize, QSizeF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QContextMenuEvent, QImage, QMouseEvent, QPixmap, QWheelEvent
 from PySide6.QtQuick import QQuickView
 from PySide6.QtWidgets import QApplication, QWidget
@@ -601,10 +601,31 @@ class CanvasItemLineChartViewport(_ViewportMixin, QWidget):
 
         result.ready.connect(captured)
 
+    def _grab_sync(self):
+        if self._host is None or self._item is None or not _shiboken_is_valid(self._item):
+            return QImage()
+        dpr = self.devicePixelRatioF()
+        result = self._item.grabToImage(QSize(self.width(), self.height()))
+        if result is None:
+            return QImage()
+        image = QImage()
+        loop = QEventLoop(self)
+
+        def captured():
+            nonlocal image
+            image = result.image()
+            image.setDevicePixelRatio(dpr)
+            loop.quit()
+
+        result.ready.connect(captured)
+        QTimer.singleShot(2000, loop.quit)
+        loop.exec()
+        return image
+
     def grab(self):
         if self._host is None:
             return super().grab()
-        return QPixmap.fromImage(self._grab_image())
+        return QPixmap.fromImage(self._grab_sync())
 
     def grabFramebuffer(self):  # noqa: N802
-        return self._grab_image()
+        return self._grab_sync()
