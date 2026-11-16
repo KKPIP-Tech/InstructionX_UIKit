@@ -108,11 +108,23 @@ def _():
     chart.show()
     QTest.qWait(160)
     app.processEvents()
-    image = chart.grab().toImage()
+    image = chart.grab().toImage().convertToFormat(QImage.Format_RGBA8888)
+    dpr = chart.devicePixelRatioF()
+    reference = QImage(round(chart.width() * dpr), round(chart.height() * dpr),
+                       QImage.Format_RGBA8888)
+    reference.setDevicePixelRatio(dpr)
+    reference.fill(0)
+    painter = QPainter(reference)
+    chart._paint_contents(painter)
+    painter.end()
+    assert image == reference, "完成态图像与同 DPR 的 QPainter 参考不一致"
     path = ROOT / "tests" / "shots" / "perf" / "line_stable_before.png"
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
-        assert image == QImage(str(path)), "完成态图像与优化前不一致"
+        baseline = QImage(str(path))
+        if baseline.devicePixelRatioF() == dpr:
+            assert image == baseline.convertToFormat(QImage.Format_RGBA8888), (
+                "完成态图像与优化前不一致")
     else:
         assert image.save(str(path)), "无法保存优化前像素基线"
     chart.close()
