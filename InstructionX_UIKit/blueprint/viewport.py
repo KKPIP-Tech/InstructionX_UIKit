@@ -66,11 +66,11 @@ class _RasterViewport(_ViewportMixin, QWidget):
 
 
 def create_viewport(canvas) -> QWidget:
-    """默认创建 RHI 视口，不保留旧 OpenGL 后端。"""
+    """默认创建直接 Canvas 视口；显式选择时使用完整 RHI 快照路径。"""
     app = QGuiApplication.instance()
     if app is not None and app.platformName() in _SOFTWARE_PLATFORMS:
         return _RasterViewport(canvas)
-    requested = os.environ.get("UIKIT_BLUEPRINT_BACKEND", "").strip().lower()
+    requested = os.environ.get("UIKIT_BLUEPRINT_BACKEND", "canvas").strip().lower()
     if requested == "raster":
         return _RasterViewport(canvas)
     if requested == "canvas":
