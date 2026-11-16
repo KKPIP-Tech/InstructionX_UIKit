@@ -990,9 +990,20 @@ class BlueprintCanvas(QWidget):
             "off", "0", "false", "no")
 
     def resizeEvent(self, event) -> None:
-        """缩放期间复用完整旧帧，静止后恢复真实节点与高清绘制。"""
+        """Canvas 缩放直接实时重绘；其他后端保留旧帧预览能力。"""
         vp = getattr(self, "_viewport", None)
         enabled = self._preview_enabled()
+        if vp is not None and getattr(vp, "supports_direct_resize", False):
+            if self._resize_preview.active:
+                self._finish_resize_preview()
+            self._resize_preview.cancel()
+            self._preview_capturing = False
+            self._preview_nodes = {}
+            self._preview_flow = False
+            vp.setGeometry(self.rect())
+            self.update()
+            super().resizeEvent(event)
+            return
         if self._preview_capturing:
             if vp is not None:
                 vp.setGeometry(self.rect())
