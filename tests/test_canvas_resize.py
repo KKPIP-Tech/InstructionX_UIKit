@@ -165,6 +165,9 @@ def _():
         pump(50)
         expected = grab_async(reference_canvas._viewport)
         if final != expected:
+            print("BLUEPRINT_SIZES", canvas.size(), viewport.size(), viewport._view.size(),
+                  reference_canvas.size(), reference_canvas._viewport.size(),
+                  reference_canvas._viewport._view.size(), flush=True)
             final.save(str(ROOT / "temp" / "canvas_resize_blueprint_final.png"))
             expected.save(str(ROOT / "temp" / "canvas_resize_blueprint_expected.png"))
         assert final == expected
