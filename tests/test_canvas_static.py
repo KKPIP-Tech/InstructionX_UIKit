@@ -144,7 +144,8 @@ def _():
         expected = reference(chart, viewport.devicePixelRatioF())
         actual.save(str(destination / "actual.png"))
         expected.save(str(destination / "reference.png"))
-        assert actual.size() == expected.size()
+        assert actual.size() == expected.size(), (
+            actual.size(), expected.size(), viewport.devicePixelRatioF())
         title_rect = chart.title.height()
         from PySide6.QtCore import QRectF
         title_rect = QRectF(0, 0, chart.width(), title_rect)
