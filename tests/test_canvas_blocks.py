@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests" / "perf"))
 os.environ.pop("QT_QPA_PLATFORM", None)
+os.environ["UIKIT_CHART_BACKEND"] = "canvas"
 os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
 
 import numpy as np
@@ -53,12 +54,10 @@ def check(name):
 def make_view(chart):
     from InstructionX_UIKit.charts.canvas_blocks import CanvasBlocksChartViewport
     chart.show()
-    viewport = CanvasBlocksChartViewport(chart, parent=chart)
-    old = chart._viewport
-    chart._viewport = viewport
-    old.close()
-    old.deleteLater()
-    viewport.show()
+    viewport = chart._viewport
+    assert isinstance(viewport, CanvasBlocksChartViewport)
+    chart.activateWindow()
+    viewport._sync_now()
     return viewport
 
 

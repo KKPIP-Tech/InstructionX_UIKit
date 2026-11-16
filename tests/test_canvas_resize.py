@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "tests" / "perf"))
 os.environ.pop("QT_QPA_PLATFORM", None)
 os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
 
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 from InstructionX_UIKit.charts import ChartWidget
 from InstructionX_UIKit.theme import ThemeManager
@@ -190,8 +191,8 @@ def _():
     try:
         pump(100)
         for _index in range(3):
-            direct = canvas._viewport.grab().toImage()
-            asynchronous = grab_async(canvas._viewport)
+            direct = canvas._viewport.grab().toImage().convertToFormat(QImage.Format_RGBA8888)
+            asynchronous = grab_async(canvas._viewport).convertToFormat(QImage.Format_RGBA8888)
             assert not direct.isNull()
             if direct != asynchronous:
                 print("QImage_META", direct.format(), asynchronous.format(),
@@ -200,7 +201,8 @@ def _():
                 direct.save(str(ROOT / "temp" / "canvas_sync_direct.png"))
                 asynchronous.save(str(ROOT / "temp" / "canvas_sync_async.png"))
             assert direct == asynchronous
-            assert canvas._viewport.grabFramebuffer() == direct
+            assert canvas._viewport.grabFramebuffer().convertToFormat(
+                QImage.Format_RGBA8888) == direct
     finally:
         page.close()
         os.environ.pop("UIKIT_BLUEPRINT_BACKEND", None)

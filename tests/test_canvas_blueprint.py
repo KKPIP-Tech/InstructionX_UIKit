@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests" / "perf"))
 os.environ.pop("QT_QPA_PLATFORM", None)
+os.environ["UIKIT_BLUEPRINT_BACKEND"] = "canvas"
 os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
 
 import numpy as np
@@ -69,16 +70,9 @@ def make_canvas():
 
 def replace_viewport(canvas):
     from InstructionX_UIKit.blueprint.canvas_viewport import CanvasBlueprintViewport
-    viewport = CanvasBlueprintViewport(canvas, parent=canvas)
-    old = canvas._viewport
-    canvas._viewport = viewport
-    for widget in canvas._node_widgets.values():
-        widget.setParent(viewport)
-    old.close()
-    old.deleteLater()
-    viewport.setGeometry(canvas.rect())
-    viewport.show()
-    viewport.raise_()
+    viewport = canvas._viewport
+    assert isinstance(viewport, CanvasBlueprintViewport)
+    canvas.activateWindow()
     canvas._update_view()
     viewport._sync_now()
     return viewport
@@ -211,11 +205,12 @@ def _():
         original = QPointF(node.pos)
         start = canvas.scene_to_view(original + QPointF(24, 12))
         end = start + QPointF(54, 38)
-        QTest.mousePress(viewport._view, Qt.LeftButton, Qt.NoModifier,
-                         QPoint(round(start.x()), round(start.y())))
-        QTest.mouseMove(viewport._view, QPoint(round(end.x()), round(end.y())))
-        QTest.mouseRelease(viewport._view, Qt.LeftButton, Qt.NoModifier,
-                           QPoint(round(end.x()), round(end.y())))
+        target = canvas.node_widget("a")
+        local_start = target.mapFrom(canvas, start.toPoint())
+        local_end = target.mapFrom(canvas, end.toPoint())
+        QTest.mousePress(target, Qt.LeftButton, Qt.NoModifier, local_start)
+        QTest.mouseMove(target, local_end)
+        QTest.mouseRelease(target, Qt.LeftButton, Qt.NoModifier, local_end)
         viewport._sync_now()
         assert node.pos != original and moved, (node.pos, moved)
         canvas._selected_nodes = ["a"]
@@ -272,12 +267,11 @@ def _():
         editor = widget._body.findChild(QLineEdit, "canvasBodyEditor")
         assert editor is not None and editor.isVisible()
         assert not widget.uses_proxy()
-        global_pos = editor.mapToGlobal(QPoint(6, 6))
-        local = viewport._view.mapFromGlobal(global_pos)
-        QTest.mouseClick(viewport._view, Qt.LeftButton, Qt.NoModifier, local)
+        QTest.mouseClick(editor, Qt.LeftButton, Qt.NoModifier, QPoint(6, 6))
+        assert editor.hasFocus()
         editor.selectAll()
         for char in "64":
-            QTest.keyClick(viewport._view, getattr(Qt, f"Key_{char}"))
+            QTest.keyClick(editor, getattr(Qt, f"Key_{char}"))
         assert editor.text() == "64", editor.text()
         viewport._sync_now()
         assert_matches(viewport, canvas, "custom_body")
