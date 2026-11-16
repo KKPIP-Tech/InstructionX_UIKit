@@ -69,7 +69,7 @@ _SS = 2
 #: 图表逻辑宽度上限（超出在 canvas 光栅化时等比缩小；视图侧已做宽度适配）
 _MAX_WIDTH = 1600.0
 #: WebEngine 页面加载 / 单图渲染的超时（毫秒）
-_LOAD_TIMEOUT_MS = 10000
+_LOAD_TIMEOUT_MS = 60000
 _RENDER_TIMEOUT_MS = 15000
 
 #: 渲染失败占位（缓存中区别于 QImage 的哨兵）
