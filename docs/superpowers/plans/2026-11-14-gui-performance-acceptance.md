@@ -28,8 +28,8 @@
 | 原始视觉证据 | `temp/performance/949b7288a50b6ed5beed744db3c8bf46a13c00ef/visual/manifest.json`：亮暗各 80 张，含 RGBA 哈希 |
 | 原始源码快照 | `temp/performance/949b7288a50b6ed5beed744db3c8bf46a13c00ef/source/`，仅用于同机 A/B，不是 worktree |
 | 当前实现 | 真实窗口默认 `QCanvasPainterWidget + QRhi` 直接绘制；显式 `rhi` 与能力不足回退使用 `QQuickView + Scene Graph` 完整快照；Qt 自动选择平台 API，Windows 实测 Direct3D 11 |
-| 最近运行时修复 | `154601d` 清理 Demo 旧 GL 逻辑；`d6506d6` 默认直接 Canvas；`2d57942` 修正 RHI 蓝图坐标；`2aee131` 显示前匹配顶层 RHI 表面；`0d21e64` 恢复文档实时 SVG 并消除缩放重影 |
-| 候选运行逻辑 | `uniform_style@0d21e64`；尚未获得所有者对最终候选 SHA 的确认，不能视为验收通过 |
+| 最近运行时修复 | `154601d` 清理 Demo 旧 GL 逻辑；`d6506d6` 默认直接 Canvas；`2d57942` 修正 RHI 蓝图坐标；`2aee131` 显示前匹配顶层 RHI 表面；`0d21e64` 恢复文档实时 SVG；`feecf12` 隔离实时流与后台静态重建 |
+| 候选运行逻辑 | `uniform_style@feecf12`；尚未获得所有者对最终候选 SHA 的确认，不能视为验收通过 |
 | 当前全量功能证据 | 历史 `59e76d1` 为 85 个独立脚本、0 失败；当前增量巡检为 80 个亮色页 + 11 个暗色页、0 错误，并完成默认 Canvas、显式 RHI、Mermaid 与三页切换真实回归。最终 SHA 全量重跑仍未完成 |
 | 工作方式 | 仓库根目录；禁止 worktree；源码在 `uniform_style`，测试在 `uniform_test`；原 `test` 不动 |
 | 私有契约 | 所有者已豁免四份 `private_docs/*_SPEC.md` 原文恢复；以当前源码、公开 API 与设计文档为准，不用过期副本 |

@@ -1,6 +1,6 @@
 # Chart / Blueprint 的 RHI 后端设计与验收现状
 
-## 当前默认直接 Canvas（`uniform_style@0d21e64`）
+## 当前默认直接 Canvas（`uniform_style@feecf12`）
 
 - 真实窗口默认使用 `QCanvasPainterWidget + QCanvasPainter + QRhi` 直接绘制，由 Qt 自动选择平台 API。显式 `rhi` 选项保留下述 `QQuickView + Scene Graph` 完整快照路径；Canvas 能力不足时也回退到该路径。公共 QWidget API 不变，不做全组件 QML 迁移。
 - 每个 Canvas 视口都是普通 QWidget 子控件，不经过 `QQuickWidget`、离屏 `QQuickWindow`、人工鼠标转发或独立原生透明覆盖窗口。28 个图表演示与 2 个蓝图画布的默认后端、真实首帧和重复切换已由 `tests/test_canvas_default_pages.py` 验证。
