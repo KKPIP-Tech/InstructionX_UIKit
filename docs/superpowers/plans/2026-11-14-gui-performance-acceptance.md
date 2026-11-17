@@ -24,7 +24,7 @@
 | 项目 | 当前记录 |
 |---|---|
 | 原始分支与 SHA | `uniform_style@949b7288a50b6ed5beed744db3c8bf46a13c00ef` |
-| 包版本 | `alpha-v1.0.3` |
+| 包版本 | `alpha-v1.0.4` |
 | 原始视觉证据 | `temp/performance/949b7288a50b6ed5beed744db3c8bf46a13c00ef/visual/manifest.json`：亮暗各 80 张，含 RGBA 哈希 |
 | 原始源码快照 | `temp/performance/949b7288a50b6ed5beed744db3c8bf46a13c00ef/source/`，仅用于同机 A/B，不是 worktree |
 | 当前实现 | 真实窗口默认 `QCanvasPainterWidget + QRhi` 直接绘制；显式 `rhi` 与能力不足回退使用 `QQuickView + Scene Graph` 完整快照；Qt 自动选择平台 API，Windows 实测 Direct3D 11 |
