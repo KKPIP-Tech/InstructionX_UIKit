@@ -995,18 +995,61 @@ def _make_cards(specs) -> list:
             for title, build, spec, hint in specs]
 
 
-def _comprehensive_section() -> Section:
-    """组件综合演示：大图 + 右侧参数面板 + option 键说明。"""
-    box = Section("组件综合演示（标注 / 视觉映射 / 缩放 / 刷选 / 工具箱 / 时间轴）")
-    host = QWidget()
-    lay = QGridLayout(host)
-    lay.setContentsMargins(0, 0, 0, 0)
-    lay.setSpacing(10)
+class _ComprehensiveHost(QWidget):
+    """宽屏图左参数右，空间不足时上下排列，避免撑宽整个滚动页。"""
 
+    _NARROW_CHART_MIN = 200
+
+    def __init__(self, card, panel, hint, parent=None):
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._card = card
+        self._wide_chart_min = card.chart.minimumWidth()
+        self._wide = None
+        self._grid = QGridLayout(self)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setSpacing(10)
+
+        side = QWidget()
+        side_lay = QVBoxLayout(side)
+        side_lay.setContentsMargins(0, 0, 0, 0)
+        side_lay.setSpacing(8)
+        side_lay.addWidget(panel)
+        side_lay.addWidget(hint_label(hint, role="tertiary"))
+        side_lay.addStretch(1)
+        self._side = side
+        self._sync_layout()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._sync_layout()
+
+    def _sync_layout(self):
+        required = (self._wide_chart_min + self._side.minimumSizeHint().width()
+                    + self._grid.spacing())
+        wide = self.width() >= required
+        if wide == self._wide:
+            return
+        self._wide = wide
+        self._card.chart.setMinimumWidth(
+            self._wide_chart_min if wide else self._NARROW_CHART_MIN)
+        while self._grid.count():
+            self._grid.takeAt(0)
+        self._grid.setColumnStretch(0, 1)
+        self._grid.setColumnStretch(1, int(wide))
+        if wide:
+            self._grid.addWidget(self._card, 0, 0)
+            self._grid.addWidget(self._side, 0, 1)
+        else:
+            self._grid.addWidget(self._card, 0, 0)
+            self._grid.addWidget(self._side, 1, 0)
+
+
+def _comprehensive_section() -> Section:
+    """组件综合演示：大图 + 响应式参数面板 + option 键说明。"""
+    box = Section("组件综合演示（标注 / 视觉映射 / 缩放 / 刷选 / 工具箱 / 时间轴）")
     card = ChartDemoCard("年度销售总览 · 组件综合", _build_comprehensive,
                          [], hint="", size=(560, 420), auto_apply=False)
-    lay.addWidget(card, 0, 0)
-
     panel = PlaygroundPanel("演示参数", width=252)
     opts = card.opts
     add_specs(panel.form, opts, _COMP_SPECS)
@@ -1014,16 +1057,7 @@ def _comprehensive_section() -> Section:
     card.apply()
     card.panel = panel  # 便于测试访问
 
-    side = QWidget()
-    side_lay = QVBoxLayout(side)
-    side_lay.setContentsMargins(0, 0, 0, 0)
-    side_lay.setSpacing(8)
-    side_lay.addWidget(panel)
-    side_lay.addWidget(hint_label(_COMP_KEYS, role="tertiary"))
-    side_lay.addStretch(1)
-    lay.addWidget(side, 0, 1)
-    lay.setColumnStretch(0, 1)
-
+    host = _ComprehensiveHost(card, panel, _COMP_KEYS)
     box.layout().addWidget(host)
     box.card = card  # 便于测试访问
     return box
