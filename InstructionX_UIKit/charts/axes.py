@@ -606,8 +606,20 @@ class AxisModel:
             return 0
         frac = (px - start) / (end - start)
         if self.type == "category":
-            n = max(1, len(self.categories))
-            return min(max(int(frac * n), 0), n - 1)
+            def band_index(bands):
+                position = frac * bands
+                nearest = round(position)
+                if math.isclose(position, nearest, rel_tol=0.0, abs_tol=1e-9):
+                    position = nearest  # 映射往返的浮点误差不能造成相邻项偏移
+                return min(max(int(position), 0), max(0, math.ceil(bands) - 1))
+
+            if self.categories:
+                return band_index(len(self.categories))
+            # 流式空 category 与 map() 共用隐式下标范围，不能固定取第 0 项。
+            span = float(self.vmax) - float(self.vmin)
+            if span > 1e-9:
+                return band_index(span)
+            return 0
         return self.vmin + frac * (self.vmax - self.vmin)
 
     # -- 外观 ------------------------------------------------------------

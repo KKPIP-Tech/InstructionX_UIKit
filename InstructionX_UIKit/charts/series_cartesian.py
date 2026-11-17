@@ -1084,12 +1084,21 @@ class LineSeriesRenderer(SeriesRenderer):
 
     def value_at_index(self, index: int):
         idx = self._full_index(index)  # dataZoom 窗口偏移换算
-        if not isinstance(idx, int) or not (0 <= idx < len(self._entries)):
+        data = self.data_view()
+        if not isinstance(idx, int) or not (0 <= idx < len(data)):
             return None
-        x, y = self._entries[idx]
+        # 采样只减少绘制项；tooltip 始终读取原始数据，不能用采样数组下标取数。
+        x, y = parse_data_point(data[idx], idx)
         if y is None:
             return None
-        pos = self._points[idx] if idx < len(self._points) else None
+        coord = self.chart.coord_for(self.opt)
+        pos = None
+        if coord is not None:
+            try:
+                pos = coord.map_point(y) if getattr(coord, "kind", "") == "singleAxis" \
+                    else coord.map_point(x, y)
+            except Exception:
+                pos = None
         return {"name": self.name, "value": y, "series": self.name, "pos": pos}
 
 
