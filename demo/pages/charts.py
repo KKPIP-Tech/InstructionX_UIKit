@@ -1315,7 +1315,9 @@ class MassiveDataDemo(QWidget):
 
     # -- 构建 --------------------------------------------------------------
     def _rebuild(self) -> None:
-        """按当前参数准备数据并重建图表（大点数走后台线程）。"""
+        """重建离线静态图；实时会话期间离线参数只保存、不重建。"""
+        if self._sess is not None:
+            return
         n = self._n
         if n >= 500_000 and self._threaded():
             self._readout("后台线程生成 %s 点数据…" % f"{n:,}")
@@ -1333,6 +1335,8 @@ class MassiveDataDemo(QWidget):
         self._worker.start()
 
     def _on_data_ready(self, ys, gen_ms: int) -> None:
+        if self._sess is not None or self.sender() is not self._worker:
+            return
         self._apply(ys, gen_ms, threaded=True)
 
     def _apply(self, ys, gen_ms: int, threaded: bool) -> None:
