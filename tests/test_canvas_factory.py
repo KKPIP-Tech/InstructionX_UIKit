@@ -171,7 +171,7 @@ def _():
         chart.close()
         backend(None)
         chart = ChartWidget()
-        assert isinstance(chart._viewport, _RhiViewport)
+        assert isinstance(chart._viewport, CanvasComponentsChartViewport)
         chart.close()
         backend("canvas")
         chart = ChartWidget()

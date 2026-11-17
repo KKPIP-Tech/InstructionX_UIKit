@@ -284,13 +284,12 @@ def _():
 @check("Blueprint 生产工厂 canvas 选项与默认后端")
 def _():
     from InstructionX_UIKit.blueprint.canvas_viewport import CanvasBlueprintViewport
-    from InstructionX_UIKit.blueprint.rhi_viewport import _RhiViewport
     from InstructionX_UIKit.blueprint.viewport import _RasterViewport
     previous = os.environ.get("UIKIT_BLUEPRINT_BACKEND")
     try:
         os.environ.pop("UIKIT_BLUEPRINT_BACKEND", None)
         _graph, canvas = make_canvas()
-        assert isinstance(canvas._viewport, _RhiViewport)
+        assert isinstance(canvas._viewport, CanvasBlueprintViewport)
         canvas.close()
         os.environ["UIKIT_BLUEPRINT_BACKEND"] = "canvas"
         _graph, canvas = make_canvas()
