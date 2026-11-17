@@ -209,17 +209,34 @@ def main():
     parser.add_argument("--only", choices=["complex", "charts", "single-chart", "blueprint", "chat", "no-chat"],
                         default="complex")
     parser.add_argument("--enforce", action="store_true")
-    parser.add_argument("--backend", choices=["rhi", "raster", "canvas"], default="rhi")
+    parser.add_argument("--backend", choices=["legacy", "rhi", "raster", "canvas"],
+                        default="rhi")
+    parser.add_argument("--source-root", type=Path)
+    parser.add_argument("--source-sha")
+    parser.add_argument("--logical-width", type=int, default=2560)
+    parser.add_argument("--logical-height", type=int, default=1440)
+    parser.add_argument("--windowed", action="store_true")
     args = parser.parse_args()
     if args.seconds <= 0 or args.rounds < 1 or args.warmup < 0:
         parser.error("seconds/rounds/warmup 参数无效")
-    os.environ["UIKIT_CHART_BACKEND"] = args.backend
-    if args.backend == "canvas":
-        os.environ["UIKIT_BLUEPRINT_BACKEND"] = "canvas"
-    else:
-        os.environ.pop("UIKIT_BLUEPRINT_BACKEND", None)
+    if args.logical_width <= 0 or args.logical_height <= 0:
+        parser.error("logical-width/logical-height 参数无效")
+    if args.source_root is not None and not args.source_sha:
+        parser.error("显式 source-root 时必须同时提供 source-sha")
     os.environ.pop("UIKIT_PERF_GPU_DIRECT", None)
-    source = ROOT
+    if args.backend == "legacy":
+        os.environ.pop("UIKIT_CHART_BACKEND", None)
+        os.environ.pop("UIKIT_BLUEPRINT_BACKEND", None)
+        os.environ["UIKIT_CHART_GL"] = "auto"
+        os.environ["UIKIT_BLUEPRINT_GL"] = "auto"
+    else:
+        os.environ["UIKIT_CHART_BACKEND"] = args.backend
+        os.environ["UIKIT_BLUEPRINT_BACKEND"] = args.backend
+        os.environ.pop("UIKIT_CHART_GL", None)
+        os.environ.pop("UIKIT_BLUEPRINT_GL", None)
+    source = args.source_root.resolve() if args.source_root is not None else ROOT
+    if not (source / "InstructionX_UIKit").is_dir():
+        parser.error(f"source-root 不含 InstructionX_UIKit: {source}")
     sys.path.insert(0, str(source))
     os.environ.pop("QT_QPA_PLATFORM", None)
 
@@ -242,9 +259,12 @@ def main():
         blueprint.hide()
     if args.only not in ("complex", "chat"):
         chat.parentWidget().hide()
-    window.resize(2560, 1440)
+    window.resize(args.logical_width, args.logical_height)
     window.move(0, 0)
-    window.showFullScreen()
+    if args.windowed:
+        window.show()
+    else:
+        window.showFullScreen()
     app.processEvents()
     from native_input import activate_window
     if not activate_window(window) or not window.windowHandle().isExposed():
@@ -286,7 +306,7 @@ def main():
                     state["tasks"].append((name, started, time.perf_counter() - started))
 
             viewport._sync_now = measured_sync
-        elif hasattr(viewport, "paintEvent"):
+        elif args.backend != "legacy" and hasattr(viewport, "paintEvent"):
             original_paint = viewport.paintEvent
 
             def measured_paint(original=original_paint, name=name):
@@ -362,13 +382,16 @@ def main():
     load_timer.start()
     resource_timer.start()
 
-    source_sha = subprocess.check_output(
-        ["git", "rev-parse", "uniform_style"], text=True, cwd=ROOT).strip()
-    source_dirty = subprocess.run(
-        ["git", "diff", "--quiet", source_sha, "--", "InstructionX_UIKit", "demo"],
-        cwd=ROOT).returncode != 0
-    if source_dirty and args.enforce:
-        failure = "工作区源码与 uniform_style 候选 SHA 不一致"
+    source_sha = args.source_sha or subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], text=True, cwd=source).strip()
+    if args.source_root is not None:
+        source_dirty = None
+    else:
+        source_dirty = subprocess.run(
+            ["git", "diff", "--quiet", source_sha, "--", "InstructionX_UIKit", "demo"],
+            cwd=ROOT).returncode != 0
+    if source_dirty is True and args.enforce:
+        failure = "工作区源码与声明 SHA 不一致"
         state["persistent_failures"].append(failure)
         state["failures"].append(failure)
     destination = ROOT / "temp" / "performance" / source_sha / "realtime" / args.tag
@@ -383,13 +406,16 @@ def main():
         long_tasks = [task for task in state["tasks"] if task[2] >= 0.1]
         dpr = window.devicePixelRatioF()
         physical = [window.width() * dpr, window.height() * dpr]
+        expected = [args.logical_width * dpr, args.logical_height * dpr]
+        physical_matches = all(abs(actual - target) <= 1.0
+                               for actual, target in zip(physical, expected))
         for metric in metrics:
             metric["pass"] = (
                 metric.get("average_fps", 0) >= 60
                 and metric.get("p95_ms", float("inf")) <= 16.67
                 and metric.get("p99_ms", float("inf")) <= 33.33)
         passed = (bool(metrics) and all(metric["pass"] for metric in metrics)
-                  and not long_tasks and physical == [3840.0, 2160.0]
+                  and not long_tasks and physical_matches
                   and not state["failures"])
         report = {
             "source_sha": source_sha,
