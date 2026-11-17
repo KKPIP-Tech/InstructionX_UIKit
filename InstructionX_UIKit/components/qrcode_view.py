@@ -2,7 +2,10 @@
 """二维码展示组件（SPEC §5.2 qrcode_view）。
 
 基于 ``qrcode`` 库生成模块矩阵并自绘（白底黑块保证可扫描），
-支持容错级别参数；卡片边框取主题令牌。
+支持容错级别参数；卡片边框与圆角取主题令牌。
+
+密度：二维码区边长由调用方给定，卡片内边距取 ``space.3``，整体是
+正方形（卡片档圆角 ``radius.lg``，与页面上的卡片同档）。
 """
 
 import qrcode
@@ -28,12 +31,20 @@ _LEVELS = {
     "H": ERROR_CORRECT_H,  # 约 30%
 }
 
-#: 二维码黑白双色：为保证任何主题 / 光照下可扫描，刻意不随主题换肤
-#: （豁免「禁止硬编码颜色」约定，见审计 §4.1-11）。
+#: 二维码黑白双色：为保证任何主题 / 光照下可扫描，刻意不随主题换肤，
+#: 因此**豁免**「禁止硬编码颜色」这条约定。这是本组件唯一的两处字面量，
+#: 且不可改成 ``bg.base`` / ``text.primary``——暗色主题下那两块分别是
+#: #171B22 / #E4E9F2，对比度 13:1 但明度关系反转，扫描器会把它当成
+#: 「白底 + 深色块」以外的图案，识别率骤降（合同豁免，见交付说明）。
 _QR_BG = "#FFFFFF"  # 白底卡片
 _QR_FG = "#111111"  # 黑色模块
 
-_PADDING = 12  # 卡片内边距（px）
+#: 卡片内边距（space.3）
+_PADDING = T("space.3")
+#: 二维码区最小边长（space.12 = 48px）：低于此尺寸 quiet zone 不够
+_MIN_QR = T("space.12")
+#: 模块过扫（px）：相邻模块多画一点点，消除浮点取整造成的缝隙
+_OVERDRAW = 0.2
 
 
 class QRCodeView(QWidget):
@@ -87,7 +98,7 @@ class QRCodeView(QWidget):
 
     def set_qr_size(self, size: int) -> None:
         """设置二维码区域边长（px）。"""
-        self._qr_size = max(48, int(size))
+        self._qr_size = max(_MIN_QR, int(size))
         side = self._qr_size + _PADDING * 2
         self.setFixedSize(side, side)
         self.update()
@@ -128,7 +139,7 @@ class QRCodeView(QWidget):
         # 白底卡片（任何主题下保持可扫描对比度）
         painter.setPen(QPen(QColor(T("color.border"))))
         painter.setBrush(QColor(_QR_BG))
-        painter.drawRoundedRect(rect, T("radius.md"), T("radius.md"))
+        painter.drawRoundedRect(rect, T("radius.lg"), T("radius.lg"))
 
         if not self._matrix:
             painter.setPen(QColor(T("color.text.tertiary")))
@@ -149,10 +160,11 @@ class QRCodeView(QWidget):
             for c, filled in enumerate(row):
                 if filled:
                     painter.drawRect(
-                        QRectF(ox + c * cell, oy + r * cell, cell + 0.2, cell + 0.2)
+                        QRectF(ox + c * cell, oy + r * cell,
+                               cell + _OVERDRAW, cell + _OVERDRAW)
                     )
 
-    def paintEvent(self, event) -> None:
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt 回调
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         self._paint(painter)

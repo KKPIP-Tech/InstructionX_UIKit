@@ -23,7 +23,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QPointF, Qt, Signal
+from PySide6.QtCore import QObject, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -43,6 +43,7 @@ __all__ = [
     "build_qss",
     "apply_shadow",
     "set_property",
+    "set_font",
 ]
 
 #: 合法主题模式
@@ -51,15 +52,31 @@ MODES = ("light", "dark")
 # ---------------------------------------------------------------------------
 # 尺寸速查表
 # Qt QSS 盒模型为内容盒：控件总高 = min/max-height + 2 * 边框宽(1px)。
-# 输入控件统一高度（SPEC §4）：sm=24 / md=32 / lg=40。
-# QAbstractSpinBox 系列由样式额外增加 3px（实测 Fusion 风格）。
+# 输入控件统一高度：sm=22 / md=28 / lg=34（较上一版 24/32/40 整体收紧，
+# 13px 正文配 28px 行高是桌面端高密度形态的下限，再低会牺牲可点性）。
+# 数字 / 日期调节框与一般输入同口径（见 _SPIN_BOX，不再单独 +3px 补偿）。
 # ---------------------------------------------------------------------------
 
-_INPUT_HEIGHTS = {"sm": 24, "md": 32, "lg": 40}
+_INPUT_HEIGHTS = {"sm": 22, "md": 28, "lg": 34}
 #: 一般输入控件 / 按钮的内容盒高度（总高 - 2）
 _CONTENT_BOX = {k: v - 2 for k, v in _INPUT_HEIGHTS.items()}
-#: 数字/日期调节框的内容盒高度（总高 - 5）
-_SPIN_BOX = {k: v - 5 for k, v in _INPUT_HEIGHTS.items()}
+#: 数字/日期调节框的内容盒高度。与 _CONTENT_BOX 同值：
+#: 早期按「Fusion 会多加 3px」写成 -5，但该补偿让这批控件比同行的
+#: QLineEdit / QComboBox / QPushButton 矮 3px，同一行控件基线不齐
+#: （实测 md 档：调节框 25px、其余输入 28px）。
+_SPIN_BOX = {k: v - 2 for k, v in _INPUT_HEIGHTS.items()}
+
+#: 滑块几何 —— 逐档镜像 components/slider.py 的 ``_HANDLE`` 表，两处必须同步修改。
+#: margin 不是 (手柄 - 槽) / 2 的公式值（手柄带 2px 描边），而是逐档手调出来的，
+#: 直接照抄不要推导。
+_GROOVE = {"sm": 4, "md": 4, "lg": 6}
+_HANDLE = {"sm": 10, "md": 12, "lg": 14}
+_HANDLE_MARGIN = {"sm": -4, "md": -5, "lg": -6}
+_GROOVE_MD, _GROOVE_LG = _GROOVE["md"], _GROOVE["lg"]
+_HANDLE_SM, _HANDLE_MD, _HANDLE_LG = _HANDLE["sm"], _HANDLE["md"], _HANDLE["lg"]
+_HANDLE_SM_MARGIN = _HANDLE_MARGIN["sm"]
+_HANDLE_MD_MARGIN = _HANDLE_MARGIN["md"]
+_HANDLE_LG_MARGIN = _HANDLE_MARGIN["lg"]
 
 #: 与 QWidget 内置属性冲突的动态属性别名映射
 _SIZE_ALIAS = {"size": "uiksize"}
@@ -155,18 +172,43 @@ def T(key: str):
 
 
 def set_property(widget: QWidget, name: str, value) -> None:
-    """设置动态属性并刷新控件样式（unpolish/polish）。
+    """设置动态属性，值变化时刷新控件样式（unpolish/polish）。
 
     参数 ``name="size"`` 时自动映射为 ``"uiksize"``（规避 QWidget 内置
     ``size`` 属性冲突），QSS 中 ``[size=...]`` 与 ``[uiksize=...]`` 选择器
     均已定义。
     """
     real = _SIZE_ALIAS.get(name, name)
+    if widget.property(real) == value:
+        return
     widget.setProperty(real, value)
     style = widget.style()
     style.unpolish(widget)
     style.polish(widget)
     widget.update()
+
+
+def set_font(widget: QWidget, scale: str = "md", weight: str = "regular") -> None:
+    """按字阶 / 字重令牌设置控件字体（走实例级 QSS，而非 ``setFont``）。
+
+    **为什么不用 ``widget.setFont()``**：全局 QSS 中的 ``QWidget { font-size }``
+    基座规则优先级高于控件自身字体（实测 Qt 6.11），``setFont()`` 设置的字号会被
+    静默覆盖，导致「页标题 / 卡片标题 / 正文」全部塌缩成同一字号——这正是
+    层级感缺失的根因。实例级样式表比全局基座规则更具体，可稳定胜出。
+
+    参数:
+        widget: 目标控件。
+        scale: 字阶名（``xs`` / ``sm`` / ``md`` / ``title.sm`` 等）。
+        weight: 字重名（``regular`` / ``medium`` / ``semibold`` / ``bold``）。
+
+    示例::
+
+        set_font(label, "title.lg", "bold")
+    """
+    ts = TokenState.instance()
+    px = int(ts.value(f"font.{scale}", LIGHT["font.md"]))
+    w = int(ts.value(f"font.weight.{weight}", LIGHT["font.weight.regular"]))
+    widget.setStyleSheet(f"font-size: {px}px; font-weight: {w};")
 
 
 def apply_shadow(widget: QWidget, level: str = "sm") -> None:
@@ -180,10 +222,17 @@ def apply_shadow(widget: QWidget, level: str = "sm") -> None:
         raise ValueError(f"未知阴影级别: {level!r}，应为 sm/md/lg 之一")
     spec = ThemeManager.instance().tokens[f"shadow.{level}"]
     r, g, b, a = spec["color"]
+    color = QColor(r, g, b, a)
+    existing = widget.graphicsEffect()
+    if (isinstance(existing, QGraphicsDropShadowEffect)
+            and existing.blurRadius() == spec["blur"]
+            and existing.offset() == QPointF(*spec["offset"])
+            and existing.color() == color):
+        return
     effect = QGraphicsDropShadowEffect(widget)
     effect.setBlurRadius(spec["blur"])
     effect.setOffset(*spec["offset"])
-    effect.setColor(QColor(r, g, b, a))
+    effect.setColor(color)
     widget.setGraphicsEffect(effect)
 
 
@@ -215,7 +264,9 @@ def _build_palette(tokens: dict) -> QPalette:
     """按令牌构造 QPalette（供 QStyle 绘制的箭头/图标等取色）。"""
     c = lambda k: QColor(tokens[f"color.{k}"])  # noqa: E731
     p = QPalette()
-    p.setColor(QPalette.Window, c("bg.base"))
+    # Window 用画布色（页面底），Base/Button 用面白色（卡片面）：
+    # 这样 QStyle 绘制的未定制区域（QGroupBox 原生绘制等）也落在新层级上。
+    p.setColor(QPalette.Window, c("bg.canvas"))
     p.setColor(QPalette.WindowText, c("text.primary"))
     p.setColor(QPalette.Base, c("bg.base"))
     p.setColor(QPalette.AlternateBase, c("bg.subtle"))
@@ -282,11 +333,12 @@ def _stroke(painter: QPainter, color: str, width: float = 1.6) -> None:
     painter.setBrush(Qt.NoBrush)
 
 
-def _save_asset(name: str, draw) -> str:
-    """绘制 12x12 透明 PNG 并缓存，返回 QSS 可用的 url 路径；失败返回空串。
+def _save_asset(name: str, draw, size=12) -> str:
+    """绘制透明 PNG 并缓存，返回 QSS 可用的 url 路径；失败返回空串。
 
-    文件名嵌入绘制色值，天然按颜色区分；写入先落临时文件再原子替换，
-    避免中断写入留下损坏 PNG。
+    ``size`` 为 int 时绘制正方形，也可传 ``(宽, 高)`` 元组（如工具栏把手的
+    竖向点阵）。文件名嵌入绘制色值，天然按颜色区分；写入先落临时文件再
+    原子替换，避免中断写入留下损坏 PNG。
     """
     if QGuiApplication.instance() is None:
         return ""
@@ -297,7 +349,8 @@ def _save_asset(name: str, draw) -> str:
     _cleanup_stale_assets()
     path = _ASSET_DIR / name
     if not path.exists():
-        pm = QPixmap(12, 12)
+        w, h = (size, size) if isinstance(size, int) else size
+        pm = QPixmap(w, h)
         pm.fill(Qt.transparent)
         painter = QPainter(pm)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -349,6 +402,25 @@ def _draw_chevron(color: str, direction: str):
     return fn
 
 
+def _draw_grip(color: str, horizontal: bool = False):
+    """工具栏拖拽把手：经典 2 列 × 3 行点阵，画布 8x14。
+
+    ``horizontal=True`` 时转置为 3 列 × 2 行（画布 14x8），用于吸附左右
+    侧边后的竖向工具栏——此时把手在工具栏顶部，呈横向。
+    """
+
+    def fn(p: QPainter) -> None:
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(color))
+        if horizontal:
+            pts = [(x, y) for y in (2.5, 5.5) for x in (2.0, 7.0, 12.0)]
+        else:
+            pts = [(x, y) for x in (2.5, 5.5) for y in (2.0, 7.0, 12.0)]
+        for x, y in pts:
+            p.drawEllipse(QPointF(x, y), 1.2, 1.2)
+    return fn
+
+
 def _build_assets(tokens: dict) -> dict:
     """按令牌色生成全部小图标，返回 {名称: 路径}。"""
     c = lambda k: tokens[f"color.{k}"]  # noqa: E731
@@ -364,6 +436,10 @@ def _build_assets(tokens: dict) -> dict:
         "chev_right": _save_asset(f"chev_right_{key}.png", _draw_chevron(c("text.secondary"), "right")),
         "chev_up_dis": _save_asset(f"chev_up_{dis}.png", _draw_chevron(c("text.disabled"), "up")),
         "chev_down_dis": _save_asset(f"chev_down_{dis}.png", _draw_chevron(c("text.disabled"), "down")),
+        "grip": _save_asset(f"grip_{dis}.png", _draw_grip(c("text.disabled")), (8, 14)),
+        "grip_h": _save_asset(f"grip_h_{dis}.png", _draw_grip(c("text.disabled"), True), (14, 8)),
+        "grip_hov": _save_asset(f"grip_hov_{key}.png", _draw_grip(c("text.secondary")), (8, 14)),
+        "grip_h_hov": _save_asset(f"grip_h_hov_{key}.png", _draw_grip(c("text.secondary"), True), (14, 8)),
     }
 
 
@@ -395,6 +471,13 @@ def build_qss(tokens: dict) -> str:
     return "\n".join(sections)
 
 
+def _rgba(hex_color: str, alpha: float) -> str:
+    """``#RRGGBB`` -> ``rgba(r, g, b, alpha)``（供 QSS 渐变停靠点使用）。"""
+    h = hex_color.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    return f"rgba({r}, {g}, {b}, {alpha:g})"
+
+
 def _qss_base(c, t, img) -> str:
     """基座：QWidget / QToolTip / QMenu / QScrollBar / QSplitter / 窗口部件。"""
     return f"""
@@ -404,7 +487,35 @@ QWidget {{
     color: {c('text.primary')};
     font-size: {t['font.md']}px;
 }}
-QMainWindow, QDialog {{ background-color: {c('bg.base')}; }}
+/* ---- 表面角色（role）：供 Kit 用户与 Demo 骨架统一搭页面 ---- */
+/* 画布：页面底色，卡片浮于其上形成层次 */
+QWidget[role="canvas"] {{ background-color: {c('bg.canvas')}; }}
+/* 透明：纯布局容器，避免继承基座底色在卡片内形成色块 */
+QWidget[role="plain"] {{ background-color: transparent; }}
+/* 侧栏：导航区 */
+QWidget[role="sidebar"] {{
+    background-color: {c('bg.base')};
+    border-right: 1px solid {c('border')};
+}}
+/* 卡片：白底 + 细边 + 圆角 */
+QWidget[role="card"] {{
+    background-color: {c('bg.base')};
+    border: 1px solid {c('border')};
+    border-radius: {t['radius.lg']}px;
+}}
+/* 代码块：等宽底色 + 内边距，与正文区分 */
+QWidget[role="code"] {{
+    background-color: {c('bg.subtle')};
+    border: 1px solid {c('border.subtle')};
+    border-radius: {t['radius.md']}px;
+}}
+/* 顶部条：面底色 + 底部分隔 */
+QWidget[role="topbar"] {{
+    background-color: {c('bg.base')};
+    border-bottom: 1px solid {c('border')};
+}}
+
+QMainWindow, QDialog {{ background-color: {c('bg.canvas')}; }}
 QLabel {{ background-color: transparent; color: {c('text.primary')}; }}
 QLabel[role="secondary"] {{ color: {c('text.secondary')}; }}
 QLabel[role="tertiary"], QLabel[role="hint"] {{ color: {c('text.tertiary')}; }}
@@ -430,7 +541,7 @@ QMenu {{
     padding: {t['space.1']}px;
 }}
 QMenu::item {{
-    padding: 6px 28px 6px 12px;
+    padding: 4px 24px 4px 8px;
     border-radius: {t['radius.sm']}px;
     background-color: transparent;
     color: {c('text.primary')};
@@ -463,11 +574,25 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
 }}
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: none; }}
 
-QSplitter::handle {{ background-color: {c('border')}; }}
-QSplitter::handle:horizontal {{ width: 2px; }}
-QSplitter::handle:vertical {{ height: 2px; }}
-QSplitter::handle:hover {{ background-color: {c('primary')}; }}
-QSplitter::handle:pressed {{ background-color: {c('primary.pressed')}; }}
+/* 分隔条：静止时完全不绘制，靠两侧面板自身的边框表达分隔；
+   悬停 / 按下才显形。同时把抓取区加宽到 8px，比 2px 的细线好拖得多。
+   早期版本是一条贯穿全高的 2px 实线，既切断卡片又与卡片边框交叉。 */
+QSplitter::handle {{ border: none; }}
+QSplitter::handle:horizontal {{
+    width: {t['space.2']}px;
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 {_rgba(c('border.strong'), 0)}, stop:0.4 {_rgba(c('border.strong'), 1)},
+        stop:0.6 {_rgba(c('border.strong'), 1)}, stop:1 {_rgba(c('border.strong'), 0)});
+}}
+QSplitter::handle:vertical {{
+    height: {t['space.2']}px;
+    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 {_rgba(c('border.strong'), 0)}, stop:0.4 {_rgba(c('border.strong'), 1)},
+        stop:0.6 {_rgba(c('border.strong'), 1)}, stop:1 {_rgba(c('border.strong'), 0)});
+}}
+QSplitter::handle:hover {{ background-color: {c('primary.subtle')}; }}
+QSplitter::handle:pressed {{ background-color: {c('primary')}; }}
+QSplitter::handle:disabled {{ background-color: transparent; }}
 
 QFrame {{ border: none; }}
 QFrame[frameShape="4"] {{ border-top: 1px solid {c('border')}; max-height: 1px; background: none; }}
@@ -486,7 +611,7 @@ QMenuBar {{
 QMenuBar::item {{
     background-color: transparent;
     color: {c('text.primary')};
-    padding: 5px 10px;
+    padding: 4px 8px;
     border-radius: {t['radius.sm']}px;
 }}
 QMenuBar::item:selected, QMenuBar::item:pressed {{ background-color: {c('bg.muted')}; }}
@@ -498,7 +623,16 @@ QToolBar::separator:horizontal {{
 QToolBar::separator:vertical {{
     height: 1px; background-color: {c('border')}; margin: 6px 4px;
 }}
-QToolBar QToolButton {{ padding: 5px; }}
+QToolBar QToolButton {{ padding: 4px; }}
+/* 工具栏拖拽把手：把手是 QMainWindow 里拖动工具栏的唯一抓取区——width: 0 会
+   让工具栏无法拖拽，全透明则看不见抓哪儿。横向工具栏把手在左侧（竖点阵，定宽度）；
+   吸附左右侧边后工具栏转竖向，把手在顶部（横点阵，定高度），两个方向都要有可见图标。
+   把手与首个按钮之间留 space.1 空隙。 */
+QToolBar::handle:horizontal, QToolBar QToolBar::handle:horizontal {{ width: 8px; margin-right: {t['space.1']}px; {img('grip')} image-position: center; background: transparent; }}
+QToolBar::handle:vertical, QToolBar QToolBar::handle:vertical {{ height: 8px; margin-bottom: {t['space.1']}px; {img('grip_h')} image-position: center; background: transparent; }}
+QToolBar::handle:horizontal:hover {{ {img('grip_hov')} image-position: center; background-color: {c('bg.muted')}; }}
+QToolBar::handle:vertical:hover {{ {img('grip_h_hov')} image-position: center; background-color: {c('bg.muted')}; }}
+QToolBar::tool-button-area {{ border: none; }}
 
 QStatusBar {{
     background-color: {c('bg.subtle')};
@@ -507,6 +641,34 @@ QStatusBar {{
 }}
 QStatusBar::item {{ border: none; }}
 QStatusBar QLabel {{ background-color: transparent; color: {c('text.secondary')}; }}
+/* 隐藏状态栏右下角的点状缩放抓手：扁平化设计里它是原生风格的残留 */
+QStatusBar::size-grip {{ image: none; width: 0; height: 0; }}
+
+/* QToolBox 抽屉把手：默认样式在窄容器里会画成几个脱开的小碎块
+   （实测：把手只剩「⋯」点和一条斜线，与内容区脱节）。
+   这里按分段控件重画：连续圆角外框 + 等分按钮 + 选中态。 */
+QToolBox {{
+    background-color: transparent;
+    border: 1px solid {c('border')};
+    border-radius: {t['radius.md']}px;
+}}
+QToolBox::separator {{ background: none; border: none; width: 0; height: 0; }}
+QToolBox QToolBoxButton, QToolBox QToolButton {{
+    /* 必须用不透明底色：QToolBox 会把工具按钮列的右缘画成斜切，
+       背景透明时斜边会从按钮底下透出来，看着像渲染破口。 */
+    background-color: {c('bg.elevated')};
+    color: {c('text.secondary')};
+    border: none;
+    border-radius: {t['radius.md']}px;
+    padding: {t['space.1']}px {t['space.2']}px;
+    text-align: left;
+}}
+QToolBox QToolBoxButton:hover, QToolBox QToolButton:hover {{ background-color: {c('bg.muted')}; color: {c('text.primary')}; }}
+QToolBox QToolBoxButton:checked, QToolBox QToolButton:checked {{
+    background-color: {c('primary.subtle')};
+    color: {c('primary')};
+    font-weight: {t['font.weight.medium']};
+}}
 
 QDockWidget {{ color: {c('text.primary')}; font-weight: bold; }}
 QDockWidget::title {{
@@ -542,7 +704,7 @@ QPushButton, QPushButton[variant="default"] {{
     color: {c('text.primary')};
     border: 1px solid {c('border')};
     border-radius: {t['radius.md']}px;
-    padding: 0 {t['space.4']}px;
+    padding: 0 12px;
     min-height: {md}px;
     max-height: {md}px;
     font-size: {t['font.md']}px;
@@ -625,7 +787,7 @@ QPushButton[variant="danger"]:disabled {{
     color: {c('text.disabled')};
 }}
 
-/* 尺寸：sm=24 / md=32 / lg=40（size 与 uiksize 别名选择器并存） */
+/* 尺寸：sm=22 / md=28 / lg=34（size 与 uiksize 别名选择器并存） */
 QPushButton[size="sm"], QPushButton[uiksize="sm"] {{
     min-height: {sm}px; max-height: {sm}px;
     padding: 0 {t['space.2']}px; font-size: {t['font.sm']}px;
@@ -639,13 +801,17 @@ QPushButton[size="lg"], QPushButton[uiksize="lg"] {{
     padding: 0 {t['space.5']}px; font-size: {t['font.lg']}px;
 }}
 
-/* 形状：round 为胶囊圆角，circle 为正圆（配合组件固定宽=高） */
-QPushButton[shape="round"] {{ border-radius: 16px; }}
-QPushButton[shape="round"][size="sm"], QPushButton[shape="round"][uiksize="sm"] {{ border-radius: 12px; }}
-QPushButton[shape="round"][size="lg"], QPushButton[shape="round"][uiksize="lg"] {{ border-radius: 20px; }}
-QPushButton[shape="circle"] {{ border-radius: 16px; padding: 0; }}
-QPushButton[shape="circle"][size="sm"], QPushButton[shape="circle"][uiksize="sm"] {{ border-radius: 12px; }}
-QPushButton[shape="circle"][size="lg"], QPushButton[shape="circle"][uiksize="lg"] {{ border-radius: 20px; }}
+/* 形状：round 为胶囊圆角，circle 为正圆（配合组件固定宽=高）。
+   Qt 的 border-radius 以**内容盒**（min/max-height，20/26/32）为参照，
+   超过内容盒半高会整块退回方角；因此取内容盒半高 10/13/16px。
+   不要按总高 22/28/34 取 11/14/17px，也不要写死 16/20px——那会越过
+   内容盒半高的上限，shape 可能直接失效。 */
+QPushButton[shape="round"] {{ border-radius: {md // 2}px; }}
+QPushButton[shape="round"][size="sm"], QPushButton[shape="round"][uiksize="sm"] {{ border-radius: {sm // 2}px; }}
+QPushButton[shape="round"][size="lg"], QPushButton[shape="round"][uiksize="lg"] {{ border-radius: {lg // 2}px; }}
+QPushButton[shape="circle"] {{ border-radius: {md // 2}px; padding: 0; }}
+QPushButton[shape="circle"][size="sm"], QPushButton[shape="circle"][uiksize="sm"] {{ border-radius: {sm // 2}px; }}
+QPushButton[shape="circle"][size="lg"], QPushButton[shape="circle"][uiksize="lg"] {{ border-radius: {lg // 2}px; }}
 
 QToolButton {{
     background-color: transparent;
@@ -660,9 +826,24 @@ QToolButton:checked {{
     background-color: {c('primary.subtle')}; color: {c('primary')};
 }}
 QToolButton:disabled {{ color: {c('text.disabled')}; }}
+/* 菜单区必须显式声明样式：缺了 ::menu-button 规则，Qt 会用默认边框
+   把下拉区画成独立方框，与按钮体形成双线接缝，并把按钮文字压在下面
+   （实测「带菜单」按钮右侧多出一个脱开的空盒子，文字右半被遮）。 */
+QToolButton::menu-button {{
+    subcontrol-origin: border;
+    subcontrol-position: right center;
+    width: {t['space.5']}px;
+    background-color: transparent;
+    border: none;
+    border-left: 1px solid {c('border')};
+    border-top-right-radius: {t['radius.md']}px;
+    border-bottom-right-radius: {t['radius.md']}px;
+}}
+QToolButton::menu-button:hover {{ background-color: {c('bg.muted')}; }}
 QToolButton::menu-indicator {{
     {img('chev_down')} width: 10px; height: 10px;
-    subcontrol-position: right center;
+    subcontrol-origin: padding;
+    subcontrol-position: center;
 }}
 QToolButton[variant="primary"] {{
     background-color: {c('primary')}; border-color: {c('primary')};
@@ -675,7 +856,7 @@ QToolButton[variant="primary"]:pressed {{
     background-color: {c('primary.pressed')}; border-color: {c('primary.pressed')};
 }}
 QToolButton[variant="default"] {{
-    background-color: {c('bg.elevated')}; border-color: {c('border')}; padding: 0 12px;
+    background-color: {c('bg.elevated')}; border-color: {c('border')}; padding: 0 8px;
 }}
 QToolButton[variant="default"]:hover {{
     border-color: {c('primary')}; color: {c('primary')};
@@ -696,17 +877,18 @@ QToolButton[size="md"], QToolButton[uiksize="md"] {{
 QToolButton[size="lg"], QToolButton[uiksize="lg"] {{
     min-height: {lg}px; max-height: {lg}px; font-size: {t['font.lg']}px;
 }}
-QToolButton[shape="circle"] {{ border-radius: 16px; }}
-QToolButton[shape="circle"][size="sm"], QToolButton[shape="circle"][uiksize="sm"] {{ border-radius: 12px; }}
-QToolButton[shape="circle"][size="lg"], QToolButton[shape="circle"][uiksize="lg"] {{ border-radius: 20px; }}
-QToolButton[shape="round"] {{ border-radius: 16px; }}
-QToolButton[shape="round"][size="sm"], QToolButton[shape="round"][uiksize="sm"] {{ border-radius: 12px; }}
-QToolButton[shape="round"][size="lg"], QToolButton[shape="round"][uiksize="lg"] {{ border-radius: 20px; }}
+/* 同 QPushButton：圆角取内容盒半高，超过内容盒半高 Qt 会整块退回方角 */
+QToolButton[shape="circle"] {{ border-radius: {md // 2}px; }}
+QToolButton[shape="circle"][size="sm"], QToolButton[shape="circle"][uiksize="sm"] {{ border-radius: {sm // 2}px; }}
+QToolButton[shape="circle"][size="lg"], QToolButton[shape="circle"][uiksize="lg"] {{ border-radius: {lg // 2}px; }}
+QToolButton[shape="round"] {{ border-radius: {md // 2}px; }}
+QToolButton[shape="round"][size="sm"], QToolButton[shape="round"][uiksize="sm"] {{ border-radius: {sm // 2}px; }}
+QToolButton[shape="round"][size="lg"], QToolButton[shape="round"][uiksize="lg"] {{ border-radius: {lg // 2}px; }}
 """
 
 
 def _qss_inputs(c, t, img) -> str:
-    """输入控件：高度体系 sm=24 / md=32 / lg=40，focus 主色边框。"""
+    """输入控件：高度体系 sm=22 / md=28 / lg=34，focus 主色边框。"""
     sm, md, lg = _CONTENT_BOX["sm"], _CONTENT_BOX["md"], _CONTENT_BOX["lg"]
     ssm, smd, slg = _SPIN_BOX["sm"], _SPIN_BOX["md"], _SPIN_BOX["lg"]
     return f"""
@@ -894,16 +1076,26 @@ QComboBox QAbstractItemView::item {{
     min-height: 26px; padding: 0 {t['space.2']}px; border-radius: {t['radius.sm']}px;
 }}
 
-/* 滑块 */
+/* 滑块 —— 几何口径必须与 components/slider.py 的 _HANDLE 一致：
+   槽 4px / 手柄 12px / 外扩 5px / 圆角 = 手柄一半。
+   此前全局写的是 margin:-6px、border-radius:8px，与组件库差一档，
+   同一个滑块在「基础控件」页和「Slider」页会看成两种样式。 */
 QSlider::groove:horizontal {{
-    height: 4px; background-color: {c('bg.muted')}; border-radius: 2px;
+    height: {_GROOVE_MD}px; background-color: {c('bg.muted')};
+    border-radius: {_GROOVE_MD // 2}px;
 }}
-QSlider::sub-page:horizontal {{ background-color: {c('primary')}; border-radius: 2px; }}
-QSlider::add-page:horizontal {{ background-color: {c('bg.muted')}; border-radius: 2px; }}
+QSlider::sub-page:horizontal {{
+    background-color: {c('primary')}; border-radius: {_GROOVE_MD // 2}px;
+}}
+QSlider::add-page:horizontal {{
+    background-color: {c('bg.muted')}; border-radius: {_GROOVE_MD // 2}px;
+}}
 QSlider::handle:horizontal {{
     background-color: {c('on.primary')};
     border: 2px solid {c('primary')};
-    width: 12px; height: 12px; margin: -6px 0; border-radius: 8px;
+    width: {_HANDLE_MD}px; height: {_HANDLE_MD}px;
+    margin: {_HANDLE_MD_MARGIN}px 0;
+    border-radius: {_HANDLE_MD // 2}px;
 }}
 /* hover 仅改描边色：vertical 的 :hover background-color 会渗漏到常态渲染，
    使常态手柄被主色实心覆盖（Qt 6.11 实测），pressed 不受影响 */
@@ -915,32 +1107,74 @@ QSlider::handle:horizontal:pressed {{
 }}
 QSlider::handle:horizontal:disabled {{ border-color: {c('text.disabled')}; }}
 QSlider::groove:vertical {{
-    width: 4px; background-color: {c('bg.muted')}; border-radius: 2px;
+    width: {_GROOVE_MD}px; background-color: {c('bg.muted')};
+    border-radius: {_GROOVE_MD // 2}px;
 }}
-QSlider::sub-page:vertical {{ background-color: {c('primary')}; border-radius: 2px; }}
-QSlider::add-page:vertical {{ background-color: {c('bg.muted')}; border-radius: 2px; }}
+QSlider::sub-page:vertical {{
+    background-color: {c('primary')}; border-radius: {_GROOVE_MD // 2}px;
+}}
+QSlider::add-page:vertical {{
+    background-color: {c('bg.muted')}; border-radius: {_GROOVE_MD // 2}px;
+}}
 QSlider::handle:vertical {{
     background-color: {c('on.primary')};
     border: 2px solid {c('primary')};
-    width: 12px; height: 12px; margin: 0 -6px; border-radius: 8px;
+    width: {_HANDLE_MD}px; height: {_HANDLE_MD}px;
+    margin: 0 {_HANDLE_MD_MARGIN}px;
+    border-radius: {_HANDLE_MD // 2}px;
 }}
 QSlider::handle:vertical:pressed {{
     background-color: {c('primary.pressed')}; border-color: {c('primary.pressed')};
 }}
 QSlider::handle:vertical:disabled {{ border-color: {c('text.disabled')}; }}
+/* 尺寸档：与 components/slider.py 的 _HANDLE 逐档对齐 */
+QSlider[uiksize="sm"]::handle:horizontal,
+QSlider[uiksize="sm"]::handle:vertical {{
+    width: {_HANDLE_SM}px; height: {_HANDLE_SM}px;
+    margin: {_HANDLE_SM_MARGIN}px 0; border-radius: {_HANDLE_SM // 2}px;
+}}
+QSlider[uiksize="sm"]::handle:vertical {{ margin: 0 {_HANDLE_SM_MARGIN}px; }}
+QSlider[uiksize="lg"]::handle:horizontal,
+QSlider[uiksize="lg"]::handle:vertical {{
+    width: {_HANDLE_LG}px; height: {_HANDLE_LG}px;
+    margin: {_HANDLE_LG_MARGIN}px 0; border-radius: {_HANDLE_LG // 2}px;
+}}
+QSlider[uiksize="lg"]::handle:vertical {{ margin: 0 {_HANDLE_LG_MARGIN}px; }}
+QSlider[uiksize="lg"]::groove:horizontal {{
+    height: {_GROOVE_LG}px; border-radius: {_GROOVE_LG // 2}px;
+}}
+QSlider[uiksize="lg"]::groove:vertical {{
+    width: {_GROOVE_LG}px; border-radius: {_GROOVE_LG // 2}px;
+}}
+
+/* 数码管：原来完全没有 QSS，走 Qt 原生绘制（深色凹槽 + 固定绿/黑数码），
+   与整套令牌体系无关。 */
+QLCDNumber {{
+    background-color: {c('bg.elevated')};
+    color: {c('text.primary')};
+    border: 1px solid {c('border')};
+    border-radius: {t['radius.md']}px;
+}}
+QLCDNumber:disabled {{ color: {c('text.disabled')}; }}
 
 /* 进度条 */
+/* 原生 QProgressBar 走内容盒高度并显示百分比文字。
+   之前这里写死 8px + color:transparent，是为「细轨道」样式服务的，
+   但原生控件的默认 textFormat 会输出 "65%"，8px 高度直接把它裁没了
+   （实测：轨道只剩一条蓝线，文字完全不可见）。
+   细轨道样式由 components/progress_bar.py 自绘实现，不该由全局 QSS 兜。 */
 QProgressBar {{
     background-color: {c('bg.muted')};
     border: none;
-    border-radius: 4px;
-    min-height: 8px;
-    max-height: 8px;
+    border-radius: {t['radius.sm']}px;
+    min-height: {_INPUT_HEIGHTS['md']}px;
+    max-height: {_INPUT_HEIGHTS['md']}px;
     text-align: center;
-    color: transparent;
+    /* 文字居中压在 chunk 上，必须用反色：深色字压蓝底几乎看不清 */
+    color: {c('on.primary')};
     font-size: {t['font.xs']}px;
 }}
-QProgressBar::chunk {{ background-color: {c('primary')}; border-radius: 4px; }}
+QProgressBar::chunk {{ background-color: {c('primary')}; border-radius: {t['radius.sm']}px; }}
 /* ProgressBar 状态色由 paintEvent 自绘（见 components/progress_bar.py），
    QSS status 选择器不会生效，不在此输出。 */
 QProgressBar:disabled::chunk {{ background-color: {c('text.disabled')}; }}
@@ -974,14 +1208,14 @@ QRadioButton:disabled {{ color: {c('text.disabled')}; }}
 QRadioButton::indicator {{
     width: 16px; height: 16px;
     border: 1px solid {c('border.strong')};
-    border-radius: 9px;
+    border-radius: 8px;   /* = 直径/2：超过半高 Qt 会退回方角 */
     background-color: {c('bg.elevated')};
 }}
 QRadioButton::indicator:hover {{ border-color: {c('primary')}; }}
 QRadioButton::indicator:checked {{
     width: 8px; height: 8px;
     border: 5px solid {c('primary')};
-    border-radius: 9px;
+    border-radius: 8px;
     background-color: {c('bg.elevated')};
 }}
 QRadioButton::indicator:disabled {{
@@ -990,26 +1224,26 @@ QRadioButton::indicator:disabled {{
 QRadioButton::indicator:checked:disabled {{
     width: 8px; height: 8px;
     background-color: {c('bg.muted')}; border: 5px solid {c('text.disabled')};
-    border-radius: 9px;
+    border-radius: 8px;
 }}
 /* 尺寸：sm 外径 14 / md 外径 18 / lg 外径 20，选中态外径与未选中一致 */
 QRadioButton[size="sm"]::indicator, QRadioButton[uiksize="sm"]::indicator {{
-    width: 12px; height: 12px; border-radius: 7px;
+    width: 12px; height: 12px; border-radius: 6px;   /* = 直径/2 */
 }}
 QRadioButton[size="sm"]::indicator:checked, QRadioButton[uiksize="sm"]::indicator:checked {{
-    width: 6px; height: 6px; border: 4px solid {c('primary')}; border-radius: 7px;
+    width: 6px; height: 6px; border: 4px solid {c('primary')}; border-radius: 6px;
 }}
 QRadioButton[size="sm"]::indicator:checked:disabled, QRadioButton[uiksize="sm"]::indicator:checked:disabled {{
-    width: 6px; height: 6px; border: 4px solid {c('text.disabled')}; border-radius: 7px;
+    width: 6px; height: 6px; border: 4px solid {c('text.disabled')}; border-radius: 6px;
 }}
 QRadioButton[size="lg"]::indicator, QRadioButton[uiksize="lg"]::indicator {{
-    width: 18px; height: 18px; border-radius: 10px;
+    width: 18px; height: 18px; border-radius: 9px;   /* = 直径/2 */
 }}
 QRadioButton[size="lg"]::indicator:checked, QRadioButton[uiksize="lg"]::indicator:checked {{
-    width: 10px; height: 10px; border: 5px solid {c('primary')}; border-radius: 10px;
+    width: 10px; height: 10px; border: 5px solid {c('primary')}; border-radius: 9px;
 }}
 QRadioButton[size="lg"]::indicator:checked:disabled, QRadioButton[uiksize="lg"]::indicator:checked:disabled {{
-    width: 10px; height: 10px; border: 5px solid {c('text.disabled')}; border-radius: 10px;
+    width: 10px; height: 10px; border: 5px solid {c('text.disabled')}; border-radius: 9px;
 }}
 """
 
@@ -1019,34 +1253,45 @@ def _qss_views(c, t, img) -> str:
     return f"""
 /* ==================== 容器与视图 ==================== */
 QGroupBox {{
-    background-color: {c('bg.elevated')};
+    background-color: {c('bg.base')};
     border: 1px solid {c('border')};
-    border-radius: {t['radius.md']}px;
-    margin-top: 16px;
-    padding: {t['space.3']}px;
-    font-weight: bold;
-    color: {c('text.primary')};
+    border-radius: {t['radius.lg']}px;
+    margin-top: 0;
+    /* 上内边距让出标题位置：标题落在边框**内侧**，因此不需要给标题设底色去
+       「挖空」边框。早期版本把标题压在边框线上（margin-top + 标题底色），
+       一旦分组框不是直接坐在画布上（例如嵌在白卡里），那个底色就会变成一
+       块与父背景不匹配的脏斑——这正是「Group 看起来失效」的原因。 */
+    padding: {t['space.5']}px {t['space.3']}px {t['space.3']}px {t['space.3']}px;
+    font-weight: normal;
 }}
 QGroupBox::title {{
-    subcontrol-origin: margin;
+    subcontrol-origin: padding;
     subcontrol-position: top left;
-    left: 10px;
-    top: 2px;
-    padding: 0 {t['space.1']}px;
+    left: {t['space.3']}px;
+    top: {t['space.2']}px;
+    padding: 0;
     color: {c('text.primary')};
+    font-size: {t['font.title.sm']}px;
+    font-weight: {t['font.weight.semibold']};
 }}
+QGroupBox::title:disabled {{ color: {c('text.disabled')}; }}
+QGroupBox[flat="true"] {{ border: none; background-color: transparent; margin-top: 0; padding: 0; }}
+QGroupBox[flat="true"]::title {{ background-color: transparent; }}
 
 QTabWidget::pane {{
-    border: none;
+    border: 1px solid {c('border')};
+    border-radius: {t['radius.md']}px;
     border-top: 1px solid {c('border')};
     background-color: {c('bg.base')};
+    top: -1px;
 }}
 QTabBar {{ background-color: transparent; }}
 QTabBar::tab {{
     background-color: transparent;
     color: {c('text.secondary')};
-    padding: 8px 14px;
+    padding: 8px 12px;
     border: none;
+    font-size: {t['font.md']}px;
 }}
 QTabBar::tab:hover {{ color: {c('text.primary')}; }}
 QTabBar::tab:disabled {{ color: {c('text.disabled')}; }}
@@ -1071,7 +1316,13 @@ QTableView, QTreeView, QListView {{
     outline: none;
 }}
 QTableView::item, QTreeView::item, QListView::item {{
-    padding: 4px 8px; border: none;
+    /* 横向内缩要比 QHeaderView::section（space.3 = 12px）小 2px：
+       Qt 给条目内容的固有边距比表头大 2px，两侧都按 space.3 写会让
+       表头与单元格的文字基线错开（实测左列差 1px、右列差 2px）。
+       这里给右侧补 space.05 抵消，使两侧都落在同一条基准线上。 */
+    padding: {t['space.1']}px {t['space.2']}px;
+    padding-right: {int(t['space.2']) + int(t['space.05'])}px;
+    border: none;
 }}
 QTableView::item:hover, QTreeView::item:hover, QListView::item:hover {{
     background-color: {c('bg.muted')};
@@ -1090,15 +1341,15 @@ QHeaderView {{ background-color: {c('bg.subtle')}; border: none; }}
 QHeaderView::section {{
     background-color: {c('bg.subtle')};
     color: {c('text.secondary')};
-    padding: 6px 10px;
+    padding: {t['space.1']}px {t['space.3']}px;
     border: none;
-    border-right: 1px solid {c('border')};
+    border-right: 1px solid {c('border.subtle')};
     border-bottom: 1px solid {c('border')};
-    font-weight: bold;
+    font-size: {t['font.sm']}px;
+    font-weight: {t['font.weight.medium']};
 }}
-QHeaderView::section:first {{ border-left: none; }}
 QHeaderView::section:last {{ border-right: none; }}
-QHeaderView::section:hover {{ color: {c('text.primary')}; }}
+QHeaderView::section:hover {{ color: {c('text.primary')}; background-color: {c('bg.muted')}; }}
 QTableCornerButton::section {{
     background-color: {c('bg.subtle')};
     border: none;
@@ -1149,6 +1400,29 @@ QCalendarWidget QTableView {{
 QCalendarWidget QTableView::item {{
     padding: 0px;
     border: none;
+}}
+QCalendarWidget QToolButton {{
+    background-color: transparent;
+    color: {c('text.primary')};
+    border: none;
+    border-radius: {t['radius.sm']}px;
+    padding: {t['space.1']}px {t['space.2']}px;
+    min-height: {_INPUT_HEIGHTS['sm']}px;
+    max-height: {_INPUT_HEIGHTS['sm']}px;
+    font-size: {t['font.md']}px;
+}}
+QCalendarWidget QToolButton:hover {{ background-color: {c('bg.muted')}; }}
+QCalendarWidget QMenu {{ background-color: {c('bg.elevated')}; }}
+/* 日历导航条默认是深灰实心带，压在浅色卡片上很突兀 */
+QCalendarWidget QHeaderView {{ background-color: {c('bg.base')}; border: none; }}
+/* Qt6 的日历导航条是一个 QToolButton（对象名 qt_calendar_navigationbar），
+   走全局 QToolButton 规则时会被画成深灰实心带，压在浅色卡片上很突兀。 */
+QCalendarWidget QWidget#qt_calendar_navigationbar {{
+    background-color: {c('bg.base')};
+    border: none;
+    border-bottom: 1px solid {c('border')};
+    min-height: {_INPUT_HEIGHTS['md']}px;
+    max-height: {_INPUT_HEIGHTS['md']}px;
 }}
 QCalendarWidget QHeaderView::section {{
     background-color: {c('bg.base')};

@@ -3,6 +3,17 @@
 
 垂直链接列表，配合 QScrollArea 使用：点击滚动到目标段落，
 滚动时自动高亮当前段落。
+
+对齐与密度约定（与 COMPONENT-DESIGN-CONTRACT §3 / §4 对齐）：
+
+- **行高 ``layout.nav.row_h``（30）**：与侧边导航行同级，锚点列表
+  是导航不是正文，不再是旧版的 26px 自定义值。
+- **文字左缘与选中条左缘分离**：2px 指示条贴在容器左缘，文字统一
+  从 ``layout.inset.pad_x``（8）起，切换当前项时文字**不会**左右抖动
+  （旧版 ``padding: 0 14px`` 让条与文字挤在一起）。
+- **扁平**：常态无底色；只有当前项用 ``primary.subtle`` 一层淡底 +
+  ``primary`` 指示条，不加投影、不加圆角（竖列列表不需要）。
+- QSS 里的所有尺寸取自令牌，无裸数字。
 """
 
 from PySide6.QtCore import QPoint, Qt, Signal
@@ -10,6 +21,11 @@ from PySide6.QtWidgets import QPushButton, QScrollArea, QVBoxLayout, QWidget
 
 from ..theme import T, ThemeManager, set_property
 from shiboken6 import isValid as _shiboken_is_valid
+
+#: 当前项指示条宽度：1px 细条（border 档位，不加粗）
+_INDICATOR_W = 1
+#: 滚动命中判定偏移：半行高，避免刚滚过边界就跳项
+_SCROLL_LEAD = T("layout.nav.row_h") // 2
 
 
 def _connect_theme(widget, slot) -> None:
@@ -56,6 +72,7 @@ class Anchor(QWidget):
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(0)
         self._layout.addStretch(1)
+        set_property(self, "role", "plain")
         _connect_theme(self, self._reload_style)
         self._reload_style()
 
@@ -154,7 +171,7 @@ class Anchor(QWidget):
             if target is None:
                 continue
             y = target.mapTo(area_widget, QPoint(0, 0)).y()
-            if y <= value + 8:
+            if y <= value + _SCROLL_LEAD:
                 best = key
             elif best is None:
                 best = key
@@ -163,24 +180,26 @@ class Anchor(QWidget):
 
     def _reload_style(self) -> None:
         c = lambda k: T(f"color.{k}")  # noqa: E731
+        row_h = T("layout.nav.row_h")
+        pad_x = T("layout.inset.pad_x")
         self.setStyleSheet(f"""
 QPushButton {{
     border: none;
-    border-left: 2px solid {c('border')};
+    border-left: {_INDICATOR_W}px solid transparent;
     border-radius: 0px;
     background-color: transparent;
     color: {c('text.secondary')};
     text-align: left;
-    padding: 0 14px;
-    min-height: 26px;
-    max-height: 26px;
-    font-size: {T('font.sm')}px;
+    padding: 0 {pad_x}px;
+    min-height: {row_h}px;
+    max-height: {row_h}px;
+    font-size: {T('font.md')}px;
 }}
-QPushButton:hover {{ color: {c('primary')}; }}
+QPushButton:hover {{ color: {c('primary')}; background-color: {c('bg.subtle')}; }}
 QPushButton[active="true"] {{
     color: {c('primary')};
     border-left-color: {c('primary')};
     background-color: {c('primary.subtle')};
-    font-weight: 600;
+    font-weight: {T('font.weight.semibold')};
 }}
 """)

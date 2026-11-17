@@ -45,7 +45,7 @@ from PySide6.QtWidgets import (
 )
 from shiboken6 import isValid as _shiboken_is_valid
 
-from ..theme import T, ThemeManager
+from ..theme import T, ThemeManager, _INPUT_HEIGHTS
 from ..tokens import TokenState
 
 __all__ = ["BudgetSpec", "BudgetSliderGroup"]
@@ -54,31 +54,52 @@ __all__ = ["BudgetSpec", "BudgetSliderGroup"]
 # 模块私有常量
 # ---------------------------------------------------------------------------
 
-#: 度量（px）
-_TRACK_H = 10            # 轨道高
-_HANDLE_D = 20           # 手柄直径
-_ROW_GAP = 10            # 行间距
+#: 间距一律取自 design token（契约 §2）：本组件原先的 22 / 14 / 26px
+#: 是随手写的字面量，与同页其他卡片的内边距对不齐，审计判 PADTOKEN。
+#: 下面的 ``_pad_*`` 是「哪条令牌」的唯一映射点，几何计算只引用它们。
+_pad_card = T("layout.card.pad_x")        # 12 卡片左右内边距
+_pad_card_top = T("layout.card.pad_top")  # 8  卡片上内边距
+_pad_gutter = T("layout.gutter")          # 12 行之间的间距
+_pad_inset_y = T("layout.inset.pad_y")    # 6  行内上下留白
+_pad_row_x = T("space.3")                 # 12 行容器右内边距
+
+#: 身份色点占位：色点列宽 = 圆心 x + 半径，行左内边距据此推导，
+#: 保证「色点 → 标签」的视觉间距与 ``_ROW_SPACING`` 同源（都是 12px）。
+_DOT_RADIUS = 4.0
+_DOT_CENTER_X = float(_pad_gutter) / 2.0  # 6
+_ROW_MARGIN_L = _DOT_CENTER_X + _DOT_RADIUS + _pad_gutter  # 22（令牌推导，非字面量）
+
+#: 度量（px）：这些是「物理尺寸」而非「间距」，不参与 2px 间距网格
+# 轨道与手柄取滑块的 lg 档（6 / 14），不再用孤立的 10 / 20：
+# 此前行轨道比 QSlider 粗一倍多、手柄大一圈，同一个组件库里
+# 「滑块」和「预算滑块」看起来像两套设计。6 / 14 保留了预算块
+# 可读性，同时让两者落在同一刻度上。
+_TRACK_H = 6             # 轨道高（= Slider lg 档槽厚）
+_HANDLE_D = 14           # 手柄直径（= Slider lg 档手柄）
+_ROW_GAP = _pad_gutter   # 行间距
 _LABEL_W = 104           # 行首标签列宽默认值
 _VALUE_W = 92            # 数值读数列宽下限
-_CARD_PAD = 22           # 头卡内边距
 _BAR_H = 12              # 堆叠分配条高
-#: 行容器左右内边距（左侧为身份色点预留 26px）
-_ROW_MARGIN_L, _ROW_MARGIN_R = 26, 12
-_ROW_MARGIN_V = 6
+#: 行容器左右内边距（左侧为身份色点预留，其宽度由 _DOT_* 推导）
+_ROW_MARGIN_R = _pad_row_x
+_ROW_MARGIN_V = _pad_inset_y
 #: 行内控件间距（色点列 → 标签 → 读数 → 轨道）
-_ROW_SPACING = 12
-#: 身份色点半径与其圆心 x（在行左内边距内）
-_DOT_RADIUS, _DOT_CENTER_X = 4.0, 16.0
-#: 悬停圆角
-_HOVER_RADIUS = 10.0
+_ROW_SPACING = _pad_gutter
+#: 悬停圆角（取 radius.md，卡片内元素按物理尺寸选档，契约 §4）
+_HOVER_RADIUS = float(T("radius.md"))
 #: 撞墙闪光动画时长（ms）
 _FLASH_DURATION_MS = 420
-#: 死区斜纹步进（px）
-_HATCH_STEP = 6.0
+#: 死区斜纹步进（px）——轨道内密纹
+_HATCH_STEP = float(T("space.1"))
+#: 头卡空尾的斜纹步进（px）——比分区内的密纹更宽，避免小尺寸下糊成一片
+_HATCH_STEP_WIDE = float(T("space.2"))
 #: 合计达到上限该比例即进入警示色
 _WARN_RATIO = 0.90
-#: 剩余徽标固定高（px）
-_PILL_HEIGHT = 26
+#: 剩余徽标固定高（px）：对齐契约 §1 的 md 档（28），使头卡内的控件
+#: 与页面其他 md 控件同高；原为孤立的 26px。
+_PILL_HEIGHT = _INPUT_HEIGHTS["md"]
+#: 徽标左右内边距（左右各一档 gutter）
+_PILL_PAD_X = _pad_gutter
 #: rebalance 收敛轮数上限（夹取→再分配，实测数轮内收敛）
 _REBALANCE_ROUNDS = 8
 
@@ -150,7 +171,6 @@ class _Theme:
     handle_d = _HANDLE_D
     row_gap = _ROW_GAP
     value_w = _VALUE_W
-    card_pad = _CARD_PAD
     bar_h = _BAR_H
     font_family = ""
 
@@ -227,7 +247,8 @@ class _Theme:
 
     @property
     def handle_edge(self) -> str:
-        return T("color.border.strong")
+        # 与 Slider 手柄描边同源：主色描边 + 浅色填充
+        return T("color.primary")
 
     @property
     def handle_shadow(self) -> str:
@@ -633,7 +654,10 @@ class _BudgetSlider(QAbstractSlider):
         if self._pulse <= 0.01 or p_wall <= p_val:
             return
         area = QRectF(p_val, track.top(), p_wall - p_val, track.height())
-        glow = QColor(255, 255, 255, int(150 * self._pulse))
+        # 闪光取 on.primary（主色之上的前景色），而非写死的纯白 RGB——
+        # 暗色主题下纯白会过曝，改用令牌后两种主题表现一致
+        glow = QColor(T("color.on.primary"))
+        glow.setAlpha(int(150 * self._pulse))
         painter.save()
         painter.setClipPath(self._groove_path(area.adjusted(0, -2, 0, 2),
                                               radius))
@@ -805,11 +829,13 @@ class _BudgetRow(QWidget):
         value_font = _font(theme, theme.fs_value, QFont.Weight.Bold)
         caption_font = _font(theme, theme.fs_caption, QFont.Weight.Normal)
         maximum = self._num_text(self.slider.real_maximum())
+        # 两段富文本之间的字形间隙与尾部余量，均取 space 令牌
+        # （原为写死的 4 / 2px 裸数字）
         need = (QFontMetricsF(value_font).horizontalAdvance(maximum)
-                + 4
+                + int(T("space.1"))
                 + QFontMetricsF(caption_font).horizontalAdvance(
                     f"/ {maximum}{self._suffix}")
-                + 2)
+                + int(T("space.05")))
         want = max(theme.value_w, int(need))
         if self.value_label.width() != want:
             self.value_label.setFixedWidth(want)
@@ -880,12 +906,11 @@ class _BudgetRow(QWidget):
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
 
         if self._hover:
+            # 单层底色即可（契约 §4：删掉重复的背景层）。原实现叠了两层
+            # 圆角矩形做「右侧缺口」的伪渐变，在高密度下只会糊成一团。
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(theme.surface_hover))
             painter.drawRoundedRect(rect, _HOVER_RADIUS, _HOVER_RADIUS)
-            painter.setBrush(QColor(theme.surface_alt))
-            painter.drawRoundedRect(rect.adjusted(0, 0, -3, 0),
-                                    _HOVER_RADIUS, _HOVER_RADIUS)
 
         # 身份色点：位于行左内边距预留区
         painter.setPen(Qt.PenStyle.NoPen)
@@ -955,7 +980,7 @@ class _StackedBudgetBar(QWidget):
         painter.save()
         painter.setClipPath(self._path(tail.adjusted(0, 0, radius, 0)))
         painter.setPen(QPen(QColor(self._theme.locked_hatch), 1.6))
-        step = 8.0
+        step = _HATCH_STEP_WIDE  # 空尾斜纹步进，比轨道密区更宽
         x = tail.left() - rect.height()
         while x < tail.right() + rect.height():
             painter.drawLine(QPointF(x, tail.bottom()),
@@ -967,7 +992,7 @@ class _StackedBudgetBar(QWidget):
                         radius: float) -> None:
         """各行已占分段（占比基准是组 cap，不是各行 max，分段之和 ≤ 1）。"""
         x = rect.left()
-        gap = 2.0
+        gap = float(T("space.05"))  # 段间 2px 缝（2px 基网格半档）
         count = len(self._segments)
         for index, (color, fraction) in enumerate(self._segments):
             width = rect.width() * fraction
@@ -1004,6 +1029,10 @@ class _Pill(QWidget):
         self.setFixedHeight(_PILL_HEIGHT)
         self.setFont(_font(theme, theme.fs_label))
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        # 与 Popover 同理：只给 WA_TranslucentBackground 不够，Qt 仍会用
+        # 窗口的系统背景刷子把整个窗口矩形填成不透明色（真机上表现为
+        # 一圈矩形色块）。本组件只由 paintEvent 绘制，明确交回背景控制权。
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
 
     def set_state(self, text: str, color: str) -> None:
         """重设文案与状态色。"""
@@ -1020,7 +1049,8 @@ class _Pill(QWidget):
     def sizeHint(self) -> QSize:  # noqa: N802
         """按文字宽 + 左右余量。"""
         metrics = QFontMetrics(self.font())
-        return QSize(metrics.horizontalAdvance(self._text) + 26, _PILL_HEIGHT)
+        return QSize(metrics.horizontalAdvance(self._text) + _PILL_PAD_X * 2,
+                     _PILL_HEIGHT)
 
     def paintEvent(self, _event) -> None:  # noqa: N802
         """胶囊底（状态色 38 alpha）+ 状态色文字。"""
@@ -1052,10 +1082,13 @@ class _BudgetSummary(QFrame):
         self.setSizePolicy(QSizePolicy.Policy.Expanding,
                            QSizePolicy.Policy.Fixed)
 
+        # 内边距 / 间距全部取 layout.* 令牌（契约 §2）：原为
+        # (22, 18, 22, 16) + spacing 14 的手写字面量，审计判 PADTOKEN，
+        # 且与页面其他卡片（layout.card.pad_x = 12）对不齐。
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(theme.card_pad, theme.card_pad - 4,
-                                 theme.card_pad, theme.card_pad - 6)
-        outer.setSpacing(14)
+        outer.setContentsMargins(_pad_card, _pad_card_top,
+                                 _pad_card, T("layout.card.pad_bottom"))
+        outer.setSpacing(_pad_gutter)
         outer.addLayout(self._build_top(theme))
 
         self.bar = _StackedBudgetBar(theme)
@@ -1066,7 +1099,7 @@ class _BudgetSummary(QFrame):
     def _build_top(self, theme: _Theme) -> QHBoxLayout:
         """顶部行：左侧小计、中间剩余徽标、右侧合计大数。"""
         top = QHBoxLayout()
-        top.setSpacing(12)
+        top.setSpacing(_pad_gutter)
 
         self.sub_label = QLabel("")
         self.sub_label.setFont(_font(theme, theme.fs_caption))
@@ -1078,7 +1111,8 @@ class _BudgetSummary(QFrame):
         top.addWidget(self.pill, 0, Qt.AlignmentFlag.AlignVCenter)
 
         right = QHBoxLayout()
-        right.setSpacing(3)
+        # 「用量 / 上限」两个数字是同一个量级的紧邻数字，用 2px 半档贴合
+        right.setSpacing(int(T("space.05")))
         self.total_label = QLabel("0")
         self.total_label.setFont(
             _font(theme, theme.fs_display, QFont.Weight.Bold))
@@ -1188,7 +1222,10 @@ class BudgetSliderGroup(QFrame):
 
         layout = QVBoxLayout(self)
         if framed:
-            layout.setContentsMargins(2, 2, 2, 8)
+            # 卡片自身有 1px 边框，外留白取 2px 半档（space.05），
+            # 让子控件不贴边；底部多留一档呼吸位（space.2）
+            layout.setContentsMargins(int(T("space.05")), int(T("space.05")),
+                                      int(T("space.05")), int(T("space.2")))
         else:
             layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -1196,7 +1233,8 @@ class BudgetSliderGroup(QFrame):
         self._title_label: Optional[QLabel] = None
         if title:
             self._title_label = QLabel(title, self)
-            self._title_label.setContentsMargins(14, 10, 14, 2)
+            self._title_label.setContentsMargins(_pad_card, _pad_card_top,
+                                                  _pad_card, int(T("space.05")))
             self._apply_title_font()
             layout.addWidget(self._title_label)
 
@@ -1208,8 +1246,8 @@ class BudgetSliderGroup(QFrame):
         self._rows_host.setStyleSheet(
             "#budgetRowsHost{background:transparent;border:none;}")
         self._rows_layout = QVBoxLayout(self._rows_host)
-        margins = 14 if framed else 0
-        self._rows_layout.setContentsMargins(margins, 16, margins, 0)
+        margins = _pad_card if framed else 0
+        self._rows_layout.setContentsMargins(margins, _pad_gutter, margins, 0)
         self._rows_layout.setSpacing(self._theme.row_gap)
         layout.addWidget(self._rows_host)
 
@@ -1403,7 +1441,7 @@ class BudgetSliderGroup(QFrame):
             placeholder.setProperty("role", "tertiary")
             placeholder.setFont(
                 _font(self._theme, self._theme.fs_value, QFont.Weight.Medium))
-            placeholder.setMinimumHeight(48)
+            placeholder.setMinimumHeight(int(T("space.12")))  # 48 空态占位高
             self._rows_layout.addWidget(placeholder)
             self._placeholder = placeholder
 

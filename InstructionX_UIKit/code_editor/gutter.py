@@ -19,7 +19,7 @@
 """
 
 from PySide6.QtCore import QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPainterPath, QPen
 
 from PySide6.QtWidgets import QWidget
 
@@ -70,7 +70,7 @@ class Gutter(QWidget):
         if ed.line_number_mode() == "off":
             return 0
         digits = max(2, len(str(max(1, ed.text_area().document().blockCount()))))
-        fm = ed.text_area().fontMetrics()
+        fm = QFontMetrics(ed.editor_font())
         dual_fn = getattr(ed, "dual_line_label_provider", lambda: None)()
         if dual_fn is not None:
             # 双列行号（VS Code 内联 diff）：每列预留 1 字符放 +/− 后缀
@@ -130,7 +130,7 @@ class Gutter(QWidget):
         fold_points = ed.fold_points()
         folded = ed.folded_lines()
         diag = ed.diagnostic_lines()
-        fm = ed.text_area().fontMetrics()
+        fm = QFontMetrics(ed.editor_font())
         digits = max(2, len(str(max(1, ed.text_area().document().blockCount()))))
         num_w = fm.horizontalAdvance("9") * digits
         dual_fn = getattr(ed, "dual_line_label_provider", lambda: None)()
@@ -145,7 +145,7 @@ class Gutter(QWidget):
             num_right = _DIAG_W + _BP_ZONE + num_w + _PAD
             fold_x = num_right + mark_w + _FOLD_ZONE / 2
 
-        p.setFont(ed.text_area().font())
+        p.setFont(ed.editor_font())
         for block, top, height in self._visible_blocks():
             line = block.blockNumber() + 1
             cy = top + height / 2

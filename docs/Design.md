@@ -2,7 +2,7 @@
 
 > 本文档是 InstructionX_UIKit 的完整设计规范，与 `InstructionX_UIKit/tokens.py`、`InstructionX_UIKit/theme.py` 中的数值严格一致。
 > 所有令牌均可通过 `InstructionX_UIKit.theme.T(key)` 在运行时按当前主题取出（颜色为 `str`，数值为 `int`，阴影为 `dict`）。
-> 键名规则：色彩 `color.*`、字阶 `font.*`、间距 `space.*`、圆角 `radius.*`、阴影 `shadow.*`、断点 `breakpoint.*`、动效 `duration.*` / `easing.*`。
+> 键名规则：色彩 `color.*`、字阶 `font.*`、间距 `space.*`、版面度量 `layout.*`、圆角 `radius.*`、阴影 `shadow.*`、断点 `breakpoint.*`、动效 `duration.*` / `easing.*`。
 
 ## 目录
 
@@ -20,8 +20,8 @@
 
 ## 1. 设计原则
 
-1. **紧凑优先**：正文基准 13px，控件默认高度 32px，间距以 4pt 基线取小档位，信息密度面向桌面生产力应用，而非移动端营销页。
-2. **现代中性**：大面积中性灰白底 + 单一品牌蓝作为强调色；圆角中等（6px 为主），阴影轻而低，避免厚重拟物。
+1. **紧凑优先**：正文基准 13px，控件默认高度 28px，间距以 4pt 基线取小档位，信息密度面向桌面生产力应用，而非移动端营销页。
+2. **现代中性**：大面积中性灰白底 + 单一品牌蓝作为强调色；圆角中等（8px 为主），阴影轻而低，避免厚重拟物。
 3. **主题一致**：一切视觉数值来自令牌，禁止在代码中硬编码颜色 / 尺寸；亮、暗两套主题由同一份 QSS 模板参数化生成，切换主题后任意控件无需重写绘制逻辑。
 4. **原生可实现性**：能用「Qt 原生控件子类化 + 动态属性 + 全局 QSS」表达的，绝不自绘；必须自绘的（开关、评分、时间轴等）在 `paintEvent` 中实时调用 `T()` 取色，并连接 `theme_changed` 信号触发 `update()`，保证主题切换即时生效。
 5. **状态完备**：hover / pressed / disabled / focus / error / loading 六类状态每个交互控件都必须有可见表达，禁用态文字统一使用 `text.disabled`。
@@ -32,12 +32,14 @@
 
 | 令牌键（`T()` 参数） | 亮色 | 暗色 | 用途 |
 |---|---|---|---|
-| `color.bg.base` | `#FFFFFF` | `#15181E` | 窗口 / 页面基底背景 |
-| `color.bg.subtle` | `#F6F7F9` | `#1B1F27` | 次背景：表头、斑马纹、状态栏 |
+| `color.bg.canvas` | `#F6F7F9` | `#15181E` | 画布：页面底色，卡片浮于其上形成层次 |
+| `color.bg.base` | `#FFFFFF` | `#1B1F27` | 面：卡片 / 输入框 / 表格底 |
+| `color.bg.subtle` | `#F6F7F9` | `#1F242E` | 次背景：表头、代码块、状态栏 |
 | `color.bg.muted` | `#EFF1F5` | `#232936` | 填充背景：hover 底色、禁用底、滑轨 |
-| `color.bg.elevated` | `#FFFFFF` | `#1F242E` | 抬升面：卡片、输入框、菜单、弹层 |
+| `color.bg.elevated` | `#FFFFFF` | `#1F242E` | 抬升面：菜单、弹窗、下拉浮层 |
 | `color.border` | `#E3E6EB` | `#2C333F` | 常规边框 / 分割线 |
 | `color.border.strong` | `#C9CFD8` | `#3D4654` | 强调边框：hover 边框、滚动条 |
+| `color.border.subtle` | `#EEF0F4` | `#21262F` | 弱分割：代码块边框、表头列分隔 |
 | `color.text.primary` | `#1C2330` | `#E7EAF0` | 主要文字 |
 | `color.text.secondary` | `#59636F` | `#A6AEBB` | 次要文字、表头、说明 |
 | `color.text.tertiary` | `#98A0AC` | `#6E7684` | 占位符、辅助提示 |
@@ -51,6 +53,7 @@
 | `color.success.hover` | `#34684F` | `#55D0A0` | 成功 hover |
 | `color.success.subtle` | `#E9F2EC` | `#22362D` | 成功浅底 |
 | `color.warning` | `#C08A3E` | `#D2A668` | 警告 |
+| `color.warning.hover` | `#A97634` | `#E2BC85` | 警告 hover |
 | `color.warning.subtle` | `#F7F0E3` | `#3A3226` | 警告浅底 |
 | `color.danger` | `#B25050` | `#CD7A7A` | 危险 / 错误 |
 | `color.danger.hover` | `#9A4444` | `#F07878` | 危险 hover |
@@ -85,24 +88,27 @@
 
 ### 2.4 对比度说明
 
-按 WCAG 2.x 相对亮度公式计算（亮色基底取 `bg.base=#FFFFFF`，暗色基底取 `bg.base=#15181E`）：
+按 WCAG 2.x 相对亮度公式计算（亮色基底取 `bg.base=#FFFFFF`，暗色基底取 `bg.base=#1B1F27`）：
 
 | 色彩对 | 亮色对比度 | 暗色对比度 | 评级 |
 |---|---|---|---|
-| text.primary / bg.base | 15.76:1 | 14.75:1 | AAA（正文） |
-| text.secondary / bg.base | 6.11:1 | 7.95:1 | AA（正文） |
-| text.tertiary / bg.base | 2.64:1 | 3.88:1 | 仅用于占位 / 辅助信息，不承载关键内容 |
-| on.primary / primary | 6.58:1 | 6.05:1 | AA（正文 / 按钮文字） |
-| primary / bg.base | 6.58:1 | 6.05:1 | AA（链接、图标） |
-| success / bg.base | 4.82:1 | 6.49:1 | AA（正文 / 状态图标） |
-| danger / bg.base | 5.05:1 | 5.64:1 | AA（正文级） |
-| warning / bg.base | 3.02:1 | 7.95:1 | 亮模式 AA（大字号 / 图标），不作小字正文；暗模式 AA（正文） |
+| text.primary / bg.base | 15.76:1 | 13.70:1 | AAA（正文） |
+| text.secondary / bg.base | 6.11:1 | 7.39:1 | AA（正文） |
+| text.tertiary / bg.base | 2.64:1 | 3.61:1 | 仅用于占位 / 辅助信息，不承载关键内容 |
+| on.primary / primary | 6.58:1 | 6.05:1 | AA（按钮文字） |
+| primary / bg.base | 6.58:1 | 5.62:1 | AA（链接、图标） |
+| success / bg.base | 4.82:1 | 6.03:1 | AA（正文 / 状态图标） |
+| danger / bg.base | 5.05:1 | 5.24:1 | AA（正文级） |
+| warning / bg.base | 3.02:1 | 7.39:1 | **亮色未达 AA**，仅用于图标 / 大号文字 / 状态块 |
 
-结论：正文一律使用 `text.primary` / `text.secondary`；`text.tertiary` 与亮模式 `warning` 不用于 13px 以下关键文字；暗模式下各语义色均经过提亮处理，对比度普遍高于亮模式。
+结论：除亮色 `warning`（3.02:1，旧配色遗留短板，仅作图标与状态块用途、不承载正文）外，
+语义色在亮 / 暗两套主题下均达到 AA（≥4.5:1）。正文一律使用 `text.primary` / `text.secondary`；
+`text.tertiary` 仅用于占位 / 辅助信息。`primary.subtle` 作为选中底时，其上的 `text.primary`
+对比度为 13.66:1（亮）/ 10.64:1（暗），同样安全。
 
 ### 2.5 暗色模式策略
 
-1. **面层级提升**：暗色不是亮色的简单反相。`bg.base` 最深（#15181E），`subtle → muted → elevated` 逐层变亮，弹层 / 卡片用更亮的 `bg.elevated`（#1F242E）浮于基底之上，用「更亮」代替「白色」表达高度。
+1. **面层级提升**：暗色不是亮色的简单反相。`bg.canvas` 最深（#15181E，页面底），`bg.base`（#1B1F27）为卡片 / 输入框面，`subtle → muted → elevated` 逐层变亮，弹层用更亮的 `bg.elevated`（#1F242E）浮于卡片之上，用「更亮」代替「白色」表达高度。
 2. **主色提亮**：`primary` 由 #3F5E8C 提为 #7C98C4，`hover / pressed` 相应向更亮方向偏移（暗模式下越按越亮，与亮模式「越按越深」方向相反，但视觉重量一致）；`on.primary` 由 #FFFFFF 反转为深底 #15181E（暗模式下主色是浅色底，需深色文字保对比度）。
 3. **阴影 alpha 调整**：暗色下阴影颜色改为纯黑 RGB=(0,0,0)，alpha 由 15%/25%/36% 提高到 40%/55%/70%，弥补深色背景下阴影可见性的下降。
 4. **遮罩加深**：overlay 由 45% 深灰蓝改为 55% 纯黑。
@@ -157,14 +163,14 @@
 | 输入框 sm / md / lg | 12 / 13 / 14 | QLineEdit / ComboBox / SpinBox 同规格 |
 | 表格 / 树 / 列表 | 13 | 表头 13 + semibold |
 | QToolTip | 12 | `font.sm` |
-| QGroupBox 标题 | 13 + bold | 全局 QSS 定义 |
+| QGroupBox 标题 | 15 + semibold | 全局 QSS 定义（`font.title.sm`） |
 | 菜单项 / 下拉项 | 13 | 与正文一致 |
 | Statistic 数值 | 24 | `font.display` |
 | 页头标题 / 副标题 | 20 / 13 | `font.title.lg` / `font.md` |
 
 ## 4. 间距
 
-### 4.1 4pt 基线与 12 档间距表
+### 4.1 4pt 基线与 13 档间距表
 
 所有间距均为 4 的倍数（仅 `space.05=2` 用于微调），单位 px：
 
@@ -178,35 +184,82 @@
 | `space.4` | 16 | 卡片内边距、md 按钮水平 padding、弹层内边距 |
 | `space.5` | 20 | lg 按钮水平 padding、卡片组间距 |
 | `space.6` | 24 | 区块间距、页面小节间距 |
+| `space.7` | 28 | 与 md 输入控件同高的纵向节奏 |
 | `space.8` | 32 | 大区块间距、页面级留白 |
 | `space.10` | 40 | 页面段落间距 |
 | `space.12` | 48 | 英雄区上下留白 |
 | `space.16` | 64 | 页面级大留白、空状态上下边距 |
 
-### 4.2 常见模式
+### 4.2 版面度量令牌（`layout.*`）
+
+间距刻度解决「元素之间隔多远」，**版面度量**解决「这一类东西固定用多大」。
+后者若散落成各处魔数，页面之间的对齐关系就会悄悄漂移——同一个左边距在 A 页
+13px、B 页 12px，肉眼看是齐的，换个缩放或换一页就露馅。因此把它们收成
+单一事实来源，页面骨架一律引用令牌而不写字面量。
+
+| 令牌键 | 数值(px) | 含义 |
+|---|---|---|
+| `layout.page.pad` | 16 | 页面内容区四边内边距（四边同值，保证左右严格对称） |
+| `layout.gutter` | 12 | 相邻分区卡片之间的垂直间距 |
+| `layout.card.pad_x` | 12 | 卡片左 / 右内边距 |
+| `layout.card.pad_top` | 8 | 卡片上内边距（比左右紧，补偿标题行高后视觉等距） |
+| `layout.card.pad_bottom` | 12 | 卡片下内边距 |
+| `layout.card.gap` | 8 | 卡片标题区与内容区的间距 |
+| `layout.card.title_gap` | 2 | 卡片标题与其下副标题的间距 |
+| `layout.inset.pad_x` / `pad_y` | 8 / 6 | 紧贴型内边距（内嵌面板） |
+| `layout.code.pad` | 8 | 代码块内容边距 |
+| `layout.inline.gap` | 8 | 同一行并列控件间距（`row()` / `col()` 默认） |
+| `layout.field.gap` | 8 | 标签 → 控件的间距 |
+| `layout.icon.gap` | 6 | 图标与相邻文字的间距 |
+| `layout.header.gap` | 8 | 页头内部标题与说明的间距 |
+| `layout.nav.pad_x` | 10 | 侧栏导航项左 / 右内边距 |
+| `layout.nav.row_h` | 30 | 侧栏导航项行高 |
+| `layout.sidebar.w` | 248 | 侧栏宽度 |
+| `layout.topbar.h` | 56 | 顶栏高度 |
+
+### 4.3 对齐基准
+
+| 基准 | 规则 |
+|---|---|
+| 页面左缘 | 所有分区卡片、页头标题的左缘统一 = 侧栏宽 + `layout.page.pad` |
+| 卡片内容左缘 | 卡片标题与卡片内所有内容共用 = 页面左缘 + `layout.card.pad_x` |
+| 独立区块（用法 / 代码） | 左右各缩进 `layout.card.pad_x`，使其与卡片内容**左右两缘都对齐** |
+| 导航项文本左缘 | `nav.pad_x` + 图标边长 + `icon.gap`，hover / 选中 / 默认三态共用，切换不横向跳动 |
+| 居中 | 仅用于「动作按钮」等独立控件行；分区标题一律左对齐，避免多基准并存 |
+
+### 4.4 硬规则：2px 基网格
+
+**间距一律取偶数像素**（主节奏 4px，2px 为半档用于极紧贴场景）。奇数间距
+会让相邻元素在中点对不齐，是版面「看着差不多但就是不正」的主要来源。
+`tools/check_spacing.py` 会扫描全部 QSS 与 Python，把奇数间距和页面骨架里的
+字面量边距判为违规，可作为提交前置检查。
+
+### 4.5 常见模式
 
 | 模式 | 取值 | 说明 |
 |---|---|---|
-| 卡片内边距 | 16（`space.4`） | Card / Alert / Popover 的内容边距 |
-| 区块间距 | 24（`space.6`） | 页面内两个 Card / GroupBox 之间 |
-| 表单项间距 | 12（`space.3`） | FormLayout 行间距 |
-| 表单标签与控件 | 8（`space.2`） | 水平表单标签右间距 |
-| 按钮组间距 | 8（`space.2`） | 对话框按钮区、工具栏按钮 |
-| 页面边距 | 16 ~ 24 | 窗口内容外边距 |
-| 标题与正文 | 8（`space.2`） | 卡片标题与内容之间 |
-| 图标与文字 | 4 ~ 8 | 按钮内、菜单项内 |
+| 卡片内边距 | 12 / 8 / 12 / 12（`layout.card.*`） | 分区卡片内容边距 |
+| 区块间距 | 12（`layout.gutter`） | 页面内两个分区之间 |
+| 表单项间距 | 8（`layout.inline.gap`） | `row()` / `col()` 默认 |
+| 表单标签与控件 | 8（`layout.field.gap`） | 水平表单标签右间距 |
+| 按钮组间距 | 8（`layout.inline.gap`） | 对话框按钮区、工具栏按钮 |
+| 页面边距 | 16（`layout.page.pad`） | 窗口内容外边距，四边同值 |
+| 标题与正文 | 8（`layout.card.gap`） | 卡片标题与内容之间 |
+| 图标与文字 | 6（`layout.icon.gap`） | 按钮内、菜单项内、导航项内 |
 
 ## 5. 圆角
 
 | 令牌键 | 数值(px) | 适用控件 |
 |---|---|---|
 | `radius.sm` | 4 | 小元素：复选框、菜单项、标签、进度条、QToolTip |
-| `radius.md` | 6 | 主力圆角：按钮、输入框、下拉框、卡片边框、表格、分组框 |
-| `radius.lg` | 8 | 弹层：菜单、下拉面板、Popover、抽屉头部 |
-| `radius.xl` | 12 | 大型容器：对话框、抽屉面板、结果页插画底 |
+| `radius.md` | 8 | 主力圆角：按钮、输入框、下拉框、代码块、表格、导航项 |
+| `radius.lg` | 12 | 卡片 / 弹层：分区卡片、菜单、下拉面板、Popover、抽屉头部 |
+| `radius.xl` | 16 | 大型容器：对话框、抽屉面板、结果页插画底 |
 | `radius.pill` | 999 | 胶囊 / 正圆：round 与 circle 形状按钮、徽标、头像、开关 |
 
-说明：QSS 中 `shape="round"` / `shape="circle"` 选择器按档位输出 12 / 16 / 20px 半径（对应 sm/md/lg 的半高），视觉等同 pill。
+圆角整体较初版上调（md 6→8、lg 8→12、xl 12→16）：更大的圆角配合更宽的留白与更浅的边框，是当前主流设计语言中「柔和但不幼稚」的关键参数。
+
+说明：QSS 中 `shape="round"` / `shape="circle"` 选择器按**内容盒**半高输出 10 / 13 / 16px 半径（sm/md/lg 内容盒 20/26/32 的一半），视觉等同 pill。Qt 的 `border-radius` 以内容盒为参照，超过内容盒半高会整块退回方角；不要按总高 22/28/34 取 11/14/17px。
 
 ## 6. 阴影
 
@@ -327,15 +380,15 @@
 
 | 档位 | 总高(px) | 字号 | 水平 padding | 适用场景 |
 |---|---|---|---|---|
-| sm | 24 | 12 | 8 | 紧凑表格工具栏、密集表单 |
-| md | 32 | 13 | 12 ~ 16 | 默认档，绝大多数场景 |
-| lg | 40 | 14 | 20 | 登录页、主操作区、营销页 |
+| sm | 22 | 12 | 8 | 紧凑表格工具栏、密集表单 |
+| md | 28 | 13 | 12 ~ 16 | 默认档，绝大多数场景 |
+| lg | 34 | 14 | 20 | 登录页、主操作区、营销页 |
 
 实现细节（theme.py 中的口径）：
 
-- QSS 盒模型为内容盒：`min-height/max-height = 总高 - 2*边框(1px)`，按钮与输入框内容盒为 22 / 30 / 38。
-- `QAbstractSpinBox` 系列（SpinBox / DateEdit / TimeEdit）在 Fusion 样式下额外增高 3px，QSS 对其使用 19 / 27 / 35 的内容盒口径对齐总高。
-- Switch 仅 sm / md 两档（32x16 / 44x22 滑轨）；Avatar 提供 sm/md/lg（24/32/40）及像素自定义；Spinner 按 sm/md/lg 对应 16/24/32。
+- QSS 盒模型为内容盒：`min-height/max-height = 总高 - 2*边框(1px)`，按钮与输入框内容盒为 20 / 26 / 32。
+- `QAbstractSpinBox` 系列（SpinBox / DateEdit / TimeEdit）与一般输入同口径，内容盒同为 20 / 26 / 32，不再单独做 +3px 补偿。
+- Switch 提供 sm / md / lg 三档（40×22 / 52×28 / 64×34 滑轨）；Avatar 提供 sm/md/lg（22/28/34）及像素自定义；Spinner 按 sm/md/lg 对应 16/24/32。
 - 尺寸一律通过 `set_property(widget, "size", "sm"/"md"/"lg")` 或组件构造参数 `size=` 设置，内部自动映射 `uiksize` 动态属性（原因见 §11.3）。
 
 ## 11. QSS 约定
@@ -349,7 +402,7 @@ QPushButton[variant="primary"] { ... }
 QPushButton[uiksize="sm"] { ... }
 QPushButton[shape="circle"] { ... }
 QLineEdit[error="true"] { border-color: #B25050; }
-QProgressBar[status="success"]::chunk { ... }
+QLabel[role="secondary"] { color: #59636F; }
 ```
 
 使用规则：

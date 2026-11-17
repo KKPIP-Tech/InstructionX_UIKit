@@ -10,7 +10,8 @@ from PySide6.QtCore import Qt, QVariantAnimation, QPointF, QRectF
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPen
 from PySide6.QtWidgets import QPushButton, QSizePolicy, QStyle, QStyleOptionButton, QStylePainter
 
-from ..theme import T, ThemeManager, set_property
+from .._draw import draw_arc
+from ..theme import T, ThemeManager, _INPUT_HEIGHTS, set_property
 from ..tokens import DURATION, EASING
 from ._mixin import SizeMixin
 
@@ -19,8 +20,11 @@ __all__ = ["Button"]
 #: 合法变体
 _VARIANTS = ("default", "primary", "dashed", "text", "link", "danger")
 _SHAPES = ("circle", "round")
-#: 旋转弧直径（按尺寸档）
-_ARC_D = {"sm": 12, "md": 14, "lg": 16}
+#: 旋转弧直径（px）：约为该档控件高度的 0.55，与控件同源推导，
+#: 保证 loading 弧在三档下的视觉重量一致（原表 12/14/16 与密度刻度脱节）。
+_ARC_D = {k: int(v * 0.55) for k, v in _INPUT_HEIGHTS.items()}
+#: 弧与文字之间的间距：图标 ↔ 文字同源（layout.icon.gap）
+_ARC_GAP = int(T("layout.icon.gap"))
 
 
 class Button(SizeMixin, QPushButton):
@@ -33,7 +37,7 @@ class Button(SizeMixin, QPushButton):
     参数:
         text: 按钮文案。
         variant: ``default`` / ``primary`` / ``dashed`` / ``text`` / ``link`` / ``danger``。
-        size: ``sm`` / ``md`` / ``lg``，高度 24 / 32 / 40。
+        size: ``sm`` / ``md`` / ``lg``，高度 22 / 28 / 34。
         shape: ``None`` / ``"circle"`` / ``"round"``。
         block: 为 True 时水平方向撑满父布局。
         loading: 初始是否为加载中状态。
@@ -148,9 +152,9 @@ class Button(SizeMixin, QPushButton):
     def sizeHint(self):
         hint = super().sizeHint()
         if self._loading:
-            # 为旋转弧预留宽度
-            d = _ARC_D.get(self.size_name(), 14)
-            hint.setWidth(hint.width() + d + 6)
+            # 为旋转弧预留宽度（弧直径 + 弧与文字的间距，同绘制口径）
+            d = _ARC_D.get(self.size_name(), _ARC_D["md"])
+            hint.setWidth(hint.width() + d + _ARC_GAP)
         return hint
 
     def _content_color(self) -> QColor:
@@ -220,8 +224,8 @@ class Button(SizeMixin, QPushButton):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         color = self._content_color()
-        d = _ARC_D.get(self.size_name(), 14)
-        gap = 6
+        d = _ARC_D.get(self.size_name(), _ARC_D["md"])
+        gap = _ARC_GAP
         text_w = p.fontMetrics().horizontalAdvance(self.text())
         total = d + gap + text_w
         x0 = (self.width() - total) / 2.0
@@ -232,9 +236,16 @@ class Button(SizeMixin, QPushButton):
         pen.setCapStyle(Qt.RoundCap)
         p.setPen(pen)
         arc_rect = QRectF(x0, cy - d / 2.0, d, d)
-        p.drawArc(arc_rect, int(self._angle * 16), 270 * 16)
-        # 文本
+        draw_arc(p, arc_rect, self._angle, 270.0)
+        # 文本：左缘对齐到「弧的右缘 + 间距」，垂直方向按墨迹盒对齐到
+        # 与弧同一条中心线（契约 §3 图标与文字共线）。
+        # drawText 的锚点是 (left, baseline)：水平方向要减去墨迹盒的**左
+        # 缘** ink.x()（若误用 ink.center().x() 会左移半个字宽，弧会压
+        # 到文字上）；垂直方向要减去墨迹盒中心 ink.center().y()，这样
+        # 「弧 + 文字」不会因字体行高空白而整体下沉半个像素。
         p.setPen(color)
-        text_rect = QRectF(x0 + d + gap, 0, text_w + 2, self.height())
-        p.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, self.text())
+        ink = QFontMetricsF(p.font()).tightBoundingRect(self.text())
+        p.drawText(QPointF(x0 + d + gap - ink.x(),
+                           cy - ink.center().y()),
+                   self.text())
         p.end()

@@ -146,14 +146,14 @@ class NodeWidget(QFrame):
         self._spinner = None
         self._pulse = 0.0
         self._body_h = 0.0
-        # 外观位图缓存（GL 视口代理绘制用；仅 GL 模式生效）
+        # 外观位图缓存（RHI 视口代理绘制用；仅 RHI 模式生效）
         self._cache_pm = None
         self._cache_scale = 0.0
         self._cache_dirty = True
         # 布局版本与引脚逻辑坐标缓存（_relayout 重建；边端点几何键使用）
         self._layout_rev = 0
         self._pin_offsets = {}
-        # GL 位图代理状态缓存（_relayout 重算；见 uses_proxy）
+        # RHI 位图代理状态缓存（_relayout 重算；见 uses_proxy）
         self._proxy_state = False
         # 视图手势（平移 / 滚轮缩放）临时位图代理标记：带可见自定义体的
         # 节点手势期间也切换为位图代理（见 begin_gesture_proxy）
@@ -331,20 +331,19 @@ class NodeWidget(QFrame):
         self.update()
 
     # ------------------------------------------------------------------
-    # GL 代理绘制（位图缓存）
+    # RHI 代理绘制（位图缓存）
     # ------------------------------------------------------------------
     def uses_proxy(self) -> bool:
-        """当前是否由 GL 视口以位图缓存代理绘制。
+        """当前是否由 RHI 视口以位图缓存代理绘制。
 
         条件（满足其一）：
 
         - 常规代理（``_proxy_state``）：父控件是支持代理的视口
-          （``supports_node_proxy``，即 ``_GLViewport``），且自定义体
+          （``supports_node_proxy``，即 ``_RhiViewport``），且自定义体
           当前不可见；
         - 手势代理（``_gesture_proxy``）：视图手势（平移 / 滚轮缩放）
           期间由 ``begin_gesture_proxy`` 临时开启，带可见自定义体的
-          节点也切换为位图代理，避免逐帧真实子控件落位 + 重绘叠加在
-          GL 视口上的高额合成开销。
+          节点也切换为位图代理，避免逐帧真实子控件落位与纹理上传。
 
         常规代理结果为 ``_relayout`` 时重算的缓存（体可见性翻转必然
         伴随 ``_relayout``，见 ``apply_view``），高频调用零开销。
@@ -543,7 +542,7 @@ class NodeWidget(QFrame):
     # ------------------------------------------------------------------
     def paintEvent(self, _event) -> None:
         if self.uses_proxy():
-            return  # GL 视口代理绘制：自身仅作交互容器（子控件照常工作）
+            return  # RHI 视口代理绘制：自身仅作交互容器（子控件照常工作）
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.TextAntialiasing)
@@ -554,7 +553,7 @@ class NodeWidget(QFrame):
     def _paint_content(self, p: QPainter) -> None:
         """节点外观全部内容（逻辑坐标；调用方已 scale 并开抗锯齿）。
 
-        供 ``paintEvent``（软件路径）与 ``_render_cache``（GL 位图缓存）
+        供 ``paintEvent``（软件路径）与 ``_render_cache``（RHI 位图缓存）
         两条路径共用，保证两种渲染模式下外观一致。
         """
         w, h = self.node.size.width(), self.node.size.height()

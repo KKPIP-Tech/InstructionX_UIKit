@@ -168,9 +168,9 @@ SINGLE_COLUMN = dict(
 SIDEBAR_NAV_ITEMS = (
     ("home", "首页"),
     ("component", "组件"),
-    ("chart", "图表"),
-    ("layout", "布局"),
-    ("animation", "动画"),
+    ("stats-report", "图表"),
+    ("view-grid", "布局"),
+    ("play", "动画"),
     ("settings", "设置"),
 )
 

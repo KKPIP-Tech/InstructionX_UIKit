@@ -4,12 +4,21 @@
 ``AutoComplete`` 继承 ``LineEdit``，基于 QCompleter + QStringListModel
 实现候选弹层；输入经防抖（延迟取 ``tokens.DURATION["normal"]``）后再过滤，
 避免逐键刷新造成的闪烁。
+
+本轮修复（轨道 2）：
+
+- **补齐尺寸档**：``AutoComplete`` 此前只能渲染 md 档（同页其它输入组件
+  都有 sm / md / lg），现把 ``size`` 透传给 ``LineEdit``，三档与输入框
+  同刻度（22 / 28 / 34），行内排版可直接对齐。
+- **弹层圆角归位**：补全弹层与下拉面板统一为 ``radius.lg``（契约 §4
+  浮层圆角），与 ``ComboBox`` / ``QMenu`` 一致。
 """
 
 from PySide6.QtCore import QStringListModel, Qt, QTimer
 from PySide6.QtWidgets import QCompleter
 
 from ..tokens import DURATION
+from .combo_box import popup_radius_qss
 from .line_edit import LineEdit
 
 __all__ = ["AutoComplete"]
@@ -25,6 +34,7 @@ class AutoComplete(LineEdit):
     参数:
         items: 候选字符串列表。
         placeholder: 占位提示。
+        size: ``sm`` / ``md`` / ``lg``，高度 22 / 28 / 34。
         delay: 防抖延迟（毫秒），默认 ``DURATION["normal"]``。
         parent: 父控件。
 
@@ -41,9 +51,9 @@ class AutoComplete(LineEdit):
         ``clear`` 不会过滤候选，需调用 :meth:`refresh` 立即刷新。
     """
 
-    def __init__(self, items=(), placeholder: str = "", delay: int = None,
-                 parent=None):
-        super().__init__(placeholder=placeholder, parent=parent)
+    def __init__(self, items=(), placeholder: str = "", size: str = "md",
+                 delay: int = None, parent=None):
+        super().__init__(placeholder=placeholder, size=size, parent=parent)
         self._all = [str(x) for x in items]
         self._delay = DURATION["normal"] if delay is None else int(delay)
         self._model = QStringListModel(self._all, self)
@@ -51,6 +61,7 @@ class AutoComplete(LineEdit):
         self._completer.setCaseSensitivity(Qt.CaseInsensitive)
         self._completer.setFilterMode(Qt.MatchContains)
         self._completer.setCompletionMode(QCompleter.PopupCompletion)
+        self._completer.popup().setStyleSheet(popup_radius_qss())
         self.setCompleter(self._completer)
         # 防抖定时器：停止输入 delay 毫秒后才真正过滤
         self._debounce = QTimer(self)

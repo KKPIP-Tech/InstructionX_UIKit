@@ -3,6 +3,16 @@
 
 内容页横向滑动切换（QPropertyAnimation 位移动画），带指示点、
 左右箭头与自动播放；悬停时暂停自动播放。
+
+密度与扁平化约定（与 COMPONENT-DESIGN-CONTRACT §1 / §4 对齐）：
+
+- **箭头按钮压到 md 档（28px）**：旧版 32px 自定义圆钮比同页其它
+  控件高一档，视觉上「浮」在内容上；尺寸改走 ``space.7`` 令牌，
+  与 md 档控件（28px）等高，页面上不再出现第五种按钮尺寸。
+- **导航元素只在多页时出现**，且不额外加框：箭头为半透明面色圆钮
+  （常态无边框，hover 才描边），指示点为小圆角条 / 圆点，
+  间距与边距全部取令牌。
+- 走马灯本体不加边框、不加投影——它是内容容器，装饰交给页面骨架。
 """
 
 from PySide6.QtCore import (
@@ -26,9 +36,29 @@ from InstructionX_UIKit.tokens import DURATION, EASING
 
 __all__ = ["Carousel"]
 
+#: 箭头按钮边长：md 档控件高度（space.7 = 28），与页面其它控件同密度
+_ARROW_BTN = T("space.7")
+#: 箭头距走马灯左右边缘的距离
+_ARROW_INSET = T("layout.card.pad_x")
+#: 当前项长条宽（= space.3 + space.1 = 16px），高与圆点同径
+_DOT_ACTIVE_W = T("space.3") + T("space.1")
+#: 圆点直径（= space.1 + space.05 = 6px），小徽标级
+_DOT_SIZE = T("space.1") + T("space.05")
+#: 槽位步进 = 长条宽 + 一个半档间距（保证长条与圆点之间也有呼吸）
+_DOT_PITCH = _DOT_ACTIVE_W + T("space.1")
+#: 指示条自身高度：圆点直径 + 上下各一个半档
+_DOT_BAR_H = _DOT_SIZE + 2 * T("space.05")
+#: 指示条左右留白（同时作为命中判定的起始偏移）
+_DOT_PAD_X = T("space.2")
+#: 指示条距走马灯底边的距离
+_DOT_INSET = T("layout.card.gap")
+#: 箭头图形半宽 / 半高（令牌化的小图标尺寸）
+_CHEVRON_RX = T("space.1")
+_CHEVRON_RY = T("space.1") + T("space.05")
+
 
 class _ArrowButton(QWidget):
-    """圆形自绘箭头按钮（左 / 右）。"""
+    """圆形自绘箭头按钮（左 / 右）：常态半透明面色、hover 才描边。"""
 
     clicked = Signal()
 
@@ -37,7 +67,7 @@ class _ArrowButton(QWidget):
         assert direction in ("left", "right")
         self._direction = direction
         self._hovered = False
-        self.setFixedSize(32, 32)
+        self.setFixedSize(_ARROW_BTN, _ARROW_BTN)
         self.setCursor(Qt.PointingHandCursor)
         self.setAttribute(Qt.WA_Hover)
         ThemeManager.instance().theme_changed.connect(self.update)
@@ -62,8 +92,11 @@ class _ArrowButton(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         rect = self.rect().adjusted(1, 1, -1, -1)
         bg = QColor(T("color.bg.elevated"))
+        # 常态半透明：内容透出一点，箭头不与页面内容抢视觉；
+        # hover 才实心 + 描边（先常后显的减法式装饰）
         bg.setAlpha(230 if self._hovered else 180)
-        painter.setPen(QPen(QColor(T("color.border"))))
+        painter.setPen(QPen(QColor(T("color.border"))) if self._hovered
+                       else QPen(Qt.NoPen))
         painter.setBrush(bg)
         painter.drawEllipse(rect)
         # 箭头
@@ -76,13 +109,13 @@ class _ArrowButton(QWidget):
         cx, cy = self.width() / 2, self.height() / 2
         path = QPainterPath()
         if self._direction == "left":
-            path.moveTo(cx + 3, cy - 6)
-            path.lineTo(cx - 3, cy)
-            path.lineTo(cx + 3, cy + 6)
+            path.moveTo(cx + _CHEVRON_RX, cy - _CHEVRON_RY)
+            path.lineTo(cx - _CHEVRON_RX, cy)
+            path.lineTo(cx + _CHEVRON_RX, cy + _CHEVRON_RY)
         else:
-            path.moveTo(cx - 3, cy - 6)
-            path.lineTo(cx + 3, cy)
-            path.lineTo(cx - 3, cy + 6)
+            path.moveTo(cx - _CHEVRON_RX, cy - _CHEVRON_RY)
+            path.lineTo(cx + _CHEVRON_RX, cy)
+            path.lineTo(cx - _CHEVRON_RX, cy + _CHEVRON_RY)
         painter.drawPath(path)
         painter.end()
 
@@ -96,13 +129,13 @@ class _DotsBar(QWidget):
         super().__init__(parent)
         self._count = 0
         self._current = 0
-        self.setFixedHeight(16)
+        self.setFixedHeight(_DOT_BAR_H)
         self.setCursor(Qt.PointingHandCursor)
         ThemeManager.instance().theme_changed.connect(self.update)
 
     def set_count(self, count: int) -> None:
         self._count = max(0, int(count))
-        self.setFixedWidth(self._count * 16 + 4)
+        self.setFixedWidth(self._count * _DOT_PITCH + 2 * _DOT_PAD_X)
         self.update()
 
     def set_current(self, index: int) -> None:
@@ -111,7 +144,7 @@ class _DotsBar(QWidget):
 
     def mousePressEvent(self, event) -> None:
         if self._count > 0:
-            index = int(event.position().x()) // 16
+            index = (int(event.position().x()) - _DOT_PAD_X) // _DOT_PITCH
             if 0 <= index < self._count:
                 self.clicked.emit(index)
         super().mousePressEvent(event)
@@ -122,13 +155,19 @@ class _DotsBar(QWidget):
         painter.setPen(Qt.NoPen)
         cy = self.height() / 2
         for i in range(self._count):
-            x = 4 + i * 16
+            x = _DOT_PAD_X + i * _DOT_PITCH
             if i == self._current:
+                # 当前项：长条（与圆点同径的胶囊），首尾左缘与槽位对齐
                 painter.setBrush(QColor(T("color.primary")))
-                painter.drawRoundedRect(QRect(x, cy - 3, 14, 6), 3, 3)
+                painter.drawRoundedRect(
+                    QRect(x, int(cy - _DOT_SIZE / 2), _DOT_ACTIVE_W, _DOT_SIZE),
+                    _DOT_SIZE / 2, _DOT_SIZE / 2)
             else:
+                # 非当前项：圆点在槽位内水平居中，切换时不会左右跳
                 painter.setBrush(QColor(T("color.border.strong")))
-                painter.drawEllipse(QRect(x + 3, cy - 3, 6, 6))
+                painter.drawEllipse(
+                    QRect(x + (_DOT_ACTIVE_W - _DOT_SIZE) // 2,
+                          int(cy - _DOT_SIZE / 2), _DOT_SIZE, _DOT_SIZE))
         painter.end()
 
 
@@ -359,10 +398,11 @@ class Carousel(QWidget):
     def _reposition_nav(self) -> None:
         """箭头与圆点跟随当前尺寸重新定位（resize 与 add_page 共用）。"""
         w, h = self.width(), self.height()
-        self._prev_btn.move(12, (h - self._prev_btn.height()) // 2)
-        self._next_btn.move(w - self._next_btn.width() - 12,
+        self._prev_btn.move(_ARROW_INSET, (h - self._prev_btn.height()) // 2)
+        self._next_btn.move(w - self._next_btn.width() - _ARROW_INSET,
                             (h - self._next_btn.height()) // 2)
-        self._dots.move((w - self._dots.width()) // 2, h - self._dots.height() - 8)
+        self._dots.move((w - self._dots.width()) // 2,
+                        h - self._dots.height() - _DOT_INSET)
 
     def sizeHint(self) -> QSize:
         return QSize(480, 240)

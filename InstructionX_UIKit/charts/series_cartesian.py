@@ -30,6 +30,7 @@ from PySide6.QtGui import (
     QPainter,
     QPainterPath,
     QPen,
+    QPolygonF,
 )
 
 from ..theme import T
@@ -37,11 +38,11 @@ from ._utils import dist_point_segment, to_float as _to_float, with_alpha
 from .axes import CalendarCoord, GridCoord, chart_font, format_value
 from .core import SeriesRenderer, parse_data_point, register_series
 from .data import NumericBuffer
-from .gl_series import GL_MAX_POINTS
 from .sampling import (
     bucket_count,
     column_aggregate,
     sample_entries,
+    sample_indices,
     sampling_options,
     visible_threshold,
 )
@@ -538,73 +539,6 @@ class PictorialBarSeriesRenderer(BarSeriesRenderer):
 # line 折线（完整版，覆盖 core 自检版）
 # ---------------------------------------------------------------------------
 
-def _can_gpu_vertices(data) -> bool:
-    """数据是否为可直传 GPU 的数值序列（抽样判别，覆盖首尾）。
-
-    含字典项 / 嵌套列表 / 非数值的序列不能用「下标作 x、值作 y」的简单形式
-    表达，交由采样路径处理。
-    """
-    if isinstance(data, NumericBuffer):
-        return True
-    if _np is not None and isinstance(data, _np.ndarray):
-        return data.ndim == 1
-    if not isinstance(data, (list, tuple)):
-        return False
-    n = len(data)
-    if n == 0:
-        return False
-    idxs = set(range(min(24, n)))
-    step = max(1, n // 16)
-    idxs.update(range(0, n, step))
-    idxs.update(range(max(0, n - 24), n))
-    for i in sorted(idxs):
-        v = data[i]
-        if v is None:
-            continue
-        if isinstance(v, numbers.Real) and not isinstance(v, bool):
-            continue
-        return False
-    return True
-
-
-def _to_data_vertices(data):
-    """数值序列 → ``float32 [n,2]`` 数据坐标顶点（x 为下标）。
-
-    含 ``None``（缺值）的序列返回 ``None``：直绘路径不做断点处理，
-    交由采样路径按段绘制。
-    """
-    if _np is None:
-        return None
-    n = len(data)
-    if n < 2:
-        return None
-    try:
-        raw = data.raw if isinstance(data, NumericBuffer) else data
-        ys = _np.asarray(raw, dtype=_np.float64)
-    except (TypeError, ValueError):
-        return None
-    if ys.ndim != 1 or ys.size != n:
-        return None
-    if bool(_np.isnan(ys).any()):
-        return None
-    out = _np.empty((n, 2), dtype=_np.float32)
-    out[:, 0] = _np.arange(n, dtype=_np.float32)
-    out[:, 1] = ys.astype(_np.float32)
-    return out
-
-
-def _has_own_x(data) -> bool:
-    """数据是否自带 x（``[x, y]`` 结构型序列）。"""
-    from .axes import _x_extent
-    return _x_extent(data) is not None
-
-
-def _own_x_extent(data):
-    """结构型数据的 x 区间；标量数据返回 ``None``。"""
-    from .axes import _x_extent
-    return _x_extent(data)
-
-
 def _pin_endpoints(entries, data, xs):
     """把数据首尾端点并入采样结果，并保持 x 升序。
 
@@ -643,7 +577,8 @@ class LineSeriesRenderer(SeriesRenderer):
     - ``areaStyle``: dict 或真值，面积填充（透明渐变），
       ``areaStyle.opacity`` 可调（默认 0.22）；
     - ``step``: "start" | "middle" | "end" 阶梯线；
-    - ``showSymbol``: 是否绘制数据点（默认 True）；
+    - ``showSymbol``: 是否绘制数据点（默认 True）；显式 ``"auto"`` 时超过
+      512 个可见点跳过符号，缺省与显式 True 的强制显示语义不变；
     - ``symbolSize``: 数据点直径 px（默认 6）；
     - ``lineStyle``: {"type": "solid|dashed|dotted", "width": px, "color": ...}；
     - 支持 grid / polar（闭合）/ singleAxis 坐标系；
@@ -655,83 +590,18 @@ class LineSeriesRenderer(SeriesRenderer):
         self._points = []        # [QPointF|None]
         self._prev_points = []   # 上一次布局的点（同长度时用于兜底插值）
         self._entries = []       # [(x, y)]
-        # GPU 直绘（CHART_SPEC §7.2）：开启时本系列不经 QPainter 绘制，改由
-        # GL 视口上传全分辨率顶点并用着色器变换。默认关闭——默认的采样路径
-        # 实测已达标（150 万点 5.0 ms / 198 fps），而全分辨率上传有一次性成本。
+        self._gpu_geometry = None
+        self._gpu_entries = None
+        # 保留 gpuDirect 选项的读取语义；渲染由平台 RHI 统一承载。
         self._gpu_direct = bool(opt.get("gpuDirect", False))
-        self._gpu_version = None
         #: 矢量映射首用自检状态（见 _map_sampled_fast 的护栏说明）
         self._fast_map_checked = False
         self._fast_map_disabled = False
+        self._last_symbol_count = 0
 
-    # -- GPU 直绘（供 GL 视口调用） ----------------------------------------
     @property
     def gpu_direct(self) -> bool:
         return self._gpu_direct
-
-    def gpu_vertex_data(self):
-        """返回 GPU 直绘所需的数据（无需 VBO 时返回 ``None``）。
-
-        ``None`` 的四种情形：未开启直绘、超出 GL 安全上限（见下）、数据形态
-        不适合（非数值序列）、数据不足两点。返回
-        ``{"vertices": float32[n,2], "version": ...}``，顶点为**数据坐标**
-        （着色器负责变换，故缩放/平移无需重算 CPU 侧坐标）。
-
-        **上限必须在这里执行**：``gl_series.GL_MAX_POINTS`` 的语义是「超过则
-        拒绝直绘」，但早期实现只在 ``set_vertices`` 的缓存上限处比对，方法本身
-        直接返回全量顶点——结果是 150 万点照旧上传 VBO。此时 QPainter 侧被
-        ``overload_limited`` 护栏挡下不画，而 GL 侧却把百万顶点交给驱动，最终
-        触发 TDR 复位杀进程（实测「切到全分辨率即卡死」）。拒绝直绘后由
-        ``overload_limited`` 给出提示文案，不再有任何路径把超长几何交给驱动。
-
-        ``version`` 只由**数据对象身份与长度**派生，**不得**在方法内改写任何
-        状态：版本每次调用都变会让 VBO 缓存永远失效、每帧重传（本方法曾被
-        写成自增计数器，实测导致「同版本上传被跳过」的断言失败）。
-        数据对象由 ``self.opt`` 长期持有，故 ``id`` 在渲染器生命周期内稳定。
-        """
-        if not self._gpu_direct:
-            return None
-        data = self.data_view()
-        try:
-            n = len(data)
-        except TypeError:
-            return None
-        if n < 2 or n > GL_MAX_POINTS or not _can_gpu_vertices(data):
-            return None
-        verts = _to_data_vertices(data)
-        if verts is None:
-            return None
-        return {"vertices": verts, "version": (id(data), n)}
-
-    def gpu_transform(self, coord):
-        """GPU 直绘的坐标变换参数（数据坐标区间 → 绘图区像素）。
-
-        返回 ``(x0, x1, y0, y1, plot)``；``None`` 表示当前坐标系不支持
-        （如 polar/singleAxis 的 x 语义不同）。
-        """
-        if not self._gpu_direct or coord is None:
-            return None
-        if not isinstance(coord, GridCoord):
-            return None
-        x_axis = getattr(coord, "x_axis", None)
-        y_axis = getattr(coord, "y_axis", None)
-        if x_axis is None or y_axis is None:
-            return None
-        data = self.data_view()
-        n = len(data)
-        if n < 2:
-            return None
-        if str(getattr(x_axis, "type", "")) == "category" or not _has_own_x(data):
-            x0, x1 = 0.0, float(n - 1)
-        else:
-            xext = _own_x_extent(data)
-            if xext is None:
-                return None
-            x0, x1 = xext
-        y0, y1 = float(y_axis.vmin), float(y_axis.vmax)
-        if x1 <= x0 or y1 <= y0:
-            return None
-        return (x0, x1, y0, y1, coord.plot)
 
     def _line_viewport_px(self, coord, rect):
         """采样阈值所用的视口像素宽（优先绘图区宽度）。
@@ -828,15 +698,66 @@ class LineSeriesRenderer(SeriesRenderer):
         # 曲线两端会凭空少一截。折线采样必须钉住端点。
         return _pin_endpoints(entries, self.data_view(), xs)
 
+    def _numeric_arrays(self, coord, rect):
+        if _np is None or not isinstance(coord, GridCoord):
+            return None
+        if coord.x_axis.type != "value" or coord.y_axis.type != "value":
+            return None
+        data = self.data_view()
+        if not isinstance(data, NumericBuffer) or not isinstance(data.raw, _np.ndarray):
+            return None
+        options = sampling_options(self.opt)
+        viewport_px = self._line_viewport_px(coord, rect)
+        if not options.enabled or not viewport_px:
+            return None
+        threshold = visible_threshold(viewport_px, options.safety)
+        if threshold < 2 or len(data) <= threshold:
+            return None
+        raw = _np.asarray(data.raw, dtype=_np.float64)
+        if raw.ndim != 1:
+            return None
+        indices = sample_indices(raw, bucket_count(viewport_px))
+        mapped = self._map_sampled_fast(coord, indices, raw[indices], as_points=False)
+        if mapped is None:
+            return None
+        return indices, raw[indices], mapped
+
+    def _numeric_layout(self, coord, rect):
+        arrays = self._numeric_arrays(coord, rect)
+        if arrays is None:
+            return None
+        indices, values, (px, py) = arrays
+        self._points = [QPointF(float(x), float(y)) for x, y in zip(px, py)]
+        self._entries = list(zip(indices.astype(_np.float64).tolist(), values.tolist()))
+        return self._points
+
+    def _ensure_legacy_geometry(self):
+        geometry = self._gpu_geometry
+        if geometry is None:
+            return
+        indices, values = self._gpu_entries
+        self._points = [QPointF(float(x), float(y)) for x, y in zip(*geometry)]
+        self._entries = list(zip(indices.astype(_np.float64).tolist(), values.tolist()))
+        self._gpu_geometry = None
+        self._gpu_entries = None
+
     # -- 布局 -------------------------------------------------------------
     def layout(self, rect: QRectF) -> None:
+        gpu_layout = getattr(getattr(self.chart, "_viewport", None), "layout_line", None)
+        if gpu_layout is not None and gpu_layout(self, rect):
+            return
         coord = self.chart.coord_for(self.opt)
+        self._ensure_legacy_geometry()
         self._prev_points = list(self._points)
         self._points = []
         self._entries = []
+        self._gpu_geometry = None
+        self._gpu_entries = None
         if coord is None:
             return
         single = getattr(coord, "kind", "") == "singleAxis"
+        if not single and self._numeric_layout(coord, rect) is not None:
+            return
         # 运行时降采样（§8.2 保真承诺）：可见点数超过视口像素量级时才启用。
         # 阈值用**绘图区像素宽**（GridCoord.plot.width）而非坐标区宽：两者
         # 相差左右边距（实测 480 的坐标区里绘图区只有 408），用坐标区宽会
@@ -871,20 +792,20 @@ class LineSeriesRenderer(SeriesRenderer):
             except Exception:
                 self._points.append(None)
 
-    def _map_sampled_fast(self, coord, xs, ys):
+    def _map_sampled_fast(self, coord, xs, ys, as_points=True):
         """采样点 → 屏幕坐标的**向量化**映射；不适用时返回 ``None``。
 
         逐点调 ``coord.map_point`` 每个点约 2.3 µs（实测 818 点 1.9 ms），
-        在「多图同帧更新」场景下是主要开销之一。两条轴都是数值轴时映射是
-        仿射的，可用 numpy 一次算完。
+        在「多图同帧更新」场景下是主要开销之一。数值轴使用仿射映射，
+        category 轴使用与其 ``AxisModel.map`` 完全相同的 band 中心语义，
+        两者均可用 numpy 一次算完。日历坐标等语义不同的路径不走此分支。
 
         必须保持与 ``AxisModel.map`` 完全一致的数值语义：
 
         - 非有限值走 ``axis.map`` 的中性分支（横向取区间中点、纵向取下界）；
-        - 线性映射后按 **int() 截断**（向零取整），与 QPointF 的整数坐标一致。
-
-        category 轴（x 为类别下标）、日历坐标等不走此路径——它们的 x 语义
-        与线性映射不同。
+        - 映射结果保持浮点，不做 ``trunc``，与 ``QPointF`` 的坐标一致；
+        - category 数字下标先按 ``int()`` 向零截断，再减 dataZoom 窗口偏移；
+          空类目使用隐式下标范围计算 band，不能取 ``max(1, 0)``。
         """
         if _np is None or coord is None:
             return None
@@ -894,11 +815,12 @@ class LineSeriesRenderer(SeriesRenderer):
         y_axis = getattr(coord, "y_axis", None)
         if x_axis is None or y_axis is None:
             return None
-        if str(getattr(x_axis, "type", "")) != "value" \
+        x_type = str(getattr(x_axis, "type", ""))
+        if x_type not in ("value", "category") \
                 or str(getattr(y_axis, "type", "")) != "value":
             return None
         plot = getattr(coord, "plot", None)
-        if plot is None or not xs:
+        if plot is None or len(xs) == 0:
             return None
         try:
             ax = _np.asarray(xs, dtype=_np.float64)
@@ -909,15 +831,26 @@ class LineSeriesRenderer(SeriesRenderer):
             ymax = float(y_axis.vmax)
         except (TypeError, ValueError):
             return None
-        if not (vmax > vmin) or not (ymax > ymin):
+        if not (ymax > ymin):
             return None
         left, right = plot.left(), plot.right()
         bottom, top = plot.bottom(), plot.top()
         okx = _np.isfinite(ax)
         oky = _np.isfinite(ay)
-        px = _np.where(okx,
-                       (ax - vmin) / (vmax - vmin) * (right - left) + left,
-                       (left + right) / 2.0)
+        if x_type == "category":
+            if not bool(_np.all(okx)):
+                return None
+            indices = _np.trunc(ax) - float(x_axis.window_offset())
+            bands = len(x_axis.categories) if x_axis.categories else vmax - vmin
+            if bands <= 1e-9:
+                return None
+            px = (right - left) / bands * (indices + 0.5) + left
+        else:
+            if not (vmax > vmin):
+                return None
+            px = _np.where(okx,
+                           (ax - vmin) / (vmax - vmin) * (right - left) + left,
+                           (left + right) / 2.0)
         py = _np.where(oky,
                        (ay - ymin) / (ymax - ymin) * (top - bottom) + bottom,
                        bottom)
@@ -932,6 +865,8 @@ class LineSeriesRenderer(SeriesRenderer):
                 return None
         if self._fast_map_disabled:
             return None
+        if not as_points:
+            return px, py
         return [QPointF(float(a), float(b)) for a, b in zip(px, py)]
 
     def _fast_map_matches(self, coord, ax, ay, px, py) -> bool:
@@ -952,7 +887,12 @@ class LineSeriesRenderer(SeriesRenderer):
 
     def _animated_points(self, anim_t):
         """旧→新插值：长度一致时逐点 lerp；否则返回当前点列。"""
+        self._ensure_legacy_geometry()
         cur = self._points
+        if anim_t >= 1.0 or not self.chart.anim.is_running():
+            return cur
+        if self.prev_data is not None and len(self.prev_data) != len(self._entries):
+            return cur
         prev_src = self._prev_points
         if self.prev_data is not None and len(self.prev_data) == len(self._entries):
             coord = self.chart.coord_for(self.opt)
@@ -1017,10 +957,32 @@ class LineSeriesRenderer(SeriesRenderer):
             return ax.map(v, coord.plot.bottom(), coord.plot.top())
         return None
 
+    def _line_needs_path(self, polar):
+        return bool(
+            polar
+            or self.opt.get("smooth")
+            or str(self.opt.get("step") or "") in ("start", "middle", "end")
+            or self.opt.get("areaStyle")
+        )
+
+    def _draw_symbols(self, painter, valid, color, anim_t):
+        setting = self.opt.get("showSymbol", True)
+        enabled = len(valid) <= 512 if setting == "auto" else bool(setting)
+        if not enabled:
+            return 0
+        radius = max(1.0, _to_float(self.opt.get("symbolSize"), 6.0) / 2)
+        radius *= max(0.2, anim_t)
+        painter.setPen(QPen(color, 1.5))
+        painter.setBrush(QColor(T("color.bg.elevated")))
+        for point in valid:
+            painter.drawEllipse(point, radius, radius)
+        return len(valid)
+
     # -- 绘制 -------------------------------------------------------------
     def paint(self, p: QPainter, anim_t: float) -> None:
         pts = self._animated_points(anim_t)
         valid = [pt for pt in pts if pt is not None]
+        self._last_symbol_count = 0
         if not valid:
             return
         coord = self.chart.coord_for(self.opt)
@@ -1092,19 +1054,15 @@ class LineSeriesRenderer(SeriesRenderer):
         for seg_pts in segs:
             if len(seg_pts) < 2:
                 continue
+            if not self._line_needs_path(polar):
+                p.drawPolyline(QPolygonF(seg_pts))
+                continue
             path, _ = self._line_path(seg_pts)
             if polar:
                 path.closeSubpath()
             p.drawPath(path)
 
-        # 数据点
-        if bool(self.opt.get("showSymbol", True)):
-            r = max(1.0, _to_float(self.opt.get("symbolSize"), 6.0) / 2)
-            r *= max(0.2, anim_t)
-            p.setPen(QPen(color, 1.5))
-            p.setBrush(QColor(T("color.bg.elevated")))
-            for pt in valid:
-                p.drawEllipse(pt, r, r)
+        self._last_symbol_count = self._draw_symbols(p, valid, color, anim_t)
         p.restore()
 
     # -- 交互 -------------------------------------------------------------
@@ -1229,8 +1187,7 @@ class ScatterSeriesRenderer(SeriesRenderer):
             except Exception:
                 continue
             dots.append({"pt": pt, "r": 3.0, "value": b["value"],
-                         "index": int(b["x"]) if not isinstance(b["x"], float)
-                         or b["x"].is_integer() else -1,
+                         "index": int(b["index"]),
                          "x": b["x"], "count": b["count"],
                          "min": b["min"], "max": b["max"]})
         return dots or None
@@ -1249,7 +1206,9 @@ class ScatterSeriesRenderer(SeriesRenderer):
         if coord is None:
             return
         single = getattr(coord, "kind", "") == "singleAxis"
-        fixed = _to_float(self.opt.get("symbolSize"), None)
+        # symbolSize 允许标量（固定点径）或 [min, max]（第三维映射区间）
+        _sz = self.opt.get("symbolSize")
+        fixed = _to_float(_sz, None) if not isinstance(_sz, (list, tuple)) else _sz
         # large 模式：百万级散点逐点绘制既不可行也无意义（远超屏幕可分辨
         # 能力），改为按像素桶聚合，每桶一个图元。阈值与折线同源：可见点数
         # 未超视口像素量级时不聚合。
@@ -1263,7 +1222,7 @@ class ScatterSeriesRenderer(SeriesRenderer):
         known = [t for t in thirds if t is not None]
         zmin = min(known) if known else 0.0
         zmax = max(known) if known else 1.0
-        for i, item in enumerate(self.data()):
+        for i, item in enumerate(self.data_view()):
             x, y = parse_data_point(item, i)
             if y is None:
                 continue
@@ -1271,7 +1230,15 @@ class ScatterSeriesRenderer(SeriesRenderer):
                 pt = coord.map_point(y) if single else coord.map_point(x, y)
             except Exception:
                 continue
-            if fixed is not None:
+            if isinstance(fixed, (list, tuple)) and len(fixed) >= 2:
+                # symbolSize: [min, max] —— 第三维映射到该区间（ECharts 语义）。
+                # 此前只接受标量，导致「点径」控件在开启第三维映射时完全失效。
+                lo_r = max(1.0, (_to_float(fixed[0], 6.0) or 6.0) / 2)
+                hi_r = max(lo_r, (_to_float(fixed[1], 24.0) or 24.0) / 2)
+                span = zmax - zmin
+                f = 0.5 if span == 0 else (thirds[i] - zmin) / span if thirds[i] is not None else 0.5
+                r = _lerp(lo_r, hi_r, f)
+            elif fixed is not None:
                 r = max(1.0, fixed / 2)
             elif thirds[i] is not None:
                 span = zmax - zmin
