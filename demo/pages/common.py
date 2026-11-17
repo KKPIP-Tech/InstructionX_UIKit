@@ -99,6 +99,32 @@ def _multiline_label(text: str, max_w: int) -> QLabel:
     return lab
 
 
+class _PageDescription(QLabel):
+    """页头说明：宽屏限制版心，窄屏按实际宽度重折行并确定高度。"""
+
+    def __init__(self, text: str):
+        super().__init__()
+        set_property(self, "role", "secondary")
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self._source = text
+        self._wrap_width = 0
+        self._reflow(880)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._reflow(min(self.width(), 880))
+
+    def _reflow(self, width: int):
+        width = max(1, int(width))
+        if width == self._wrap_width:
+            return
+        self._wrap_width = width
+        fm = QFontMetricsF(self.font())
+        lines = _wrap_text(self._source, fm, width)
+        self.setText("\n".join(lines))
+        self.setFixedHeight(len(lines) * fm.lineSpacing() + 3)
+
+
 def _title_label(text: str) -> QLabel:
     """页面主标题：title.lg + bold，页面唯一的最大字号。"""
     return _label(text, "font.title.lg", "bold", "primary")
@@ -446,8 +472,8 @@ def make_page(title: str, description: str, sections) -> QScrollArea:
     head_lay.setSpacing(T("layout.header.gap"))
     head_lay.addWidget(_title_label(title))
     if description:
-        # 版心固定 880px：既避免大屏上一行拉到 2000px，又让高度可确定
-        head_lay.addWidget(hint_label(description, max_w=880))
+        # 宽屏版心上限 880px；窄页按实际可用宽度重折行，不撑出横向滚动区
+        head_lay.addWidget(_PageDescription(description))
     lay.addWidget(head)
 
     for sec in sections:
