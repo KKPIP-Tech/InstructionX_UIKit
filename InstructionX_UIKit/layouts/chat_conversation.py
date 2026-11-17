@@ -35,7 +35,7 @@
 
 import time
 
-from PySide6.QtCore import QCoreApplication, QEvent, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QPainter
 from PySide6.QtWidgets import (
     QFrame,
@@ -70,6 +70,10 @@ _MIN_USER_BUBBLE_CAP = 160
 #: 滚动跟随判定余量（像素）
 _SCROLL_MARGIN = 4
 
+_CHUNK_FLUSH_MS = 33
+_STATS_FLUSH_MS = 125
+_MAX_PENDING_CHARS = 65536
+
 #: 合法消息角色
 _ROLES = ("user", "assistant")
 
@@ -85,7 +89,7 @@ _COPY_FEEDBACK_MS = 1000
 #: 各角色气泡的操作按钮：(操作名, 图标名, 提示文案)
 _ACTIONS = {
     "user": (("copy", "copy", "复制"),
-             ("edit", "edit", "编辑"),
+             ("edit", "edit-pencil", "编辑"),
              ("delete", "trash", "删除")),
     "assistant": (("copy", "copy", "复制"),
                   ("regenerate", "refresh", "重新生成"),
@@ -402,9 +406,26 @@ class ChatConversation(QWidget):
         self._actions_always = False  # 操作条常显开关
         self._placeholder = None
         self._follow = True        # 底部跟随状态（用户上翻后暂停）
+        self._follow_pending = False
         self._programmatic_scroll = False
         self._last_max = 0         # 上次滚动范围上限（识别 value 钳制用）
         self._last_value = 0       # 上次滚动位置（钳制判据的兜底基线）
+        self._follow_timer = QTimer(self)
+        self._follow_timer.setSingleShot(True)
+        self._follow_timer.timeout.connect(self._flush_follow_once)
+        self._ui_active = True
+        self._generation = 0
+        self._timer_generation = 0
+        self._pending_chunks = {}
+        self._stats_pending = set()
+        self._render_timer = QTimer(self)
+        self._render_timer.setSingleShot(True)
+        self._render_timer.setInterval(_CHUNK_FLUSH_MS)
+        self._render_timer.timeout.connect(self._flush_scheduled_stream)
+        self._stats_timer = QTimer(self)
+        self._stats_timer.setSingleShot(True)
+        self._stats_timer.setInterval(_STATS_FLUSH_MS)
+        self._stats_timer.timeout.connect(self._flush_stats)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -435,6 +456,8 @@ class ChatConversation(QWidget):
         # 用户滚动状态 → 底部跟随开关
         self._scroll.verticalScrollBar().valueChanged.connect(
             self._on_scroll_value)
+        self._scroll.verticalScrollBar().rangeChanged.connect(
+            self._on_scroll_range)
 
         # 底部输入区（可选）
         self.input_edit = None
@@ -522,8 +545,8 @@ class ChatConversation(QWidget):
     def append_to_message(self, index: int, chunk: str) -> None:
         """向指定消息流式追加 Markdown 片段（AI 逐 token 输出）。
 
-        记录首个 / 最近 chunk 时间并刷新该气泡的统计标签（速度、
-        用时实时滚动）；流式结束时调用 ``finish_message`` 冻结计时。
+        源文本与计时立即更新，视图与统计按批次刷新；流式结束时调用
+        ``finish_message`` 冲刷剩余文本并冻结计时。
         """
         if not 0 <= index < len(self._messages):
             raise IndexError(f"消息索引越界: {index}，当前共 {len(self._messages)} 条")
@@ -534,17 +557,22 @@ class ChatConversation(QWidget):
             st["first"] = now
         st["last"] = now
         st["chunks"] += 1
-        self._bubbles[index].view.append_markdown(chunk)
-        self._refresh_stats(index)
-        self._follow_scroll()
+        self._pending_chunks[index] = self._pending_chunks.get(index, "") + chunk
+        self._stats_pending.add(index)
+        if len(self._pending_chunks[index]) >= _MAX_PENDING_CHARS:
+            self._flush_stream(index)
+        else:
+            self._schedule_stream()
+        self._schedule_stats()
 
     def finish_message(self, index: int) -> None:
-        """冻结消息计时（流式输出结束时调用）。
-
-        冻结后「用时」不再随时间滚动；未调用时 AI 消息的统计实时滚动。
-        """
+        """冲刷最后一批文本并冻结消息计时。"""
         if not 0 <= index < len(self._messages):
             raise IndexError(f"消息索引越界: {index}，当前共 {len(self._messages)} 条")
+        self._flush_stream(index)
+        self._stats_pending.discard(index)
+        if not self._stats_pending:
+            self._stats_timer.stop()
         self._stats[index]["finished"] = time.monotonic()
         self._refresh_stats(index)
 
@@ -558,6 +586,7 @@ class ChatConversation(QWidget):
             raise IndexError(f"消息索引越界: {index}，当前共 {len(self._messages)} 条")
         if content is None:
             content = ""
+        self._invalidate_stream()
         bubble = self._bubbles[index]
         bubble.cancel_edit()
         self._messages[index]["content"] = str(content)
@@ -626,6 +655,7 @@ class ChatConversation(QWidget):
         是 no-op，必须逐行 takeAt 移除行内条目再从列表布局摘除行
         本身，否则行随消息数永久累积。
         """
+        self._invalidate_stream()
         for row in self._rows:
             while row.count():
                 item = row.takeAt(0)
@@ -664,6 +694,52 @@ class ChatConversation(QWidget):
     def _refresh_stats(self, index: int) -> None:
         """重算并写入指定气泡操作条的统计文案。"""
         self._bubbles[index].set_stats_text(self._stats_text(index))
+
+    def _invalidate_stream(self) -> None:
+        self._generation += 1
+        self._render_timer.stop()
+        self._stats_timer.stop()
+        self._flush_stream()
+        self._stats_pending.clear()
+
+    def _schedule_stream(self) -> None:
+        if (not self._ui_active or not self.isVisible()
+                or self._render_timer.isActive()):
+            return
+        self._timer_generation = self._generation
+        self._render_timer.start()
+
+    def _flush_scheduled_stream(self) -> None:
+        if self._ui_active and self._timer_generation == self._generation:
+            self._flush_stream()
+
+    def _flush_stream(self, index: int = None) -> None:
+        if index is None:
+            items = tuple(self._pending_chunks.items())
+            self._pending_chunks.clear()
+        else:
+            items = ((index, self._pending_chunks.pop(index, "")),)
+        flushed = False
+        for item_index, text in items:
+            if text and 0 <= item_index < len(self._bubbles):
+                self._bubbles[item_index].view.append_markdown(text)
+                flushed = True
+        if not self._pending_chunks:
+            self._render_timer.stop()
+        if flushed:
+            self._follow_after_doc_change()
+
+    def _schedule_stats(self) -> None:
+        if (self._ui_active and self.isVisible() and self._stats_pending
+                and not self._stats_timer.isActive()):
+            self._stats_timer.start()
+
+    def _flush_stats(self) -> None:
+        indices = sorted(self._stats_pending)
+        self._stats_pending.clear()
+        for index in indices:
+            if 0 <= index < len(self._bubbles):
+                self._refresh_stats(index)
 
     def _stats_text(self, index: int) -> str:
         """统计文案：共有「约 N tokens」；AI 消息在有数据时追加
@@ -724,6 +800,7 @@ class ChatConversation(QWidget):
     def _confirm_edit(self, index: int, bubble: _Bubble) -> None:
         """内联编辑「确定」：更新消息与视图，退出编辑态并发射信号。"""
         text = bubble.edit_text()
+        self._invalidate_stream()
         bubble.cancel_edit()
         self._messages[index]["content"] = text
         bubble.view.set_markdown(text)
@@ -737,6 +814,7 @@ class ChatConversation(QWidget):
         删除流式中的消息不作特殊处理，计时随状态一并移除；调用方
         若持有进行中的流式任务需自行停止。
         """
+        self._invalidate_stream()
         row = self._rows.pop(index)
         while row.count():
             item = row.takeAt(0)
@@ -800,7 +878,7 @@ class ChatConversation(QWidget):
         if self._follow:
             # 视口变矮使滚动范围增大后 value 不变、视图悬停在旧位置：
             # 延迟一轮等布局落定后重新吸附底部
-            QTimer.singleShot(0, self._follow_scroll)
+            self._follow_after_doc_change()
 
     def _follow_scroll(self) -> None:
         """滚动条在底部时追加后自动跟随（用户上翻则暂停跟随）。"""
@@ -836,23 +914,23 @@ class ChatConversation(QWidget):
         self._last_value = value
         self._follow = value >= maximum - _SCROLL_MARGIN
 
+    def _on_scroll_range(self, _minimum, _maximum) -> None:
+        """滚动范围变化后合并到底部跟随，不重入事件循环。"""
+        if self._follow:
+            self._follow_after_doc_change()
+
     def _follow_after_doc_change(self) -> None:
-        """气泡文档尺寸变化（流式追加 / 公式图片就绪）后继续底部跟随。
-
-        文档变高时滚动范围在事件循环中才更新：若跟随状态开启，先
-        等布局落定（processEvents）再滚到底，修复「公式图片到达使
-        气泡长高后视口不再跟随」的问题。
-        """
-        if not self._follow:
+        """文档尺寸或滚动范围变化后合并为一次延迟跟随。"""
+        if (not self._follow or not self._ui_active or not self.isVisible()
+                or self._follow_pending):
             return
+        self._follow_pending = True
+        self._follow_timer.start(0)
 
-        def _flush_and_follow():
-            # 布局与滚动范围更新可能需要多轮事件处理才落定
-            for _ in range(4):
-                QCoreApplication.processEvents()
+    def _flush_follow_once(self) -> None:
+        self._follow_pending = False
+        if self._follow and self._ui_active and self.isVisible():
             self._follow_scroll()
-
-        QTimer.singleShot(0, _flush_and_follow)
 
     def _on_send(self) -> None:
         text = self.input_edit.toPlainText().strip()
@@ -860,6 +938,28 @@ class ChatConversation(QWidget):
             return
         self.input_edit.clear()
         self.messageSubmitted.emit(text)
+
+    # ------------------------------------------------------------------ 激活状态
+    def on_ui_activated(self) -> None:
+        self._ui_active = True
+        self._flush_stream()
+        self._flush_stats()
+        self._follow_after_doc_change()
+
+    def on_ui_deactivated(self) -> None:
+        self._ui_active = False
+        self._render_timer.stop()
+        self._stats_timer.stop()
+        self._follow_timer.stop()
+        self._follow_pending = False
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self.on_ui_activated()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        self.on_ui_deactivated()
+        super().hideEvent(event)
 
     # ------------------------------------------------------------------ 响应式
     def eventFilter(self, watched, event):  # noqa: N802

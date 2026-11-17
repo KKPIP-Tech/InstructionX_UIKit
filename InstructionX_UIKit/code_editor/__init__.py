@@ -17,6 +17,12 @@
 均为惰性导入：存在即导出，缺失不影响核心可用。
 """
 
+from .completion import (
+    completion_languages,
+    completion_provider_for,
+    register_completion,
+    unregister_completion,
+)
 from .editor import CodeEditor
 from .gutter import Gutter
 from .highlight import (
@@ -47,6 +53,10 @@ __all__ = [
     "language_for_file",
     "create_engine",
     "registered_languages",
+    "completion_languages",
+    "completion_provider_for",
+    "register_completion",
+    "unregister_completion",
     "RegionManager",
     "SEVERITY_COLORS",
     "DIAGNOSTIC_SEVERITIES",

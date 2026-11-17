@@ -26,11 +26,13 @@ C4 组件协议（components.py / interact.py）：
 """
 
 import copy
+import os
 import time
 
 from PySide6.QtCore import (
     QObject,
     QPointF,
+    QRect,
     QRectF,
     Qt,
     QVariantAnimation,
@@ -47,6 +49,8 @@ from PySide6.QtWidgets import QWidget
 
 from ..theme import T, ThemeManager
 from ..tokens import DURATION, EASING
+from .._metrics import MetricRing
+from .._resize_preview import ResizePreview
 from ._utils import warn_once
 from .data import NumericBuffer, is_array_like as _is_array_like, to_buffer
 from .sampling import (
@@ -86,6 +90,8 @@ __all__ = [
     "SimpleLineSeriesRenderer",
 ]
 
+_MAX_GEOMETRY_POINTS = 4_000_000
+
 # ---------------------------------------------------------------------------
 # 注册表（CHART_SPEC §3）
 # ---------------------------------------------------------------------------
@@ -115,8 +121,8 @@ def register_component(name: str, cls) -> None:
 
 
 #: 默认调色板令牌键（CHART_SPEC §2）。每项 (主键, 回退键)：
-#: tokens 当前未定义 "color.warning.hover"（亮/暗均缺），缺失时回退主色，
-#: 不回退会 KeyError；若后续 tokens 补齐该键，自动优先取用。
+#: 回退机制保留给旧版令牌集（如早期 LIGHT/DARK 缺 "color.warning.hover"）；
+#: 当前 tokens 已补齐该键，正常路径直接取主键，不再触发回退。
 _PALETTE_KEYS = (
     ("color.primary", None),
     ("color.success", None),
@@ -842,6 +848,7 @@ class ChartWidget(QWidget):
         super().__init__(parent)
         self.setMouseTracking(True)
         self.setMinimumSize(200, 150)
+        self._perf = MetricRing()
         self._option = {}
         self._series = []        # [SeriesRenderer]
         self._coords = []        # [Coord]
@@ -866,13 +873,18 @@ class ChartWidget(QWidget):
         self._series_pixmap_cache = None
         self._series_dpr = 1.0
         self._series_was_running = False
+        self._ui_active = True
+        self._animation_was_running = False
         #: 数据/主题变更后置位：下一帧直接绘制、不为建缓存多渲染一帧
         self._paint_only_dirty = False
         #: GL 后端因点数超安全上限而暂停绘制（由视口置位，见 viewport.py）
-        self._gl_overloaded = False
-        # 绘制视口（CHART_SPEC §7）：GL 可用时为 QOpenGLWidget（GPU 渲染），
-        # 否则为普通 QWidget（软件回退，离屏测试走此路径）。本控件自身不再
-        # 绘制——paintEvent 仅为 grab()/render() 路径保留。
+        self._overload_limited = False
+        self._preview_capturing = False
+        self._resize_preview = ResizePreview(
+            self, on_settle=self._finish_resize_preview)
+        self._preview_animation = None
+        # 真实窗口由 RHI 子视口承载；离屏测试使用同一绘制体的软件视口。
+        # 本控件自身只铺底色，避免与子视口重复绘制。
         self._viewport = create_viewport(self)
         self._viewport.setGeometry(self.rect())
         self._viewport.show()
@@ -890,6 +902,23 @@ class ChartWidget(QWidget):
         except (RuntimeError, TypeError):
             pass
 
+    def _perf_snapshot(self):
+        """返回有界诊断指标，不用于替代系统实际呈现统计。"""
+        result = self._perf.snapshot()
+        viewport = self._viewport
+        dpr = float(viewport.devicePixelRatioF())
+        result.update({
+            "backend": type(viewport).__name__,
+            "dpr": dpr,
+            "physical_width": round(viewport.width() * dpr),
+            "physical_height": round(viewport.height() * dpr),
+            "raw_points": sum(len(r.data_view()) for r in self._series),
+            "screen_points": sum(
+                len(r._gpu_geometry[0]) if getattr(r, "_gpu_geometry", None) is not None
+                else len(r._points) for r in self._series),
+        })
+        return result
+
     # ------------------------------------------------------------------ API
     def set_option(self, option: dict) -> None:
         """全量设置 option（dict，schema 见 CHART_SPEC §4）并播放入场动画。
@@ -899,6 +928,7 @@ class ChartWidget(QWidget):
         这样 ``copy.deepcopy`` 永远不会遍历百万级数组——实测 150 万点由
         约 2.1 s 降至毫秒级。其余结构照旧深拷贝，语义与历史一致。
         """
+        started = time.perf_counter()
         if not isinstance(option, dict):
             self._option = {}
         else:
@@ -907,8 +937,13 @@ class ChartWidget(QWidget):
             _reattach_big_data(self._option, buffers)
         self._opt_version += 1
         self._rebuild()
-        self.anim.start()
+        if self._option.get("animation", True):
+            self.anim.start()
+        else:
+            self.anim.stop()
+            self.anim.set_progress(1.0)
         self.update()
+        self._perf.add("option_update_ms", time.perf_counter() - started)
 
     def update_option(self, option: dict) -> None:
         """合并更新 option 并播放旧→新数据插值动画。
@@ -923,6 +958,7 @@ class ChartWidget(QWidget):
         大数组优化：新数据在合并时就地包装为缓冲区（``_deep_merge``），
         旧数据以只读视图注入 ``prev_data``，均不复制。
         """
+        started = time.perf_counter()
         if not isinstance(option, dict):
             return
         prev_list = [_prev_view(r) for r in self._series]
@@ -938,8 +974,13 @@ class ChartWidget(QWidget):
             if prev is None and i < len(prev_list):
                 prev = prev_list[i]
             r.prev_data = prev
-        self.anim.start()
+        if self._option.get("animation", True):
+            self.anim.start()
+        else:
+            self.anim.stop()
+            self.anim.set_progress(1.0)
         self.update()
+        self._perf.add("option_update_ms", time.perf_counter() - started)
 
     def option(self) -> dict:
         """当前 option（深拷贝快照，公共 API 契约）。
@@ -1012,21 +1053,13 @@ class ChartWidget(QWidget):
         return self._coords[0] if self._coords else None
 
     def gpu_claims(self, renderer) -> bool:
-        """GL 视口是否**真的**在用 GPU 直绘这个系列（由视口设置 ``_gpu_owner``）。
-
-        只有在 GL 视口本次绘制中成功建立管线的系列才为真。QPainter 路径据此
-        跳过该系列，避免「同一系列画两遍」——而这不是小开销：实测 1400x500、
-        DPR 1.5（物理 2100x750）、采样后 2656 点，光栅化一次折线要 24 ms，
-        而 GPU 直绘整条 2 万点曲线只要 0.3 ms。
-
-        软件视口 / 无 GL 时恒为 ``False``，系列照旧由 QPainter 绘制（不会缺图）。
-        """
-        owner = getattr(self, "_gpu_owner", None)
+        """返回系列是否已由 RHI 几何层接管，防止与纹理层重复绘制。"""
+        owner = getattr(self, "_rhi_owner", None)
         return owner is not None and renderer in owner
 
     def set_gpu_owner(self, renderers) -> None:
-        """声明本次绘制中由 GPU 接管的系列（视口在调用绘制前设置）。"""
-        self._gpu_owner = list(renderers) if renderers else None
+        """记录由 RHI 几何层接管的系列；完整纹理快照中为空。"""
+        self._rhi_owner = list(renderers) if renderers else None
 
     def coord_for(self, series_opt: dict = None):
         """按 series 的 coordinateSystem 匹配坐标系（默认首个）。"""
@@ -1095,6 +1128,7 @@ class ChartWidget(QWidget):
         # 图表销毁时自动停掉会话定时器，避免悬空定时器继续回调
         self._streams = getattr(self, "_streams", None) or []
         self._streams.append(sess)
+        sess.set_active(self._ui_active and self.isVisible())
         if not getattr(self, "_stream_cleanup_hooked", False):
             self._stream_cleanup_hooked = True
             self.destroyed.connect(self._close_streams)
@@ -1112,6 +1146,7 @@ class ChartWidget(QWidget):
     # ------------------------------------------------------------- 内部构建
     def _rebuild(self) -> None:
         """按当前 option 重建组件 / 坐标系 / 系列渲染器（并使布局缓存失效）。"""
+        started = time.perf_counter()
         opt = self._option
         self._layout_key = None
         self.title.set_option(opt.get("title") or {})
@@ -1185,6 +1220,7 @@ class ChartWidget(QWidget):
             items.append((r.name, self.color_for_series(r)))
         self.legend.set_items(items)
         self._layout_all(force=True)
+        self._perf.add("_rebuild_ms", time.perf_counter() - started)
 
     def _make_coord(self, cls, kind: str):
         """构造单个坐标系：失败降级为 None 并记录一次（不拖垮整图）。"""
@@ -1232,6 +1268,22 @@ class ChartWidget(QWidget):
                                   lw, content.height())
                     content.setRight(content.right() - lw)
             self.legend.layout(band)
+        # 组件让位：visualMap 等组件要在内容区边上占一条带子，若不让出，
+        # 色带会直接压在绘图区上（heatmap 最右一列被盖住）。
+        for comp in self._components:
+            reserve = getattr(comp, "content_reserve", None)
+            if not callable(reserve):
+                continue
+            try:
+                r, b = reserve(content)
+            except Exception as exc:
+                warn_once(f"component-reserve:{comp.__class__.__name__}",
+                          f"组件让位计算异常（{comp.__class__.__name__}）: {exc!r}")
+                continue
+            if r:
+                content.setRight(content.right() - max(0.0, r))
+            if b:
+                content.setBottom(content.bottom() - max(0.0, b))
         return content
 
     def invalidate_layout(self) -> None:
@@ -1298,49 +1350,57 @@ class ChartWidget(QWidget):
           ——坐标轴范围未变时静态层照旧命中；
         - 不启动入场动画（动画会让新点延迟可见，且会禁用布局缓存）；
         - 不重建渲染器实例，故调用方持有的 ``opt`` 增量（如 ``gpuDirect``）
-          与 VBO 版本身份都保持稳定。
+          与 RHI 资源身份都保持稳定。
 
         返回是否成功写入（系列序号越界 / 数据不可用时为 ``False``）。
         """
+        return self._apply_stream_data(values, series)
+
+    def _apply_stream_data(self, values, series=0, y_range=None,
+                           refresh_axes=None) -> bool:
+        """原子提交流式数据与可选轴范围，保留原渲染器和静态缓存。"""
         renderers = self._series
         try:
             idx = int(series)
         except (TypeError, ValueError):
             idx = 0
-        if idx < 0 or idx >= len(renderers):
+        if idx < 0 or idx >= len(renderers) or values is None:
             return False
-        if values is None:
-            return False
-        buf = to_buffer(values)
-        arr = buf if buf is not None else values
-        renderers[idx].opt["data"] = arr
-        # 轴范围必须跟着数据长度走（**不是可省的开销**）：空类目的 category 轴
-        # 没有类目可推，band 数完全依赖「隐式下标范围」（见 axes.GridCoord.
-        # set_series）。跳过这一步时 vmin/vmax 会停在初始的 0/1，band 宽度算成
-        # 0.0005 像素，屏幕 x 飞到 200 万（实测 x 606~2095126，绘图区才
-        # 72~1139），图上只剩一条压在边缘的线。
-        #
-        # 只在**长度变化**时重算：窗口写满后长度恒定，无需每帧扫一遍数据；
-        # 长度变化的那几帧本来就要跟随新范围（轴范围未固定的情形），
-        # 而固定了 ``yAxis.min/max`` 的调用方不受影响。
+        buffer = to_buffer(values)
+        data = buffer if buffer is not None else values
         try:
-            n = len(arr)
-        except TypeError:
-            n = 0
-        if self._stream_len.get(idx) != n:
-            self._stream_len[idx] = n
-            # 同步到内部 option：轴范围推导（各坐标系 set_series）与
-            # ``option()`` 快照都读 ``_option``，只改渲染器的 opt 会让两处
-            # 数据不一致——范围仍按旧数据算，映射随即跑飞。
-            try:
-                self._option["series"][idx]["data"] = arr
-            except (KeyError, IndexError, TypeError):
-                pass
+            length = len(data)
+            series_option = self._option["series"][idx]
+            if not isinstance(series_option, dict):
+                return False
+        except (TypeError, KeyError, IndexError):
+            return False
+        renderers[idx].opt["data"] = data
+        series_option["data"] = data
+        length_changed = self._stream_len.get(idx) != length
+        self._stream_len[idx] = length
+        if length_changed or refresh_axes is True or y_range is not None:
+            if y_range is not None:
+                low, high = y_range
+                axis_option = self._option.get("yAxis")
+                if not isinstance(axis_option, dict):
+                    axis_option = self._option["yAxis"] = {}
+                axis_option["min"] = low
+                axis_option["max"] = high
+                for coord in self._coords:
+                    axis = getattr(coord, "y_axis", None)
+                    if axis is not None:
+                        axis.opt["min"] = low
+                        axis.opt["max"] = high
+                        axis.min = low
+                        axis.max = high
             self._refresh_axes_extent()
-        # 数据变了 → 布局必须重算（采样与映射依赖它），但静态层与 option
-        # 版本都不动：轴范围未变时坐标轴无需重建。
+            self._static_key = None
+            self._series_key = None
         self._layout_key = None
         self._paint_only_dirty = True
+        self.anim.stop()
+        self.anim.set_progress(1.0)
         self.update()
         return True
 
@@ -1368,11 +1428,13 @@ class ChartWidget(QWidget):
         布局缓存：键命中直接返回（悬停 / 无动画重绘零成本）；动画进行中
         不缓存（每帧重算，ChartAnimation 视觉行为与历史一致）。
         """
+        started = time.perf_counter()
         if force:
             self._layout_key = None
         elif not self.anim.is_running():
             key = self._layout_cache_key()
             if key == self._layout_key:
+                self._perf.count("layout_cache_hit")
                 return
             self._layout_key = key
         content = self._content_rect()
@@ -1392,27 +1454,113 @@ class ChartWidget(QWidget):
                 except Exception as exc:
                     warn_once(f"component-layout:{comp.__class__.__name__}",
                               f"组件布局异常（{comp.__class__.__name__}）: {exc!r}")
+        self._perf.add("layout_ms", time.perf_counter() - started)
 
     # ------------------------------------------------------------- Qt 事件
     def update(self, *args) -> None:
         """重绘请求转发到内部绘制视口（保持外部 ``chart.update()`` 习惯）。
 
-        本控件自身不再绘制：绘制由 ``_viewport`` 承载（GL 可用时为
-        QOpenGLWidget，否则软件回退）。构造期视口尚未创建时回落基类。
+        完整内容由 RHI 子视口承载；离屏平台使用软件视口。
+        构造期视口尚未创建时回落基类。
         """
+        if not getattr(self, "_ui_active", True):
+            self._perf.count("hidden_update")
+            return
         vp = getattr(self, "_viewport", None)
         if vp is not None:
             vp.update(*args)
             return
         super().update(*args)
 
+    def _preview_enabled(self):
+        return os.environ.get("UIKIT_RESIZE_PREVIEW", "on").lower() not in (
+            "off", "0", "false", "no")
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         vp = getattr(self, "_viewport", None)
-        if vp is not None:
+        enabled = self._preview_enabled()
+        if vp is not None and getattr(vp, "supports_direct_resize", False):
+            if self._resize_preview.active:
+                self._finish_resize_preview()
+            self._resize_preview.cancel()
+            self._preview_capturing = False
+            self._preview_animation = None
             vp.setGeometry(self.rect())
-        self._layout_all()
+            self._layout_all()
+            self.update()
+            return
+        if self._preview_capturing:
+            if vp is not None:
+                vp.setGeometry(self.rect())
+            return
+        started = False
+        has_content = any(getattr(renderer, "_points", None)
+                          for renderer in self._series)
+        if vp is not None and enabled and not self._resize_preview.active \
+                and has_content:
+            self._preview_capturing = True
+            try:
+                snapshot = vp.grab()
+                vp.setGeometry(self.rect())
+                started = self._resize_preview.begin(snapshot)
+            finally:
+                self._preview_capturing = False
+        elif vp is not None:
+            vp.setGeometry(self.rect())
+        if started:
+            self._preview_animation = (self.anim.is_running(), self.anim.t)
+            self.anim.stop()
+            for session in getattr(self, "_streams", []):
+                session.set_active(False)
+        elif enabled and self._resize_preview.active:
+            self._resize_preview.touch()
+        else:
+            self._layout_all()
         self.update()
+
+    def _finish_resize_preview(self):
+        running, progress = self._preview_animation or (False, 1.0)
+        self._preview_animation = None
+        self.anim.set_progress(progress)
+        self._layout_all(force=True)
+        self._static_key = None
+        self._series_key = None
+        for session in getattr(self, "_streams", []):
+            session.set_active(self._ui_active)
+        if running:
+            self.anim.start()
+            self.anim.set_progress(progress)
+        self.update()
+
+    def on_ui_deactivated(self) -> None:
+        self._ui_active = False
+        self._animation_was_running = self.anim.is_running()
+        self._animation_progress = self.anim.t
+        if self._animation_was_running:
+            self.anim._anim.pause()
+        for session in getattr(self, "_streams", []):
+            session.set_active(False)
+        self._resize_preview.cancel()
+        self._preview_animation = None
+
+    def on_ui_activated(self) -> None:
+        self._ui_active = True
+        for session in getattr(self, "_streams", []):
+            session.set_active(True)
+        if self._animation_was_running:
+            if self.anim._anim.state() == QVariantAnimation.Paused:
+                self.anim._anim.resume()
+            else:
+                self.anim.start()
+            self.anim.set_progress(self._animation_progress)
+        self._animation_was_running = False
+        self._layout_all(force=True)
+        self.update()
+
+    def hideEvent(self, event) -> None:
+        self.on_ui_deactivated()
+        super().hideEvent(event)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -1420,8 +1568,11 @@ class ChartWidget(QWidget):
         if vp is not None:
             vp.setGeometry(self.rect())
             vp.raise_()
+        self.on_ui_activated()
 
     def _on_theme_changed(self, _mode) -> None:
+        if self._resize_preview.active:
+            self._resize_preview.finish()
         # 配色全部经 T() 实时取，重绘即生效；主题可能影响字体度量等布局
         # 输入，保守失效布局缓存与静态层缓存（下一次绘制全量重排一次）
         self._layout_key = None
@@ -1448,197 +1599,67 @@ class ChartWidget(QWidget):
 
     # ------------------------------------------------------- 性能测量
     def benchmark(self, frames: int = 8, force_layout: bool = True) -> dict:
-        """测量本图表在两种后端下的**单帧绘制耗时**（供演示与性能验证使用）。
+        """测量参考绘制的单帧耗时；这不是 RHI 实际呈现帧率。
 
-        测量口径（可复现，避免常见陷阱）：
-
-        - 计时对象是**离屏位图上的单次绘制**（``QPainter`` → ``QImage``），
-          因此**不含窗口合成与帧缓冲读回**——``grabFramebuffer()`` 之类的读回
-          本身就要数毫秒，会把真实差异淹没；
-        - **不跑事件循环**、不依赖帧率，故结果不受显示器刷新率影响；
-        - 每档先跑一帧预热（含首次采样与建缓存），**取后续帧的最小值**：
-          最小值代表该路径的稳态能力，均值会被单次调度抖动拉偏。
-
-        ``force_layout=True``（默认）每帧强制重排，代表「数据持续变化」的最坏
-        情形；置 ``False`` 则测「静态画面重复绘制」的稳态。
-
-        返回 ``{"points", "series", "cpu_ms", "gpu_ms", "gpu_active",
-        "gl", "budget_ms", "ok"}``：
-
-        - ``points`` 为当前渲染点数（采样后），``series`` 为系列数；
-        - ``cpu_ms`` 为经 QPainter 的绘制耗时；
-        - ``gpu_ms`` 为 GPU 原生直绘的耗时（``gpuDirect`` 未开启、无 GL、
-          或数据形态不支持时为 ``None``）；
-        - ``gpu_active`` 表示本图是否有一系列走 GPU 直绘；
-        - ``budget_ms`` 为 90 fps 的单帧预算（11.11 ms），``ok`` 表示
-          ``cpu_ms`` 是否落在预算内。
+        保留原返回字段以兼容调用方，并新增 ``rhi`` 报告实际平台后端。
+        ``cpu_ms`` 是 QPainter 参考绘制耗时；真实性能须使用窗口交换帧测量。
         """
         from PySide6.QtGui import QImage
 
-        budget = 1000.0 / 90.0
-        points = max((len(r._points) for r in self._series), default=0)
+        viewport = getattr(self, "_viewport", None)
+        get_api = getattr(viewport, "rhi_api", None)
+        api = get_api() if callable(get_api) else "software"
         info = {
-            "points": points,
+            "points": max((len(r._points) for r in self._series), default=0),
             "series": len(self._series),
             "cpu_ms": None,
             "gpu_ms": None,
-            "gpu_active": any(getattr(r, "gpu_direct", False)
-                              for r in self._series),
+            "gpu_active": api not in ("software", "pending"),
             "gl": False,
-            "budget_ms": budget,
+            "rhi": api,
+            "budget_ms": 1000.0 / 90.0,
             "ok": False,
-            #: 是否因超出 GL 安全上限而暂停绘制。为真时 ``cpu_ms`` 只反映
-            #: 「画提示文案」的耗时，**不是**真实绘制耗时，不应据此比较。
             "overload": self.overload_limited(),
         }
-        try:
-            from .viewport import gl_available
-            info["gl"] = bool(gl_available())
-        except Exception:  # noqa: BLE001
-            info["gl"] = False
-
-        w, h = max(1, self.width()), max(1, self.height())
-        img = QImage(w, h, QImage.Format.Format_RGB32)
+        image = QImage(max(1, self.width()), max(1, self.height()),
+                       QImage.Format.Format_RGB32)
         reps = max(1, int(frames))
         best = None
-        for i in range(reps + 1):          # 首帧预热，不计入
+        for index in range(reps + 1):
             if force_layout:
                 self._layout_all(force=True)
-            t0 = time.perf_counter()
+            started = time.perf_counter()
+            painter = QPainter(image)
             try:
-                p = QPainter(img)
-                try:
-                    self._paint_contents(p)
-                finally:
-                    p.end()
-            except Exception:  # noqa: BLE001
-                return info
-            dt = (time.perf_counter() - t0) * 1000.0
-            if i > 0:
-                best = dt if best is None else min(best, dt)
+                self._paint_contents(painter)
+            finally:
+                painter.end()
+            elapsed = (time.perf_counter() - started) * 1000.0
+            if index > 0:
+                best = elapsed if best is None else min(best, elapsed)
         info["cpu_ms"] = best
-        info["ok"] = bool(best is not None and best <= budget)
-
-        # GPU 原生直绘：仅当有系列开启 gpuDirect 且本图挂在 GL 视口下
-        vp = getattr(self, "_viewport", None)
-        if info["gpu_active"] and vp is not None \
-                and type(vp).__name__ == "_GLViewport":
-            ctx = None
-            try:
-                ctx = vp.context()
-            except Exception:  # noqa: BLE001
-                ctx = None
-            if ctx is not None and ctx.isValid():
-                info["gpu_ms"] = self._benchmark_gpu(vp, ctx, reps)
+        info["ok"] = bool(best is not None and best <= info["budget_ms"])
         return info
 
-    def _benchmark_gpu(self, viewport, ctx, reps: int):
-        """测量 GPU 直绘提交耗时（VBO 稳态 + 逐帧绘制 + glFinish 同步）。
-
-        含 ``glFinish`` 是刻意的：不加就无法确认 GPU 真正完成，测到的只是
-        「命令入队」时间（Qt 会合批），会得出虚假的低耗时。
-
-        **必须显式 makeCurrent**：``QOpenGLWidget`` 的上下文只在 ``paintGL``
-        执行期间是 current 的，在其外直接 ``ctx.functions()`` 会拿到悬空函数
-        指针，实测直接崩溃（访问违例 0xC0000005）。
-
-        注意用 **视口自己的** ``makeCurrent()``：``QOpenGLContext.makeCurrent``
-        只接受 ``QSurface``，而 ``QOpenGLWidget`` 不是 ``QSurface``（传进去抛
-        TypeError）。视口方法内部会正确绑定其 FBO 与上下文。
-        """
-        try:
-            from .gl_series import build_mvp
-            maker = getattr(viewport, "makeCurrent", None)
-            if not callable(maker):
-                return None
-            # 顺序不可颠倒：GL 资源必须在**上下文 current 之后**创建。
-            # 先 ensure 再 makeCurrent 会崩溃（实测访问违例 0xC0000005）。
-            try:
-                maker()
-            except Exception:  # noqa: BLE001
-                return None
-            try:
-                pipe = getattr(viewport, "_gpu_pipe", None)
-                if pipe is None or not pipe.ready:
-                    # 图表可能长期被滚动区域裁剪、从未绘制 → 管线尚未惰性
-                    # 创建。显式要求一次，使测量不依赖「是否已滚动到可见区域」。
-                    hook = getattr(viewport, "ensure_gpu_pipeline", None)
-                    pipe = hook() if callable(hook) else None
-                if pipe is None or not pipe.ready:
-                    return None
-                return self._benchmark_gpu_current(viewport, ctx, pipe,
-                                                   reps, build_mvp)
-            finally:
-                try:
-                    viewport.doneCurrent()
-                except Exception:  # noqa: BLE001
-                    pass
-        except Exception:  # noqa: BLE001
-            return None
-
-    def _benchmark_gpu_current(self, viewport, ctx, pipe, reps, build_mvp):
-        """在**已 makeCurrent** 的前提下执行 GPU 测量。"""
-        renderers = [r for r in self._series
-                     if getattr(r, "gpu_direct", False) and r.visible]
-        if not renderers:
-            return None
-        self._layout_all()
-        f = ctx.functions()
-        if f is None:
-            return None
-        try:
-            dpr = float(viewport.devicePixelRatioF())
-        except Exception:  # noqa: BLE001
-            dpr = 1.0
-        w = max(1, int(viewport.width() * dpr))
-        h = max(1, int(viewport.height() * dpr))
-        f.glViewport(0, 0, w, h)
-        plans = []
-        for r in renderers:
-            vinfo = r.gpu_vertex_data()
-            if vinfo is None:
-                continue
-            pipe.set_vertices(vinfo["vertices"], version=vinfo["version"])
-            if pipe.vertex_count < 2:
-                return None
-            coord = self.coord_for(r.opt)
-            tr = r.gpu_transform(coord)
-            if tr is None:
-                continue
-            x0, x1, y0, y1, plot = tr
-            mvp = build_mvp(x0, x1, y0, y1,
-                            plot=(plot.width(), plot.height(),
-                                  plot.left(), plot.top()),
-                            viewport=(viewport.width(), viewport.height()))
-            if mvp is not None:
-                plans.append((mvp, r.color()))
-        if not plans:
-            return None
-        best = None
-        for i in range(max(1, reps)):
-            t0 = time.perf_counter()
-            for mvp, color in plans:
-                pipe.draw(ctx, mvp, color, mode="line_strip", width=2.0)
-            f.glFinish()
-            dt = (time.perf_counter() - t0) * 1000.0
-            if i > 0:
-                best = dt if best is None else min(best, dt)
-        return best
+    def grab(self, rectangle=QRect()):
+        pixmap = self._viewport.grab()
+        if rectangle.isNull():
+            return pixmap
+        dpr = self.devicePixelRatioF()
+        x, y, width, height = rectangle.getRect()
+        return pixmap.copy(QRect(round(x * dpr), round(y * dpr),
+                                 round(width * dpr), round(height * dpr)))
 
     def paintEvent(self, event) -> None:
-        """本控件自身的绘制（仅在 ``grab()`` / ``render()`` 直接渲染本控件时触发）。
-
-        常规屏幕绘制由 ``_viewport`` 承载（见 viewport.py）；此方法保证
-        ``chart.grab()`` 等路径仍能得到完整内容。
-        """
+        """父控件只铺底色，完整内容由重合的子视口绘制，避免整窗更新时画两遍。"""
         p = QPainter(self)
         try:
-            self._paint_contents(p)
+            p.fillRect(self.rect(), QColor(T("color.bg.base")))
         finally:
             p.end()
 
     def _paint_contents(self, p: QPainter) -> None:
-        """图表内容的唯一绘制体（软件与 GL 两条视口路径共用同一份代码）。
+        """图表内容的唯一绘制体，RHI 快照与离屏软件视口共用。
 
         绘制顺序（不可调换，画家算法）：
 
@@ -1656,10 +1677,10 @@ class ChartWidget(QWidget):
         if self.overload_limited():
             # 兜底护栏（见 overload_limited）：放这里而不是只放视口，因为
             # benchmark 等路径会直接调用本方法而绕过视口。
-            self._gl_overloaded = True
+            self._overload_limited = True
             self._paint_overload_notice(p)
             return
-        self._gl_overloaded = False
+        self._overload_limited = False
         pixmap = self._static_pixmap(p)
         if pixmap is not None:
             p.drawPixmap(0, 0, pixmap)
@@ -1668,24 +1689,12 @@ class ChartWidget(QWidget):
         self._paint_dynamic(p)
 
     def overload_limited(self) -> bool:
-        """绘制点数是否超过 GL 后端的安全上限（见 ``gl_series.GL_MAX_POINTS``）。
-
-        这是**兜底护栏**：常规路径下不会触发——采样阈值就是视口像素宽，渲染
-        点数天然停在数千量级，而像素级分辨率下限不可关闭（见
-        :func:`sampling.sampling_options`）。只有绕过采样、把数百万点直接塞进
-        单个系列的调用方才会碰到它。
-
-        触发时**不绘制超长几何**，改为给出提示文案，理由是标定过的成本：
-        同一份 150 万点数据，关闭下限后 ``layout`` 需 2.8 秒、单帧绘制 8.8 秒
-        ——事件循环在这段时间内完全不响应，Windows 会直接判定 AppHang 并把
-        程序杀掉（本机事件日志中的 AppHangB1 记录即由此而来）。
-        """
-        from .gl_series import GL_MAX_POINTS
-        for r in self._series:
-            if not r.visible:
+        """阻止异常输入生成无界几何；常规输入始终执行像素级采样。"""
+        for renderer in self._series:
+            if not renderer.visible:
                 continue
             try:
-                if len(r._points) > GL_MAX_POINTS:
+                if len(renderer._points) > _MAX_GEOMETRY_POINTS:
                     return True
             except (AttributeError, TypeError):
                 continue
@@ -1693,13 +1702,12 @@ class ChartWidget(QWidget):
 
     def _paint_overload_notice(self, p: QPainter) -> None:
         """绘制「已暂停绘制」提示（说明原因与可行的做法）。"""
-        from .gl_series import GL_MAX_POINTS
         p.fillRect(self.rect(), QColor(T("color.bg.base")))
         p.setPen(QColor(T("color.text.tertiary")))
         p.drawText(
             self.rect().adjusted(24, 24, -24, -24),
             Qt.AlignCenter | Qt.TextWordWrap,
-            f"已暂停绘制：单系列几何点数超过 {GL_MAX_POINTS:,}。\n"
+            f"已暂停绘制：单系列几何点数超过 {_MAX_GEOMETRY_POINTS:,}。\n"
             f"请去掉 ``sampling: None`` 之类的设置——引擎默认按视口像素宽"
             f"逐桶保留极值，逐像素列极值与全量直绘一致，画质不变而单帧回到"
             f"毫秒级。")
@@ -1720,7 +1728,7 @@ class ChartWidget(QWidget):
         if self.overload_limited():
             # 兜底护栏：静态层命中时走的正是本方法，只守 _paint_contents
             # 会漏掉这条路径。
-            self._gl_overloaded = True
+            self._overload_limited = True
             self._paint_overload_notice(p)
             return
         series_pm = self._series_pixmap(p, t) if self._series_cacheable(t) else None
@@ -1754,65 +1762,20 @@ class ChartWidget(QWidget):
         self.tooltip.paint(p)
 
     def _series_cacheable(self, t) -> bool:
-        """当前帧是否走「系列层位图」路径（缓存命中直接贴回，未命中则重建）。
-
-        返回 ``False`` 的两种情形：
-
-        1. **动画运行中**：系列几何逐帧变化，缓存会锁死画面；动画结束的那一帧
-           必须重建一次，否则会贴出动画中途的旧位图；
-        2. **脏帧且视口未声明偏好**：数据/主题刚变更时缓存必然未命中，若视口是
-           软件光栅，走位图路径等于「先渲染到位图、再贴回目标设备」，系列绘制
-           做两遍。GL 视口则相反——见下。
-
-        :attr:`prefer_raster_series` 由**视口**设置：GL 视口把它置 ``True``，
-        因为 Qt 的 GL paint engine 画抗锯齿长折线比光栅引擎慢约 3 倍，先画到
-        ``QPixmap`` 再贴回反而快（实测 1400x500、采样后 2656 点：44.9 → 14.6
-        ms/帧，贴回本身 0.84 ms）。软件视口保持 ``False``（离屏再贴回是纯开销）。
-        """
-        running = False
-        try:
-            running = bool(self.anim.is_running())
-        except Exception:
-            running = False
-        if running:
+        """静态系列可缓存；RHI 数据帧沿用原有缓存光栅路径保持像素一致。"""
+        if self.anim.is_running():
             self._series_was_running = True
             return False
-        # **全部可见系列都已交给 GPU 直绘时不建位图**：QPainter 一个系列都不用
-        # 画，建整幅系列位图是纯浪费。实测 1400x500 / DPR 1.5 / 2 万点采样后
-        # 2656 点：建一次 10.07 ms/帧，而 GPU 画完整条曲线只要 0.48 ms。
-        # 实时滚动每帧数据都变、缓存键必然改变，正是这条分支在挡开销
-        # （``_paint_only_dirty`` 那条只覆盖「脏帧」这一种脏法）。
-        if self._all_series_gpu_claimed():
-            self._series_key = None
-            self._series_pixmap_cache = None
-            return False
-        if getattr(self, "_series_was_running", False):
-            # 动画刚结束：作废缓存并重建
+        if self._series_was_running:
             self._series_was_running = False
             self.invalidate_series_layer()
-        if getattr(self, "_paint_only_dirty", False):
+        if self._paint_only_dirty:
             self._paint_only_dirty = False
             self._series_key = None
             self._series_pixmap_cache = None
-            # 全部可见系列都已交给 GPU 直绘时不必建位图：QPainter 一个系列都
-            # 不用画，建整幅系列位图是纯浪费（实测 1400x500 / DPR 1.5 / 2 万点
-            # 采样后 2656 点：建一次 10.41 ms/帧，而 GPU 画完整条曲线只要 0.48
-            # ms）。见 gpu_claims / set_gpu_owner。
-            if self._all_series_gpu_claimed():
-                return False
-            # 脏帧仍**值得**先画到离屏位图再贴回：GL paint engine 画抗锯齿长
-            # 折线比光栅引擎慢约 3 倍（实测 44.9 → 14.6 ms/帧）。此前的注释
-            # 认为缓存必然未命中、走这条路等于画两遍——那只对软件视口成立，
-            # 故改由视口通过 ``prefer_raster_series`` 表态。
             return bool(getattr(self, "prefer_raster_series", False))
         del t
         return True
-
-    def _all_series_gpu_claimed(self) -> bool:
-        """是否所有可见系列都已被 GPU 认领（此时 QPainter 无需画系列）。"""
-        if not getattr(self, "_gpu_owner", None):
-            return False
-        return all(self.gpu_claims(r) for r in self._series if r.visible)
 
     def invalidate_series_layer(self) -> None:
         """使系列层缓存失效。"""

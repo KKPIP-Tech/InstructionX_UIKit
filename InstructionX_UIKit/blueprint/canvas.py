@@ -15,16 +15,18 @@
 - 序列化：``to_dict`` / ``from_dict``（含节点位置与画布 zoom/offset）。
 
 节点为真实子控件（``NodeWidget``，挂在内部绘制视口之下）；边、临时线、
-网格、选中发光由视口统一自绘——GL 可用时视口为 ``QOpenGLWidget``
-（GPU 加速），否则为普通 ``QWidget`` 软件回退（见 ``viewport.py``，
-可用 ``UIKIT_BLUEPRINT_GL=off`` 强制软件路径）。
+网格、选中发光与节点外观由 RHI 视口统一承载。离屏平台使用软件视口
+验证相同绘制语义，见 ``viewport.py``。
 """
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSizeF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QWidget
 
+import os
+
 from ..theme import T, ThemeManager
+from .._resize_preview import ResizePreview
 from .edge_widget import (
     EdgeWidget,
     TempWire,
@@ -122,11 +124,12 @@ class BlueprintCanvas(QWidget):
         # 视图手势（平移 / 滚轮缩放）中跳过的节点几何落位待补偿标记
         self._gesture_deferred = False
 
+        self._ui_active = True
         self._flow_timer = QTimer(self)
         self._flow_timer.setInterval(50)
         self._flow_timer.timeout.connect(self._tick_flow)
 
-        # 滚轮缩放手势标记：手势期间 GL 代理节点位图按纹理缩放（不重建
+        # 滚轮缩放手势标记：手势期间 RHI 代理节点位图按纹理缩放（不重建
         # 缓存），手势结束 150ms 后触发一次全量重建恢复清晰
         self._zooming = False
         self._zoom_settle = QTimer(self)
@@ -135,14 +138,18 @@ class BlueprintCanvas(QWidget):
         self._zoom_settle.timeout.connect(self._end_zoom_gesture)
 
         self._execution = ExecutionController(self)
+        self._resize_preview = ResizePreview(
+            self, on_settle=self._finish_resize_preview)
+        self._preview_nodes = {}
+        self._preview_flow = False
+        self._preview_capturing = False
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMinimumSize(320, 240)
         self.setAttribute(Qt.WA_OpaquePaintEvent, True)
 
-        # 绘制视口：GL 可用时为 QOpenGLWidget（GPU 加速），否则软件回退；
-        # 与画布 1:1 重合（resizeEvent 同步几何），节点控件挂在其下。
+        # RHI 视口与画布 1:1 重合，真实节点控件挂在其下。
         self._viewport = create_viewport(self)
         self._viewport.setGeometry(self.rect())
         self._viewport.show()
@@ -389,7 +396,7 @@ class BlueprintCanvas(QWidget):
         代理时：跳过**全部**节点的逐帧几何落位，仅重绘视口——节点由视口
         按场景坐标实时绘制缓存位图，视觉不受控件几何滞后影响。带可见
         自定义体的节点在手势开始时被临时切换为位图代理
-        （``NodeWidget.begin_gesture_proxy``）：实测 GL 视口上逐帧对
+        （``NodeWidget.begin_gesture_proxy``）：实测 RHI视口上逐帧对
         真实子控件树做落位 + 重绘的合成开销极高（最大化窗口 11 节点
         约 76ms/帧，切换后约 15ms/帧）。被跳过的几何与真实控件在手势
         结束时由 ``_settle_view_gesture`` 统一补偿恢复。
@@ -564,7 +571,7 @@ class BlueprintCanvas(QWidget):
         self._drag_moved = True
         defer = bool(getattr(self._viewport, "supports_node_proxy", False))
         # 受影响边（两端任一在被拖节点上）的旧包围盒仅软件模式的局部
-        # 重绘需要；GL 代理模式整幅重绘，跳过该统计开销
+        # 重绘需要；RHI代理模式整幅重绘，跳过该统计开销
         affected = []
         old_rects = []
         if not defer:
@@ -583,7 +590,7 @@ class BlueprintCanvas(QWidget):
             if w is not None and defer:
                 # 带可见自定义体的被拖节点同样切换手势位图代理（幂等）：
                 # 逐帧 apply_view 对真实子控件树做几何落位 + 重绘叠加
-                # GL 合成开销极高（实测单节点拖动约 140ms/帧）；
+                # RHI合成开销极高（实测单节点拖动约 140ms/帧）；
                 # 代理位图由视口按场景坐标实时绘制，视觉无滞后
                 w.begin_gesture_proxy()
             # 位图代理节点由视口按场景坐标实时绘制，拖动期间无需逐帧落位
@@ -948,10 +955,14 @@ class BlueprintCanvas(QWidget):
     # 流动动画
     # ------------------------------------------------------------------
     def _ensure_flow_timer(self) -> None:
-        if not self._flow_timer.isActive():
+        if (self._ui_active and not self._flow_timer.isActive()
+                and any(ew.flowing for ew in self._edge_widgets.values())):
             self._flow_timer.start()
 
     def _tick_flow(self) -> None:
+        if not self._ui_active:
+            self._flow_timer.stop()
+            return
         any_flowing = False
         rects = []
         for ew in self._edge_widgets.values():
@@ -968,24 +979,124 @@ class BlueprintCanvas(QWidget):
     # ------------------------------------------------------------------
     # 绘制（由内部视口承载，见 viewport.py）
     # ------------------------------------------------------------------
+    def grab(self, rectangle=QRect()):
+        pixmap = self._viewport.grab()
+        if rectangle.isNull():
+            return pixmap
+        dpr = self.devicePixelRatioF()
+        x, y, width, height = rectangle.getRect()
+        return pixmap.copy(QRect(round(x * dpr), round(y * dpr),
+                                 round(width * dpr), round(height * dpr)))
+
     def paintEvent(self, _event) -> None:
         # 画布本体被视口 1:1 覆盖；此处仅在视口尚未就位时兜底填底。
         p = QPainter(self)
         p.fillRect(self.rect(), QColor(str(T("color.bg.base"))))
         p.end()
 
+    def _preview_enabled(self):
+        return os.environ.get("UIKIT_RESIZE_PREVIEW", "on").lower() not in (
+            "off", "0", "false", "no")
+
     def resizeEvent(self, event) -> None:
-        """视口几何同步：始终与画布 1:1 重合。"""
+        """Canvas 缩放直接实时重绘；其他后端保留旧帧预览能力。"""
         vp = getattr(self, "_viewport", None)
-        if vp is not None:
+        enabled = self._preview_enabled()
+        if vp is not None and getattr(vp, "supports_direct_resize", False):
+            if self._resize_preview.active:
+                self._finish_resize_preview()
+            self._resize_preview.cancel()
+            self._preview_capturing = False
+            self._preview_nodes = {}
+            self._preview_flow = False
             vp.setGeometry(self.rect())
+            self.update()
+            super().resizeEvent(event)
+            return
+        if self._preview_capturing:
+            if vp is not None:
+                vp.setGeometry(self.rect())
+            return
+        started = False
+        if vp is not None and enabled and not self._resize_preview.active \
+                and self.graph.nodes():
+            self._preview_capturing = True
+            try:
+                snapshot = vp.grab()
+                vp.setGeometry(self.rect())
+                started = self._resize_preview.begin(snapshot)
+            finally:
+                self._preview_capturing = False
+        elif vp is not None:
+            vp.setGeometry(self.rect())
+        if started:
+            self._preview_nodes = {
+                node_id: widget.isVisibleTo(vp)
+                for node_id, widget in self._node_widgets.items()
+            }
+            self._preview_flow = self._flow_timer.isActive()
+            if self._preview_flow:
+                self._flow_timer.stop()
+            if getattr(vp, "supports_node_proxy", False):
+                self._view_changed(gesture=True)
+            else:
+                for widget in self._node_widgets.values():
+                    widget.hide()
+        elif enabled and self._resize_preview.active:
+            self._resize_preview.touch()
+        self.update()
         super().resizeEvent(event)
+
+    def _finish_resize_preview(self):
+        for node_id, visible in self._preview_nodes.items():
+            widget = self._node_widgets.get(node_id)
+            if widget is not None:
+                widget.setVisible(visible)
+        self._preview_nodes = {}
+        if self._gesture_deferred:
+            self._settle_view_gesture()
+        else:
+            self._update_view()
+        if self._preview_flow:
+            self._ensure_flow_timer()
+        self._preview_flow = False
+        self.update()
+
+    def _cancel_resize_preview(self):
+        self._resize_preview.cancel()
+        for node_id, visible in self._preview_nodes.items():
+            widget = self._node_widgets.get(node_id)
+            if widget is not None:
+                widget.setVisible(visible)
+        self._preview_nodes = {}
+        self._settle_view_gesture()
+        self._preview_flow = False
+
+    def on_ui_deactivated(self) -> None:
+        self._ui_active = False
+        self._flow_timer.stop()
+        self._cancel_resize_preview()
+
+    def on_ui_activated(self) -> None:
+        self._ui_active = True
+        self._ensure_flow_timer()
+        self._update_view()
+
+    def hideEvent(self, event) -> None:
+        self.on_ui_deactivated()
+        super().hideEvent(event)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.on_ui_activated()
 
     def update(self, *args) -> None:
         """重绘请求转发到内部绘制视口（保持外部 ``canvas.update()`` 习惯）。
 
         Qt 内部对画布自身的 C++ 级 update 不受影响（画布只兜底填底）。
         """
+        if not getattr(self, "_ui_active", True):
+            return
         vp = getattr(self, "_viewport", None)
         if vp is not None:
             vp.update(*args)

@@ -57,7 +57,7 @@ from PySide6.QtWidgets import (
 from ..icons import get_icon
 from ..theme import T, ThemeManager, set_property
 from ..tokens import FONT_FAMILY
-from .hub import MermaidRenderHub, _theme_variables
+from .hub import MermaidRenderHub, _LOAD_TIMEOUT_MS, _theme_variables
 
 __all__ = ["MermaidView"]
 
@@ -705,7 +705,7 @@ class MermaidView(QWidget):
             # 普通滚轮吃掉并转发宿主，Ctrl+wheel 放行给 JS 缩放
             self._web.installEventFilter(self)
             self._layout.addWidget(self._web)
-            QTimer.singleShot(10000, self._on_web_load_timeout)
+            QTimer.singleShot(_LOAD_TIMEOUT_MS, self._on_web_load_timeout)
         except Exception as exc:
             if self._web is not None:
                 self._web.deleteLater()

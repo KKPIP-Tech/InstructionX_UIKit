@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""组件 · 输入演示页：20 个输入与按钮组件，每组件一页，覆盖主要变体。
+"""组件 · 输入演示页：21 个输入与按钮组件，每组件一页，覆盖主要变体。
 
 页面 = 标题 + 说明 + 分区演示（变体 / 尺寸 / 状态），紧凑排布。
 所有组件基于全局 QSS 与令牌，亮 / 暗主题切换自动换肤。
@@ -9,6 +9,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from InstructionX_UIKit.components.auto_complete import AutoComplete
+from InstructionX_UIKit.components.budget_slider import (
+    BudgetSliderGroup, BudgetSpec)
 from InstructionX_UIKit.components.button import Button
 from InstructionX_UIKit.components.cascader import Cascader
 from InstructionX_UIKit.components.checkbox import CheckBox
@@ -30,6 +32,7 @@ from InstructionX_UIKit.components.transfer import Transfer
 from InstructionX_UIKit.components.upload import UploadWidget
 
 from .common import Section, hint_label, make_page, row
+from .playground import PlaygroundPanel, swap_widget, with_playground
 
 
 def _disabled(widget) -> QWidget:
@@ -54,16 +57,16 @@ def create_button_page() -> QWidget:
         _disabled(Button("禁用", variant="primary"))))
     sizes.layout().addWidget(Button("块级按钮 block", variant="primary", block=True))
     shapes = Section("形状 shape")
-    # 圆形按钮：QSS 约定「配合组件固定宽=高」，此处按 sm/md/lg 边长
-    # 24/32/40 固定为正方形，否则 "+" 单字按钮宽度由字宽决定，会渲染成
+    # 圆形按钮：QSS 约定「配合组件固定宽=高」，此处按 sm/md/lg 总高
+    # 22/28/34 固定为正方形，否则 "+" 单字按钮宽度由字宽决定，会渲染成
     # 细长条。短文本（≤2 字符）圆形按钮由组件按墨迹盒自绘，"+" 在三档
     # 尺寸下均水平 + 垂直精确居中。
     circle_sm = Button("+", shape="circle", variant="primary", size="sm")
-    circle_sm.setFixedSize(24, 24)
+    circle_sm.setFixedSize(22, 22)
     circle_md = Button("+", shape="circle", variant="primary")
-    circle_md.setFixedSize(32, 32)
+    circle_md.setFixedSize(28, 28)
     circle_lg = Button("+", shape="circle", variant="primary", size="lg")
-    circle_lg.setFixedSize(40, 40)
+    circle_lg.setFixedSize(34, 34)
     shapes.layout().addWidget(row(
         Button("圆角", shape="round"), circle_sm, circle_md, circle_lg,
         Button("胶囊", shape="round", variant="primary")))
@@ -185,6 +188,90 @@ def create_slider_page() -> QWidget:
     return make_page("Slider 滑块", "刻度与数值提示，QSS 精致滑轨。", [s])
 
 
+def create_budget_slider_page() -> QWidget:
+    # -- 基础：收紧预算后各行共享 120 的上限 --------------------------------
+    s1 = Section("基础 · 预算收紧")
+    group1 = BudgetSliderGroup(specs=[
+        BudgetSpec("甲", maximum=40, value=22, suffix=" 万"),
+        BudgetSpec("乙", maximum=40, value=18, suffix=" 万"),
+        BudgetSpec("丙", maximum=50, value=30, suffix=" 万"),
+        BudgetSpec("丁", maximum=50, value=20, suffix=" 万"),
+    ], cap=120)  # Σmax=180，收紧到 120 后预算墙才生效
+    info1 = hint_label("", role="secondary")
+
+    def _update_info1(total, cap, remaining):
+        info1.setText(f"合计 {total:.0f} / 上限 {cap:.0f} · 剩余 {remaining:.0f}"
+                      "（拖过绿色预算块右缘即被预算墙拦下并闪白光）")
+
+    group1.budgetChanged.connect(_update_info1)
+    _update_info1(group1.total, group1.cap, group1.remaining)
+    s1.layout().addWidget(group1)
+    s1.layout().addWidget(info1)
+
+    # -- 百分比：五段比例合计 100% ------------------------------------------
+    s2 = Section("百分比 · 合计 100%")
+    group2 = BudgetSliderGroup(title="相位比例", specs=[
+        BudgetSpec("等待", maximum=100, value=10, suffix="%"),
+        BudgetSpec("上升", maximum=100, value=30, suffix="%"),
+        BudgetSpec("平台", maximum=100, value=30, suffix="%"),
+        BudgetSpec("下降", maximum=100, value=20, suffix="%"),
+        BudgetSpec("结束", maximum=100, value=10, suffix="%"),
+    ], cap=100)
+    s2.layout().addWidget(group2)
+    s2.layout().addWidget(hint_label(
+        "五段比例共享 100% 上限：增大某一段，其余段的可加空间随之收缩。",
+        role="tertiary"))
+
+    # -- 小数量程：decimals=1 ------------------------------------------------
+    s3 = Section("小数量程")
+    group3 = BudgetSliderGroup(title="时长分配", specs=[
+        BudgetSpec("加速", minimum=0.5, maximum=8, value=2.0,
+                   suffix=" s", decimals=1, step=0.5, page_step=1),
+        BudgetSpec("匀速", minimum=0.5, maximum=8, value=3.5,
+                   suffix=" s", decimals=1, step=0.5, page_step=1),
+        BudgetSpec("减速", minimum=0.5, maximum=8, value=1.5,
+                   suffix=" s", decimals=1, step=0.5, page_step=1),
+    ], cap=12)
+    s3.layout().addWidget(group3)
+
+    # -- Playground：重建式参数应用 ------------------------------------------
+    s4 = Section("Playground")
+    host = QWidget()
+    host.setMinimumHeight(260)
+    state = {"cap": 120, "count": 4, "framed": True, "title": "预算分配"}
+
+    def build():
+        """cap / 行数 / framed / title 变化时重建实例。"""
+        specs = [BudgetSpec(f"项 {i + 1}", maximum=40 + (i % 2) * 10,
+                            value=20, suffix=" 万")
+                 for i in range(state["count"])]
+        widget = BudgetSliderGroup(title=state["title"], specs=specs,
+                                   cap=state["cap"], framed=state["framed"])
+        swap_widget(host, widget, alignment=Qt.AlignmentFlag.AlignTop)
+
+    panel = PlaygroundPanel("预算滑块组参数")
+    panel.add_int("合计上限 cap", 120, 20, 200,
+                  lambda v: (state.__setitem__("cap", v), build()), key="cap")
+    panel.add_int("行数", 4, 1, 6,
+                  lambda v: (state.__setitem__("count", v), build()),
+                  key="count")
+    panel.add_bool("卡片边框 framed", True,
+                   lambda v: (state.__setitem__("framed", v), build()),
+                   key="framed")
+    panel.add_text("标题 title", "预算分配",
+                   lambda v: (state.__setitem__("title", v), build()),
+                   key="title")
+    build()
+    s4.layout().addWidget(with_playground(host, panel))
+
+    return make_page(
+        "BudgetSliderGroup 预算滑块组",
+        "N 条滑块共享一个合计上限：反向色块实时显示组剩余预算，"
+        "预算墙夹取越界拖拽，超额写入按可削空间比例再分配；"
+        "头卡含合计大数、剩余徽标与堆叠分配条。",
+        [s1, s2, s3, s4])
+
+
 def create_date_picker_page() -> QWidget:
     s = Section("日期选择")
     dp = DatePicker()
@@ -303,6 +390,7 @@ INPUT_PAGES = [
     ("spin_box", "SpinBox 数字框", create_spin_box_page),
     ("combo_box", "ComboBox 下拉框", create_combo_box_page),
     ("slider", "Slider 滑块", create_slider_page),
+    ("budget_slider", "BudgetSliderGroup 预算滑块组", create_budget_slider_page),
     ("date_picker", "DatePicker 日期", create_date_picker_page),
     ("time_picker", "TimePicker 时间", create_time_picker_page),
     ("rating", "Rating 评分", create_rating_page),

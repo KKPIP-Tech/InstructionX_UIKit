@@ -18,11 +18,12 @@
 页面仅组合既有组件，主题切换由 CodeEditor / DiffEditor / 组件库各自保证。
 """
 
-import keyword
 import re
 
-from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QPainter
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout,
+                               QWidget)
 
 from InstructionX_UIKit.code_editor import CodeEditor, DiffEditor
 from InstructionX_UIKit.components import (
@@ -32,10 +33,10 @@ from InstructionX_UIKit.components import (
     Tabs,
     TextArea,
 )
-from InstructionX_UIKit.theme import T, set_property
+from InstructionX_UIKit.theme import T, set_font, set_property
 from InstructionX_UIKit.tokens import MONO_FAMILY
 
-from .common import Section, hint_label, make_page, row
+from .common import Section, flow_row, hint_label, make_page, row
 
 __all__ = ["create_page", "EditorDemoPage", "DiffDemoPage"]
 
@@ -440,19 +441,6 @@ FONT_OPTIONS = [
 # 补全 / 悬停 provider 演示数据
 # ---------------------------------------------------------------------------
 
-_PY_SNIPPETS = [
-    {"label": "def", "kind": "snippet", "detail": "函数定义片段",
-     "insert": "def name(args):\n    pass"},
-    {"label": "class", "kind": "snippet", "detail": "类定义片段",
-     "insert": "class Name:\n    def __init__(self):\n        pass"},
-    {"label": "for", "kind": "snippet", "detail": "for 循环片段",
-     "insert": "for item in items:\n    pass"},
-    {"label": "ifmain", "kind": "snippet", "detail": "主程序入口片段",
-     "insert": "if __name__ == \"__main__\":\n    main()"},
-    {"label": "try", "kind": "snippet", "detail": "异常捕获片段",
-     "insert": "try:\n    pass\nexcept Exception as exc:\n    raise"},
-]
-
 _HOVER_DOCS = {
     "calculate_total": (
         "<b>def</b> calculate_total(items: Iterable[OrderItem], "
@@ -473,21 +461,47 @@ _HOVER_DOCS = {
 _WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
-def _completion_items():
-    """Python 关键字 + 片段的完整候选（kind / detail 齐全）。"""
-    items = list(_PY_SNIPPETS)
-    for kw in sorted(keyword.kwlist):
-        items.append({"label": kw, "kind": "keyword",
-                      "detail": "Python 关键字", "insert": kw})
-    for fn in ("print", "len", "range", "enumerate", "isinstance", "sum"):
-        items.append({"label": fn, "kind": "function",
-                      "detail": "内置函数", "insert": fn})
-    return items
+def _apply_mono(widget, scale: str = "sm") -> None:
+    """用实例级 QSS 设置等宽字阶（不直接用 setFont）。"""
+    set_font(widget, scale)
+    widget.setStyleSheet(widget.styleSheet()
+                         + f"font-family: {MONO_FAMILY};")
 
 
 # ---------------------------------------------------------------------------
 # 子页 A：编辑器演示
 # ---------------------------------------------------------------------------
+
+class _ElideLabel(QLabel):
+    """可收缩的状态栏标签。
+
+    ``QLabel.minimumSizeHint()`` 的宽度等于文字宽度。一行状态栏里六段文本
+    （含可变的诊断信息）累加后把整页最小宽度顶到 971px，再叠加 Card /
+    Tabs / 页面自身的边距，内容控件就比视口宽出十几像素，窄窗口下直接
+    逼出一条横向滚动条。
+
+    这里把最小宽度塌成 0（高度照旧），绘制时按实际可用宽度省略：
+    空间紧张时缩短的是诊断文本，而不是把整页撑宽。
+    """
+
+    def __init__(self, text: str = "", mode=Qt.ElideRight, parent=None):
+        super().__init__(text, parent)
+        self._mode = mode
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setMinimumWidth(0)
+
+    def minimumSizeHint(self):  # noqa: N802 - Qt 回调
+        hint = super().minimumSizeHint()
+        return QSize(0, hint.height())
+
+    def paintEvent(self, event):  # noqa: N802 - Qt 回调
+        p = QPainter(self)
+        p.setPen(self.palette().color(self.foregroundRole()))
+        text = p.fontMetrics().elidedText(self.text(), self._mode,
+                                         max(0, self.width() - 2))
+        p.drawText(self.rect(), int(self.alignment()), text)
+        p.end()
+
 
 class EditorDemoPage(QWidget):
     """编辑器演示子页：工具条 + CodeEditor + 演示按钮 + 实时状态栏。"""
@@ -528,13 +542,15 @@ class EditorDemoPage(QWidget):
         self.sw_shortcuts.setToolTip(
             "关闭后编辑器不安装任何自定义快捷键（Ctrl+F/H/G/D/Space/Y）")
         self.sw_shortcuts.toggled.connect(self.editor.set_shortcuts_enabled)
-        self.sw_autocomplete = Switch(checked=False, size="sm")
+        self.sw_autocomplete = Switch(checked=True, size="sm")
         self.sw_autocomplete.setToolTip(
-            "默认关闭：补全仅 Ctrl+Space 触发；开启后输入字符自动弹出")
+            "默认开启：输入标识符自动弹出；关闭后仅 Ctrl+Space 触发")
         self.sw_autocomplete.toggled.connect(
             self.editor.set_completion_auto_trigger)
 
-        toolbar = row(
+        # 用可折行的 flow_row：这一行控件多且单个都窄，固定单行会在
+        # 窄窗口下把整页最小宽度顶到 971px，撑出一条横向滚动条
+        toolbar = flow_row(
             QLabel("语言"), self.lang_combo,
             QLabel("字体"), self.font_combo,
             QLabel("字号"), self.btn_font_down, self.font_size_label,
@@ -575,23 +591,23 @@ class EditorDemoPage(QWidget):
         self.btn_fold.clicked.connect(self.editor.fold_all)
         self.btn_unfold.clicked.connect(self.editor.unfold_all)
 
-        actions1 = row(self.btn_diag, self.btn_diag_clear, self.btn_bp,
-                       self.btn_find, self.btn_replace, self.btn_goto,
-                       spacing=6)
-        actions2 = row(self.btn_completion, self.btn_hover,
-                       self.btn_fold, self.btn_unfold, self.btn_remap,
-                       spacing=6)
+        actions1 = flow_row(self.btn_diag, self.btn_diag_clear, self.btn_bp,
+                            self.btn_find, self.btn_replace, self.btn_goto,
+                            spacing=6)
+        actions2 = flow_row(self.btn_completion, self.btn_hover,
+                            self.btn_fold, self.btn_unfold, self.btn_remap,
+                            spacing=6)
 
         # -- 状态栏（信号实时反馈主程序示例） --------------------------------
-        self.status_pos = QLabel()
-        self.status_sel = QLabel()
-        self.status_lang = QLabel()
-        self.status_indent = QLabel()
-        self.status_enc = QLabel("UTF-8")
-        self.status_diag = QLabel()
+        self.status_pos = _ElideLabel()
+        self.status_sel = _ElideLabel()
+        self.status_lang = _ElideLabel()
+        self.status_indent = _ElideLabel()
+        self.status_enc = _ElideLabel("UTF-8")
+        self.status_diag = _ElideLabel()
         for lab in (self.status_pos, self.status_sel, self.status_lang,
                     self.status_indent, self.status_enc, self.status_diag):
-            lab.setFont(self._mono(12))
+            _apply_mono(lab)
             set_property(lab, "role", "secondary")
         status_bar = QWidget()
         status_lay = QHBoxLayout(status_bar)
@@ -606,7 +622,6 @@ class EditorDemoPage(QWidget):
         # provider 默认注册（演示开箱即用）
         self._completion_on = True
         self._hover_on = True
-        self.editor.set_completion_provider(self._completion_provider)
         self.editor.set_hover_provider(self._hover_provider)
 
         # 信号驱动状态栏
@@ -635,13 +650,6 @@ class EditorDemoPage(QWidget):
         self._update_diag_status()
 
     # ------------------------------------------------------------------
-    @staticmethod
-    def _mono(px: int) -> QFont:
-        f = QFont()
-        f.setFamily(MONO_FAMILY)
-        f.setPixelSize(px)
-        return f
-
     # ------------------------------------------------------------------
     # 工具条回调
     # ------------------------------------------------------------------
@@ -689,8 +697,7 @@ class EditorDemoPage(QWidget):
 
     def _toggle_completion(self) -> None:
         self._completion_on = not self._completion_on
-        self.editor.set_completion_provider(
-            self._completion_provider if self._completion_on else None)
+        self.editor.set_completion_enabled(self._completion_on)
         self.btn_completion.setText(
             "补全演示: 开" if self._completion_on else "补全演示: 关")
 
@@ -714,15 +721,6 @@ class EditorDemoPage(QWidget):
     # ------------------------------------------------------------------
     # provider 实现（演示）
     # ------------------------------------------------------------------
-    def _completion_provider(self, prefix: str, line: int, col: int) -> list:
-        """补全 provider：按前缀过滤 Python 关键字 + 代码片段。"""
-        items = _completion_items()
-        if prefix:
-            matched = [it for it in items
-                       if it["label"].startswith(prefix.lower())]
-            return matched
-        return items[:12]  # 空前缀时给最常用的前 12 项，避免超长列表
-
     def _hover_provider(self, line: int, col: int):
         """悬停 provider：函数名 / 类名悬停显示签名富文本。"""
         lines = self.editor.text().split("\n")
@@ -836,7 +834,7 @@ class DiffDemoPage(QWidget):
         for edit, text in ((self.old_edit, DIFF_OLD),
                            (self.new_edit, DIFF_NEW)):
             edit.setPlainText(text)
-            edit.setFont(self._mono(12))
+            _apply_mono(edit)
             edit.setMinimumHeight(170)
 
         self.btn_update = Button("更新对比", variant="primary", size="sm")
@@ -853,7 +851,7 @@ class DiffDemoPage(QWidget):
 
         self.stats_label = QLabel()
         set_property(self.stats_label, "role", "secondary")
-        self.stats_label.setFont(self._mono(12))
+        _apply_mono(self.stats_label)
 
         self.diff = DiffEditor()
         self.diff.setMinimumHeight(420)
@@ -875,13 +873,6 @@ class DiffDemoPage(QWidget):
         self.update_diff()
 
     # ------------------------------------------------------------------
-    @staticmethod
-    def _mono(px: int) -> QFont:
-        f = QFont()
-        f.setFamily(MONO_FAMILY)
-        f.setPixelSize(px)
-        return f
-
     @staticmethod
     def _labeled(title: str, widget: QWidget) -> QWidget:
         host = QWidget()

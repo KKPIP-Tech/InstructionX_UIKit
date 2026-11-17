@@ -20,11 +20,11 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
+from InstructionX_UIKit.components.button import Button
 from InstructionX_UIKit.components.checkbox import CheckBox
 from InstructionX_UIKit.components.color_picker import ColorPicker
 from InstructionX_UIKit.components.combo_box import ComboBox
@@ -44,10 +44,8 @@ __all__ = [
 ]
 
 
-def _small_button(text: str) -> QPushButton:
-    btn = QPushButton(text)
-    set_property(btn, "size", "sm")
-    return btn
+def _small_button(text: str) -> Button:
+    return Button(text, size="sm")
 
 
 def add_specs(form: "ParamForm", opts: dict, specs) -> None:

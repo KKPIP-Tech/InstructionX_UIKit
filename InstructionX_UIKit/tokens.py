@@ -55,6 +55,7 @@ _SPACING = {
     "space.4": 16,
     "space.5": 20,
     "space.6": 24,
+    "space.7": 28,
     "space.8": 32,
     "space.10": 40,
     "space.12": 48,
@@ -62,14 +63,64 @@ _SPACING = {
 }
 
 # ---------------------------------------------------------------------------
+# 版面度量（layout metrics，单位 px）
+# ---------------------------------------------------------------------------
+# 间距刻度解决「元素之间隔多远」，版面度量解决「这一类东西固定用多大」——
+# 后者若散落成各处魔数，页面之间的对齐关系就会悄悄漂移（同一个左边距在
+# A 页 13px、B 页 12px，肉眼看是齐的，缩放一档就露馅）。这里把它们收成
+# 单一事实来源，Demo 骨架与组件一律引用令牌而不写字面量。
+#
+# 全部取值落在 2px 基网格上（主节奏 4px，6 / 10 / 30 等为光学或行高补偿，
+# 仍为偶数）；`layout.card.title_gap` 的 2px 是唯一的半档。
+
+_LAYOUT = {
+    #: 页面内容区相对窗口的内边距（左右 / 上 / 下同值，保证左右边距严格对称）
+    "layout.page.pad": 16,
+    #: 相邻分区卡片之间的垂直间距
+    "layout.gutter": 12,
+    #: 卡片内边距：左 / 右 / 上 / 下。上更紧是为了补偿标题行高，视觉上才等距。
+    "layout.card.pad_x": 12,
+    "layout.card.pad_top": 8,
+    "layout.card.pad_bottom": 12,
+    #: 卡片内标题区与内容区的间距
+    "layout.card.gap": 8,
+    #: 卡片标题与其下副标题的间距
+    "layout.card.title_gap": 2,
+    #: 紧贴型内边距（代码块 / 内嵌面板）
+    "layout.inset.pad_x": 8,
+    "layout.inset.pad_y": 6,
+    #: 代码块与卡片的内容边距
+    "layout.code.pad": 8,
+    #: 同一行内并列控件的间距
+    "layout.inline.gap": 8,
+    #: 表单 / 键值列表中「标签 → 控件」的间距
+    "layout.field.gap": 8,
+    #: 图标与相邻文字的间距（导航项等「图标 + 文字」组合统一用此值）
+    "layout.icon.gap": 6,
+    #: 页头与首个分区之间的间距
+    "layout.header.gap": 8,
+    #: 侧栏导航项左右内边距
+    "layout.nav.pad_x": 10,
+    #: 侧栏导航项高度
+    "layout.nav.row_h": 30,
+    #: 顶栏高度
+    "layout.topbar.h": 56,
+    #: 侧栏宽度（248px；与导航项内边距、图标边长组合后落在 2px 网格）
+    "layout.sidebar.w": 248,
+}
+
+
+# ---------------------------------------------------------------------------
 # 圆角（SPEC §2.4，单位 px）
 # ---------------------------------------------------------------------------
 
+#: 控件圆角阶梯：sm 用于小徽标 / 复选框，md 用于按钮与输入框，
+#: lg 用于卡片，xl 用于大面板。较上一版整体上调，配合更大的表面留白。
 _RADIUS = {
     "radius.sm": 4,
-    "radius.md": 6,
-    "radius.lg": 8,
-    "radius.xl": 12,
+    "radius.md": 8,
+    "radius.lg": 12,
+    "radius.xl": 16,
     "radius.pill": 999,
 }
 
@@ -196,13 +247,18 @@ _SHADOW_DARK = {
 # 色彩（SPEC §2.1，语义令牌，亮 / 暗两套）
 # ---------------------------------------------------------------------------
 
+#: 亮色语义色。色值为经典钢蓝系配色（低饱和度、不发亮）；
+#: canvas / border.subtle / warning.hover 三键为后增键，取值从该色阶推导。
 _COLOR_LIGHT = {
+    # 表面层级：canvas（页面底）→ base（卡片面）→ elevated（浮层 / 菜单 / 弹窗）
+    "color.bg.canvas": "#F6F7F9",
     "color.bg.base": "#FFFFFF",
     "color.bg.subtle": "#F6F7F9",
     "color.bg.muted": "#EFF1F5",
     "color.bg.elevated": "#FFFFFF",
     "color.border": "#E3E6EB",
     "color.border.strong": "#C9CFD8",
+    "color.border.subtle": "#EEF0F4",
     "color.text.primary": "#1C2330",
     "color.text.secondary": "#59636F",
     "color.text.tertiary": "#98A0AC",
@@ -216,6 +272,7 @@ _COLOR_LIGHT = {
     "color.success.hover": "#34684F",
     "color.success.subtle": "#E9F2EC",
     "color.warning": "#C08A3E",
+    "color.warning.hover": "#A97634",
     "color.warning.subtle": "#F7F0E3",
     "color.danger": "#B25050",
     "color.danger.hover": "#9A4444",
@@ -224,12 +281,14 @@ _COLOR_LIGHT = {
 }
 
 _COLOR_DARK = {
-    "color.bg.base": "#15181E",
-    "color.bg.subtle": "#1B1F27",
+    "color.bg.canvas": "#15181E",
+    "color.bg.base": "#1B1F27",
+    "color.bg.subtle": "#1F242E",
     "color.bg.muted": "#232936",
     "color.bg.elevated": "#1F242E",
     "color.border": "#2C333F",
     "color.border.strong": "#3D4654",
+    "color.border.subtle": "#21262F",
     "color.text.primary": "#E7EAF0",
     "color.text.secondary": "#A6AEBB",
     "color.text.tertiary": "#6E7684",
@@ -243,6 +302,7 @@ _COLOR_DARK = {
     "color.success.hover": "#55D0A0",
     "color.success.subtle": "#22362D",
     "color.warning": "#D2A668",
+    "color.warning.hover": "#E2BC85",
     "color.warning.subtle": "#3A3226",
     "color.danger": "#CD7A7A",
     "color.danger.hover": "#F07878",
@@ -259,6 +319,7 @@ LIGHT = {
     **_COLOR_LIGHT,
     **_FONT,
     **_SPACING,
+    **_LAYOUT,
     **_RADIUS,
     **_SHADOW_LIGHT,
     **_BREAKPOINT,
@@ -270,6 +331,7 @@ DARK = {
     **_COLOR_DARK,
     **_FONT,
     **_SPACING,
+    **_LAYOUT,
     **_RADIUS,
     **_SHADOW_DARK,
     **_BREAKPOINT,

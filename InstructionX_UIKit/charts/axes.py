@@ -253,6 +253,42 @@ def _numeric_extent(data):
     return None
 
 
+#: 类别标签之间的最小净距（px）
+_LABEL_GAP = 4.0
+
+
+def _label_step(cats, plot_w: float, fm) -> int:
+    """类别轴标签抽稀步长：每隔 ``step`` 个类别画一个标签。
+
+    此前每个类别都画标签且不做任何避让，K 线 30 个「10日」这种宽度接近
+    band 宽的标签会连成一片糊成字墙（实测「10日11日12日」完全无缝隙）。
+    这里按「最宽标签 + 净距」算出放得下的密度。
+    """
+    n = len(cats)
+    if n <= 1 or plot_w <= 0:
+        return 1
+    widest = 0.0
+    for c in cats:
+        w = fm.horizontalAdvance(str(c))
+        if w > widest:
+            widest = w
+    band = plot_w / n
+    if widest <= 0 or band <= 0:
+        return 1
+    need = widest + _LABEL_GAP
+    if need <= band:
+        return 1
+    return max(1, int(math.ceil(need / band)))
+
+
+#: 带可见圆点标记的系列类型：绘制时按 coord.plot 裁剪，若轴范围正好贴着
+#: 数据极值，端点上的圆会被切掉一半，故数值轴需要额外留白。
+_MARKER_SERIES = ("scatter", "effectScatter")
+#: 数值轴两端的留白比例（相对数据跨度）。最大点径 24px / 绘图区约 600px
+#: ≈ 4%，取 3% 足够且不会让刻度明显变稀。
+_MARKER_AXIS_PAD = 0.03
+
+
 def _series_extent(data, key):
     """带缓存的系列极值。
 
@@ -269,6 +305,8 @@ def _series_extent(data, key):
         return hit[1]
     if key == "y":
         ext = _numeric_extent(data)
+        if ext is None:
+            ext = _structured_extent(data, 1)
     else:
         ext = _x_extent(data)
     if len(_EXTENT_CACHE) >= _EXTENT_CACHE_LIMIT:
@@ -327,6 +365,82 @@ def _x_extent(data):
     if not xs:
         return None
     return min(xs), max(xs)
+
+
+def _structured_extent(data, idx: int):
+    """``[x, y, ...]`` 结构型数据第 ``idx`` 维的 (min, max)。
+
+    与 :func:`_x_extent` 同源，只是取第 ``idx`` 维（y = 1）。
+
+    此前 y 方向**没有**对应的实现：``_series_extent(data, "y")`` 直接走
+    ``_numeric_extent``，而后者只认扁平标量列表，遇到 ``[x, y]`` / ``[x, y, z]``
+    一律返回 None，于是回退到 ``_iter_data_values`` —— 那会把**所有维度
+    展平**后求极值。散点带第三维（[气温, 湿度, AQI]）时 AQI 的 180 就把 y 轴
+    撑到 0~200，而湿度实际只在 25~95，六成绘图区空着。
+    """
+    n = 0
+    try:
+        n = len(data)
+    except TypeError:
+        return None
+    if n == 0:
+        return None
+    step = max(1, n // 64)
+    probe = list(range(0, min(n, 24))) + list(range(0, n, step)) \
+        + list(range(max(0, n - 24), n))
+    structured = False
+    for i in probe:
+        item = data[i]
+        if isinstance(item, dict):
+            item = item.get("value")
+        if isinstance(item, (list, tuple)) and len(item) > idx:
+            structured = True
+            break
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            return None
+    if not structured:
+        return None
+    if _np is not None:
+        raw = data.raw if hasattr(data, "raw") else data
+        if isinstance(raw, _np.ndarray) and raw.ndim == 2 and raw.shape[1] > idx:
+            try:
+                col = _np.asarray(raw[:, idx], dtype=_np.float64)
+            except (TypeError, ValueError):
+                return None
+            if col.size == 0:
+                return None
+            return float(_np.nanmin(col)), float(_np.nanmax(col))
+    ys = []
+    for item in data:
+        if isinstance(item, dict):
+            item = item.get("value")
+        if isinstance(item, (list, tuple)) and len(item) > idx:
+            y = item[idx]
+            if isinstance(y, (int, float)) and not isinstance(y, bool):
+                ys.append(float(y))
+    if not ys:
+        return None
+    return min(ys), max(ys)
+
+
+def _lines_extent(data, key):
+    """线图 ``coords`` 起终点的 x/y 极值；无有效坐标对时返回 ``None``。"""
+    index = 0 if key == "x" else 1
+    values = []
+    for item in data or []:
+        if not isinstance(item, dict):
+            continue
+        coords = item.get("coords")
+        if not isinstance(coords, (list, tuple)):
+            continue
+        for point in coords:
+            if not isinstance(point, (list, tuple)) or len(point) <= index:
+                continue
+            value = point[index]
+            if isinstance(value, (int, float)) and not isinstance(value, bool) \
+                    and math.isfinite(value):
+                values.append(float(value))
+    return (min(values), max(values)) if values else None
 
 
 class AxisModel:
@@ -492,8 +606,20 @@ class AxisModel:
             return 0
         frac = (px - start) / (end - start)
         if self.type == "category":
-            n = max(1, len(self.categories))
-            return min(max(int(frac * n), 0), n - 1)
+            def band_index(bands):
+                position = frac * bands
+                nearest = round(position)
+                if math.isclose(position, nearest, rel_tol=0.0, abs_tol=1e-9):
+                    position = nearest  # 映射往返的浮点误差不能造成相邻项偏移
+                return min(max(int(position), 0), max(0, math.ceil(bands) - 1))
+
+            if self.categories:
+                return band_index(len(self.categories))
+            # 流式空 category 与 map() 共用隐式下标范围，不能固定取第 0 项。
+            span = float(self.vmax) - float(self.vmin)
+            if span > 1e-9:
+                return band_index(span)
+            return 0
         return self.vmin + frac * (self.vmax - self.vmin)
 
     # -- 外观 ------------------------------------------------------------
@@ -594,7 +720,12 @@ class GridCoord(Coord):
         # 卡顿的真正来源，故必须缓存。
         y_lo = y_hi = None
         for s in grid_series:
-            ext = _series_extent(s.get("data"), "y")
+            if s.get("type") == "lines":
+                ext = _lines_extent(s.get("data"), "y")
+                if ext is None:
+                    continue
+            else:
+                ext = _series_extent(s.get("data"), "y")
             if ext is None:
                 vals = list(_iter_data_values(s.get("data")))
                 if not vals:
@@ -604,6 +735,14 @@ class GridCoord(Coord):
                 y_lo = ext[0]
             if y_hi is None or ext[1] > y_hi:
                 y_hi = ext[1]
+        # 带可见圆点标记的系列：极值点若正好压在轴范围端点上，绘制时的
+        # setClipRect(coord.plot) 会把它切掉一半（实测最左 / 最右各缺半个圆）。
+        # 数值轴按跨度的固定比例两端各留一点余量。
+        if any(s.get("type") in _MARKER_SERIES for s in grid_series):
+            if y_lo is not None and y_hi is not None and y_hi > y_lo:
+                pad = (y_hi - y_lo) * _MARKER_AXIS_PAD
+                y_lo -= pad
+                y_hi += pad
         if y_lo is None:
             self.y_axis.set_extent(0.0, 1.0)
         else:
@@ -635,7 +774,12 @@ class GridCoord(Coord):
                     continue
                 if n == 0:
                     continue
-                ext_x = _series_extent(data, "x")
+                if s.get("type") == "lines":
+                    ext_x = _lines_extent(data, "x")
+                    if ext_x is None:
+                        continue
+                else:
+                    ext_x = _series_extent(data, "x")
                 if ext_x is not None:
                     xs.append(ext_x[0])
                     xs.append(ext_x[1])
@@ -648,8 +792,16 @@ class GridCoord(Coord):
                 xs.append(scalar_max)
             if xs:
                 lo_x, hi_x = min(xs), max(xs)
+                if any(s.get("type") in _MARKER_SERIES for s in grid_series) \
+                        and hi_x > lo_x:
+                    pad = (hi_x - lo_x) * _MARKER_AXIS_PAD
+                    lo_x -= pad
+                    hi_x += pad
                 self.x_axis.set_extent(lo_x, hi_x)
-                self.x_axis.vmin, self.x_axis.vmax = lo_x, hi_x
+                user_lo = _opt_bound(self.x_axis.min)
+                user_hi = _opt_bound(self.x_axis.max)
+                self.x_axis.vmin = lo_x if user_lo is None else user_lo
+                self.x_axis.vmax = hi_x if user_hi is None else user_hi
             elif self.x_axis.type == "value":
                 self.x_axis.set_extent(0.0, 1.0)
 
@@ -699,11 +851,16 @@ class GridCoord(Coord):
                 Qt.AlignRight | Qt.AlignVCenter, format_value(tv))
         # x 轴：类别标签 / 数值刻度 + 纵向网格线
         if self.x_axis.type == "category":
-            for i, cat in enumerate(self.x_axis.categories):
+            cats = self.x_axis.categories
+            n = len(cats)
+            step = _label_step(cats, self.plot.width(), fm)
+            for i, cat in enumerate(cats):
                 px = self.x_axis.map(i, self.plot.left(), self.plot.right(),
                                      local=True)
                 p.setPen(QPen(c_grid, 1))
                 p.drawLine(QPointF(px, self.plot.top()), QPointF(px, self.plot.bottom()))
+                if i % step:
+                    continue
                 p.setPen(c_text)
                 p.drawText(QRectF(px - 40, self.plot.bottom() + 4, 80, fm.height()),
                            Qt.AlignHCenter | Qt.AlignTop, str(cat))
@@ -1106,7 +1263,12 @@ class CalendarCoord(Coord):
         # 水平居中
         grid_w = self._cell * self._weeks
         ox = rect.left() + label_left + max(0.0, (avail_w - grid_w) / 2)
-        self._origin = QPointF(ox, rect.top() + label_top)
+        # 纵向同样居中。cellSize="auto" 时格子边长被**宽度**卡住
+        # （53 周摊在约 600px 上 → 约 11.5px），7 行只有 80px 高，而可用高度
+        # 有 300px 以上；不居中的话整块年历死死贴在顶部，下面四分之三全是空白。
+        grid_h = self._cell * 7.0
+        oy = rect.top() + label_top + max(0.0, (avail_h - grid_h) / 2)
+        self._origin = QPointF(ox, oy)
 
     def cell_rect(self, day) -> QRectF:
         """日期 → 单元格矩形（无法解析 / 范围外返回空矩形）。"""
@@ -1151,6 +1313,9 @@ class CalendarCoord(Coord):
                               self._cell),
                        Qt.AlignRight | Qt.AlignVCenter, label)
         # 月份标签：每月 1 日所在列（去重，避免相邻列重复绘制；跨年逐月遍历）
+        # 纵向跟着网格走（_origin.y），不能钉在 rect.top()——网格在可用高度里
+        # 居中后，钉在顶部会与网格之间裂开一大片空白。
+        label_y = self._origin.y() - fm.height() - 2
         first = self._first_monday()
         last_col = -1
         for d in self._month_dates():
@@ -1160,7 +1325,7 @@ class CalendarCoord(Coord):
                 continue
             last_col = col
             x = self._origin.x() + col * self._cell
-            p.drawText(QRectF(x, self.rect.top(), 40, fm.height()),
+            p.drawText(QRectF(x, label_y, 40, fm.height()),
                        Qt.AlignLeft | Qt.AlignVCenter, _MONTH_LABELS[d.month - 1])
         p.restore()
 

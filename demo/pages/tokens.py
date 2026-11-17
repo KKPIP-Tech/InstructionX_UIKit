@@ -177,7 +177,7 @@ class _Bar(QWidget):
     def __init__(self, width: int, parent=None):
         super().__init__(parent)
         self.setFixedSize(max(width, 2), 18)
-        ThemeManager.instance().theme_changed.connect(lambda *_: self.update())
+        ThemeManager.instance().theme_changed.connect(self.update)
 
     def paintEvent(self, event):  # noqa: N802
         p = QPainter(self)
@@ -195,7 +195,7 @@ class _RadiusBox(QWidget):
         super().__init__(parent)
         self._radius = radius
         self.setFixedSize(72, 48)
-        ThemeManager.instance().theme_changed.connect(lambda *_: self.update())
+        ThemeManager.instance().theme_changed.connect(self.update)
 
     def paintEvent(self, event):  # noqa: N802
         p = QPainter(self)

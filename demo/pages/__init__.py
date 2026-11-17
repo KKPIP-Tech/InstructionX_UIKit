@@ -20,6 +20,7 @@ from . import (
     code_editor,
     display,
     feedback,
+    icon_library,
     inputs,
     layouts,
     tokens,
@@ -30,6 +31,7 @@ from .common import usage_section
 USAGE = {
     # -- 设计令牌 / 基础 --------------------------------------------------
     "tokens": 'from InstructionX_UIKit.theme import T, ThemeManager  # T("color.primary") 取令牌',
+    "icon_library": 'from InstructionX_UIKit import get_icon, search_icons  # get_icon("home", size=24, stroke_width=1.5)',
     "basic_widgets": 'from InstructionX_UIKit.components import Button, LineEdit, CheckBox  # 标准控件换肤',
     "charts": 'from InstructionX_UIKit.charts import ChartWidget  # set_option({...}) 数据驱动渲染',
     # -- 组件 · 输入 ------------------------------------------------------
@@ -43,6 +45,7 @@ USAGE = {
     "spin_box": 'SpinBox(minimum=0, maximum=99, value=1)  # DoubleSpinBox 同理',
     "combo_box": 'ComboBox(items=["选项一", "选项二"], searchable=True)',
     "slider": 'Slider(minimum=0, maximum=100, value=30)',
+    "budget_slider": 'from InstructionX_UIKit.components.budget_slider import BudgetSliderGroup, BudgetSpec  # BudgetSliderGroup(specs=[BudgetSpec("甲", maximum=40, value=22)], cap=120)',
     "date_picker": 'DatePicker()  # 弹出自定义中文日历',
     "time_picker": 'TimePicker()  # 时 / 分 / 秒调节',
     "rating": 'Rating(count=5, value=3.5)',
@@ -125,6 +128,7 @@ def _register(pages):
 NAV = [
     ("tokens", "设计令牌", _register([
         ("tokens", "设计令牌总览", tokens.create_page),
+        ("icon_library", "图标库", icon_library.create_page),
     ])),
     ("layouts", "布局预设", list(layouts.LAYOUT_PAGES)),  # 布局页自带「用法」分区
     ("inputs", "组件 · 输入", _register(inputs.INPUT_PAGES)),

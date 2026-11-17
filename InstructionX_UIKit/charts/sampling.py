@@ -30,6 +30,7 @@ __all__ = [
     "visible_threshold",
     "bucket_count",
     "bucket_sample",
+    "sample_indices",
     "sample_entries",
     "column_aggregate",
 ]
@@ -179,6 +180,89 @@ def _bucket_bounds(n: int, threshold: int):
     return out
 
 
+def _blocked_numpy_extrema(values, bounds, block=64):
+    """用二维索引计算每桶 argmin/argmax，保持首命中与 NaN 语义。
+
+    与原逐桶分块实现的输出逐项一致；额外数组规模只取决于输入点数，
+    不保留历史数据。``block`` 仅为旧调用签名保留，不影响分桶边界。
+    """
+    del block
+    if not bounds:
+        return []
+    starts = _np.asarray([start for start, _end in bounds], dtype=_np.int64)
+    ends = _np.asarray([end for _start, end in bounds], dtype=_np.int64)
+    lengths = ends - starts
+    min_indices = _np.empty(len(bounds), dtype=_np.int64)
+    max_indices = _np.empty(len(bounds), dtype=_np.int64)
+    for width in _np.unique(lengths):
+        selected = _np.flatnonzero(lengths == width)
+        selected_starts = starts[selected]
+        positions = selected_starts[:, None] + _np.arange(width)
+        bucket_values = values[positions]
+        min_indices[selected] = selected_starts + _np.argmin(bucket_values, axis=1)
+        max_indices[selected] = selected_starts + _np.argmax(bucket_values, axis=1)
+    return list(zip(min_indices.tolist(), max_indices.tolist()))
+
+
+_SAMPLE_PLAN_CACHE = {}
+_SAMPLE_PLAN_CACHE_MAX = 8
+
+
+def _sample_plan(n, buckets):
+    """按数据长度与桶数复用只读索引计划，缓存规模有界。"""
+    key = (n, buckets)
+    cached = _SAMPLE_PLAN_CACHE.get(key)
+    if cached is not None:
+        return cached
+    columns = _np.arange(buckets, dtype=_np.int64)
+    starts = _np.ceil(columns * (n / buckets)).astype(_np.int64)
+    ends = _np.ceil((columns + 1) * (n / buckets)).astype(_np.int64)
+    ends[-1] = n
+    empty = ends <= starts
+    starts[empty] = _np.minimum(columns[empty], n - 1)
+    ends[empty] = _np.minimum(starts[empty] + 1, n)
+    lengths = ends - starts
+    groups = []
+    for width in _np.unique(lengths):
+        selected = _np.flatnonzero(lengths == width)
+        selected_starts = starts[selected]
+        positions = selected_starts[:, None] + _np.arange(width)
+        groups.append((selected, selected_starts, positions))
+    if len(_SAMPLE_PLAN_CACHE) >= _SAMPLE_PLAN_CACHE_MAX:
+        _SAMPLE_PLAN_CACHE.pop(next(iter(_SAMPLE_PLAN_CACHE)))
+    cached = tuple(groups)
+    _SAMPLE_PLAN_CACHE[key] = cached
+    return cached
+
+
+def sample_indices(values, buckets: int):
+    """数值序列的像素桶极值下标，保留原顺序、首命中与有效端点。"""
+    if _np is None:
+        raise NotImplementedError("数值下标采样需要 numpy")
+    raw = values.raw if isinstance(values, NumericBuffer) else values
+    values = _np.asarray(raw, dtype=_np.float64)
+    n = len(values)
+    if buckets < 2 or buckets >= n or values.ndim != 1:
+        return _np.arange(n, dtype=_np.int64)
+    minima = _np.empty(buckets, dtype=_np.int64)
+    maxima = _np.empty(buckets, dtype=_np.int64)
+    for selected, selected_starts, positions in _sample_plan(n, buckets):
+        bucket_values = values[positions]
+        minima[selected] = selected_starts + _np.argmin(bucket_values, axis=1)
+        maxima[selected] = selected_starts + _np.argmax(bucket_values, axis=1)
+    indices = _np.stack((minima, maxima), axis=1).reshape(-1)
+    indices.sort()
+    keep = _np.empty(indices.size, dtype=bool)
+    keep[0] = True
+    keep[1:] = indices[1:] != indices[:-1]
+    indices = indices[keep]
+    if _np.isfinite(values[0]) and (not indices.size or indices[0] != 0):
+        indices = _np.concatenate((_np.asarray([0], dtype=_np.int64), indices))
+    if _np.isfinite(values[-1]) and (not indices.size or indices[-1] != n - 1):
+        indices = _np.concatenate((indices, _np.asarray([n - 1], dtype=_np.int64)))
+    return indices.astype(_np.int64, copy=False)
+
+
 def bucket_sample(values, threshold: int, x_values=None):
     """逐桶保留极值（min/max 包络）。
 
@@ -217,13 +301,12 @@ def bucket_sample(values, threshold: int, x_values=None):
         v = values
         x = x_values
 
+    extrema = _blocked_numpy_extrema(v, bounds) if use_np else None
     out = []
     ap = out.append
-    for s, e in bounds:
+    for bucket_index, (s, e) in enumerate(bounds):
         if use_np:
-            seg = v[s:e]
-            imin = s + int(_np.argmin(seg))
-            imax = s + int(_np.argmax(seg))
+            imin, imax = extrema[bucket_index]
         else:
             imin = s
             imax = s
@@ -277,6 +360,8 @@ def column_aggregate(values, buckets: int, x_values=None):
             x = x_values.raw if isinstance(x_values, NumericBuffer) else x_values
         try:
             v = _np.asarray(v, dtype=_np.float64)
+            if v.ndim != 1:
+                return None, False
             if x is not None:
                 x = _np.asarray(x, dtype=_np.float64)
         except (TypeError, ValueError):
@@ -292,6 +377,7 @@ def column_aggregate(values, buckets: int, x_values=None):
                 "min": float(seg.min()),
                 "max": float(seg.max()),
                 "count": int(e - s),
+                "index": mid,
                 "x": float(x[mid]) if x is not None else mid,
             })
         return (out, True) if out else (None, False)
@@ -300,10 +386,14 @@ def column_aggregate(values, buckets: int, x_values=None):
     for s, e in bounds:
         if e <= s:
             continue
+        if isinstance(values[s], (list, tuple, dict)):
+            return None, False
         lo = hi = values[s]
         total = 0.0
         for j in range(s, e):
             val = values[j]
+            if isinstance(val, (list, tuple, dict)):
+                return None, False
             total += val
             if val < lo:
                 lo = val
@@ -313,6 +403,7 @@ def column_aggregate(values, buckets: int, x_values=None):
         out.append({
             "value": total / (e - s), "min": lo, "max": hi,
             "count": e - s,
+            "index": mid,
             "x": (x_values[mid] if x_values is not None else mid),
         })
     return (out, True) if out else (None, False)
