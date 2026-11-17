@@ -81,6 +81,13 @@ def distinct_colors(widget):
             colors.add(img.pixel(x, y) & 0xFFFFFF)
             if len(colors) > 4:
                 return len(colors)
+    if len(colors) <= 1:
+        # 稀疏网格可能漏掉“一”等细线文字；仅对疑似空白做完整像素复核。
+        background = img.pixel(w - 1, 0) & 0xFFFFFF
+        for y in range(h):
+            for x in range(w):
+                if (img.pixel(x, y) & 0xFFFFFF) != background:
+                    return 2
     return len(colors)
 
 
