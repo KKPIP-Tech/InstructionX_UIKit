@@ -19,6 +19,7 @@ heatmap / parallel / themeRiver。
 """
 
 import math
+import numbers
 import weakref
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
@@ -29,12 +30,27 @@ from PySide6.QtGui import (
     QPainter,
     QPainterPath,
     QPen,
+    QPolygonF,
 )
 
 from ..theme import T
 from ._utils import dist_point_segment, to_float as _to_float, with_alpha
 from .axes import CalendarCoord, GridCoord, chart_font, format_value
 from .core import SeriesRenderer, parse_data_point, register_series
+from .data import NumericBuffer
+from .sampling import (
+    bucket_count,
+    column_aggregate,
+    sample_entries,
+    sample_indices,
+    sampling_options,
+    visible_threshold,
+)
+
+try:  # pragma: no cover - 环境相关分支（无 numpy 时走纯 Python 路径）
+    import numpy as _np
+except Exception:  # noqa: BLE001
+    _np = None
 
 __all__ = [
     "BarSeriesRenderer",
@@ -523,6 +539,36 @@ class PictorialBarSeriesRenderer(BarSeriesRenderer):
 # line 折线（完整版，覆盖 core 自检版）
 # ---------------------------------------------------------------------------
 
+def _pin_endpoints(entries, data, xs):
+    """把数据首尾端点并入采样结果，并保持 x 升序。
+
+    ``entries`` 为 ``[(x, y), ...]``；``xs`` 为数值 x 轴下的真实 x 列表，
+    为 ``None`` 时按「x 即下标」处理。返回新的列表。
+    """
+    try:
+        n = len(data)
+    except TypeError:
+        return entries
+    if n < 2:
+        return entries
+    first_y = _to_float(data[0], None)
+    last_y = _to_float(data[n - 1], None)
+    extra = []
+    if first_y is not None:
+        extra.append((0 if xs is None else xs[0], first_y))
+    if last_y is not None:
+        extra.append((n - 1 if xs is None else xs[n - 1], last_y))
+    if not extra:
+        return entries
+    merged = list(entries)
+    have = {e[0] for e in merged}
+    for e in extra:
+        if e[0] not in have:
+            merged.append(e)
+    merged.sort(key=lambda e: e[0])
+    return merged
+
+
 class LineSeriesRenderer(SeriesRenderer):
     """折线图（完整版，注册时覆盖 core 的 SimpleLineSeriesRenderer）。
 
@@ -531,7 +577,8 @@ class LineSeriesRenderer(SeriesRenderer):
     - ``areaStyle``: dict 或真值，面积填充（透明渐变），
       ``areaStyle.opacity`` 可调（默认 0.22）；
     - ``step``: "start" | "middle" | "end" 阶梯线；
-    - ``showSymbol``: 是否绘制数据点（默认 True）；
+    - ``showSymbol``: 是否绘制数据点（默认 True）；显式 ``"auto"`` 时超过
+      512 个可见点跳过符号，缺省与显式 True 的强制显示语义不变；
     - ``symbolSize``: 数据点直径 px（默认 6）；
     - ``lineStyle``: {"type": "solid|dashed|dotted", "width": px, "color": ...}；
     - 支持 grid / polar（闭合）/ singleAxis 坐标系；
@@ -543,17 +590,195 @@ class LineSeriesRenderer(SeriesRenderer):
         self._points = []        # [QPointF|None]
         self._prev_points = []   # 上一次布局的点（同长度时用于兜底插值）
         self._entries = []       # [(x, y)]
+        self._gpu_geometry = None
+        self._gpu_entries = None
+        # 保留 gpuDirect 选项的读取语义；渲染由平台 RHI 统一承载。
+        self._gpu_direct = bool(opt.get("gpuDirect", False))
+        #: 矢量映射首用自检状态（见 _map_sampled_fast 的护栏说明）
+        self._fast_map_checked = False
+        self._fast_map_disabled = False
+        self._last_symbol_count = 0
+
+    @property
+    def gpu_direct(self) -> bool:
+        return self._gpu_direct
+
+    def _line_viewport_px(self, coord, rect):
+        """采样阈值所用的视口像素宽（优先绘图区宽度）。
+
+        注意：``QRectF.width`` 是**方法**，必须取调用结果而非方法对象——
+        直接 ``getattr(...)`` 拿到的是绑定方法，真值判断恒为真，随后在
+        ``float()`` 处抛异常并被上游的容错分支吞掉，表现为「采样静默失效、
+        全量点照旧渲染」。
+        """
+        if rect is None:
+            return None
+        plot_rect = getattr(coord, "plot", None)
+        w = None
+        if plot_rect is not None:
+            getter = getattr(plot_rect, "width", None)
+            if callable(getter):
+                w = getter()
+            elif isinstance(getter, (int, float)):
+                w = getter
+        if not isinstance(w, (int, float)) or w <= 0:
+            w = rect.width() if callable(getattr(rect, "width", None)) \
+                else rect.width
+        return w if isinstance(w, (int, float)) and w > 0 else None
+
+    def _auto_x_limit(self) -> int:
+        """数值 x 轴的 x 提取扫描上限（避免百万级下标逐点解析开销）。"""
+        return 200_000
+
+    def _line_x_values(self, coord, single):
+        """数值 x 轴下各数据点的真实 x 列表；category 轴返回 ``None``。
+
+        这一步是**必需的**：category 轴与 singleAxis 下 x 就是数据下标，
+        直接用下标采样即可；但**数值 x 轴下 x 是真实数据坐标**，若仍拿下标
+        当 x 传给采样器，0..n-1 会被当成 x 坐标，曲线会缩到坐标轴左端的一小
+        段里（实测首点 x 由 48 变成 644688，只覆盖约 4% 图宽）。
+
+        性能：数值序列（``NumericBuffer`` / ``ndarray``）没有任何元素携带
+        自己的 x，x 即下标，于是直接用 numpy 生成——逐点调 ``parse_data_point``
+        解析百万级元素要 60 ms 以上，而这里只要微秒级。
+        """
+        if single:
+            return None
+        x_axis = getattr(coord, "x_axis", None)
+        if getattr(x_axis, "type", "") != "value":
+            return None
+        data = self.data_view()
+        n = len(data)
+        if n == 0:
+            return None
+        # 快路径：数值序列的 x 恒为下标（Python list 的 int 项同理）
+        if isinstance(data, NumericBuffer) or (
+                _np is not None and isinstance(data, _np.ndarray)):
+            if _np is not None:
+                return _np.arange(n, dtype=_np.float64)
+            return list(range(n))
+        lim = min(n, self._auto_x_limit())
+        out = []
+        for i in range(lim):
+            x, _y = parse_data_point(data[i], i)
+            out.append(x if isinstance(x, (int, float))
+                       and not isinstance(x, bool) else i)
+        if lim < n:
+            # 超出扫描上限：其余点按下标处理（极端大数据下的保守退化）
+            out.extend(range(lim, n))
+        return out
+
+    def _sample_line(self, coord, single, rect):
+        """在渲染器内完成采样，显式区分 category / 数值 x 两种语义。
+
+        返回 ``[(x, y), ...]`` 或 ``None``（未采样）。
+        """
+        opts = sampling_options(self.opt)
+        if not opts.enabled:
+            return None
+        viewport_px = self._line_viewport_px(coord, rect)
+        if not viewport_px:
+            return None
+        n = len(self.data_view())
+        threshold = visible_threshold(viewport_px, opts.safety)
+        if threshold < 2 or n <= threshold:
+            return None
+        buckets = bucket_count(viewport_px)
+        xs = self._line_x_values(coord, single)
+        if xs is None:
+            entries, sampled = sample_entries(self.data_view(), threshold,
+                                              buckets)
+        else:
+            entries, sampled = sample_entries(self.data_view(), threshold,
+                                              buckets, x_values=xs)
+        if not sampled or not entries:
+            return None
+        # 强制保留数据首尾端点：逐桶取极值时，末尾不足一桶的零头点可能完全
+        # 落不进任何桶的 min/max（实测 150 万点下首点 x=0 与末点被丢掉），
+        # 曲线两端会凭空少一截。折线采样必须钉住端点。
+        return _pin_endpoints(entries, self.data_view(), xs)
+
+    def _numeric_arrays(self, coord, rect):
+        if _np is None or not isinstance(coord, GridCoord):
+            return None
+        if coord.x_axis.type != "value" or coord.y_axis.type != "value":
+            return None
+        data = self.data_view()
+        if not isinstance(data, NumericBuffer) or not isinstance(data.raw, _np.ndarray):
+            return None
+        options = sampling_options(self.opt)
+        viewport_px = self._line_viewport_px(coord, rect)
+        if not options.enabled or not viewport_px:
+            return None
+        threshold = visible_threshold(viewport_px, options.safety)
+        if threshold < 2 or len(data) <= threshold:
+            return None
+        raw = _np.asarray(data.raw, dtype=_np.float64)
+        if raw.ndim != 1:
+            return None
+        indices = sample_indices(raw, bucket_count(viewport_px))
+        mapped = self._map_sampled_fast(coord, indices, raw[indices], as_points=False)
+        if mapped is None:
+            return None
+        return indices, raw[indices], mapped
+
+    def _numeric_layout(self, coord, rect):
+        arrays = self._numeric_arrays(coord, rect)
+        if arrays is None:
+            return None
+        indices, values, (px, py) = arrays
+        self._points = [QPointF(float(x), float(y)) for x, y in zip(px, py)]
+        self._entries = list(zip(indices.astype(_np.float64).tolist(), values.tolist()))
+        return self._points
+
+    def _ensure_legacy_geometry(self):
+        geometry = self._gpu_geometry
+        if geometry is None:
+            return
+        indices, values = self._gpu_entries
+        self._points = [QPointF(float(x), float(y)) for x, y in zip(*geometry)]
+        self._entries = list(zip(indices.astype(_np.float64).tolist(), values.tolist()))
+        self._gpu_geometry = None
+        self._gpu_entries = None
 
     # -- 布局 -------------------------------------------------------------
     def layout(self, rect: QRectF) -> None:
+        gpu_layout = getattr(getattr(self.chart, "_viewport", None), "layout_line", None)
+        if gpu_layout is not None and gpu_layout(self, rect):
+            return
         coord = self.chart.coord_for(self.opt)
+        self._ensure_legacy_geometry()
         self._prev_points = list(self._points)
         self._points = []
         self._entries = []
+        self._gpu_geometry = None
+        self._gpu_entries = None
         if coord is None:
             return
         single = getattr(coord, "kind", "") == "singleAxis"
-        for i, item in enumerate(self.data()):
+        if not single and self._numeric_layout(coord, rect) is not None:
+            return
+        # 运行时降采样（§8.2 保真承诺）：可见点数超过视口像素量级时才启用。
+        # 阈值用**绘图区像素宽**（GridCoord.plot.width）而非坐标区宽：两者
+        # 相差左右边距（实测 480 的坐标区里绘图区只有 408），用坐标区宽会
+        # 多产出约 18% 的点，既浪费也削弱「逐像素列一桶」的对齐关系。
+        sampled = self._sample_line(coord, single, rect)
+        if sampled is not None:
+            xs = [e[0] for e in sampled]
+            ys = [e[1] for e in sampled]
+            self._entries = list(sampled)
+            fast = self._map_sampled_fast(coord, xs, ys)
+            if fast is not None:
+                self._points = fast
+                return
+            for x, y in sampled:
+                try:
+                    self._points.append(coord.map_point(y) if single
+                                        else coord.map_point(x, y))
+                except Exception:
+                    self._points.append(None)
+            return
+        for i, item in enumerate(self.data_view()):
             x, y = parse_data_point(item, i)
             self._entries.append((x, y))
             if y is None:
@@ -567,9 +792,107 @@ class LineSeriesRenderer(SeriesRenderer):
             except Exception:
                 self._points.append(None)
 
+    def _map_sampled_fast(self, coord, xs, ys, as_points=True):
+        """采样点 → 屏幕坐标的**向量化**映射；不适用时返回 ``None``。
+
+        逐点调 ``coord.map_point`` 每个点约 2.3 µs（实测 818 点 1.9 ms），
+        在「多图同帧更新」场景下是主要开销之一。数值轴使用仿射映射，
+        category 轴使用与其 ``AxisModel.map`` 完全相同的 band 中心语义，
+        两者均可用 numpy 一次算完。日历坐标等语义不同的路径不走此分支。
+
+        必须保持与 ``AxisModel.map`` 完全一致的数值语义：
+
+        - 非有限值走 ``axis.map`` 的中性分支（横向取区间中点、纵向取下界）；
+        - 映射结果保持浮点，不做 ``trunc``，与 ``QPointF`` 的坐标一致；
+        - category 数字下标先按 ``int()`` 向零截断，再减 dataZoom 窗口偏移；
+          空类目使用隐式下标范围计算 band，不能取 ``max(1, 0)``。
+        """
+        if _np is None or coord is None:
+            return None
+        if not isinstance(coord, GridCoord):
+            return None
+        x_axis = getattr(coord, "x_axis", None)
+        y_axis = getattr(coord, "y_axis", None)
+        if x_axis is None or y_axis is None:
+            return None
+        x_type = str(getattr(x_axis, "type", ""))
+        if x_type not in ("value", "category") \
+                or str(getattr(y_axis, "type", "")) != "value":
+            return None
+        plot = getattr(coord, "plot", None)
+        if plot is None or len(xs) == 0:
+            return None
+        try:
+            ax = _np.asarray(xs, dtype=_np.float64)
+            ay = _np.asarray(ys, dtype=_np.float64)
+            vmin = float(x_axis.vmin)
+            vmax = float(x_axis.vmax)
+            ymin = float(y_axis.vmin)
+            ymax = float(y_axis.vmax)
+        except (TypeError, ValueError):
+            return None
+        if not (ymax > ymin):
+            return None
+        left, right = plot.left(), plot.right()
+        bottom, top = plot.bottom(), plot.top()
+        okx = _np.isfinite(ax)
+        oky = _np.isfinite(ay)
+        if x_type == "category":
+            if not bool(_np.all(okx)):
+                return None
+            indices = _np.trunc(ax) - float(x_axis.window_offset())
+            bands = len(x_axis.categories) if x_axis.categories else vmax - vmin
+            if bands <= 1e-9:
+                return None
+            px = (right - left) / bands * (indices + 0.5) + left
+        else:
+            if not (vmax > vmin):
+                return None
+            px = _np.where(okx,
+                           (ax - vmin) / (vmax - vmin) * (right - left) + left,
+                           (left + right) / 2.0)
+        py = _np.where(oky,
+                       (ay - ymin) / (ymax - ymin) * (top - bottom) + bottom,
+                       bottom)
+        # 自检：首次使用时抽样比对矢量映射与逐点映射，一旦分歧即永久禁用。
+        # 这条护栏的存在理由很实在——本快路径曾因「顺手对齐 int()」加了 trunc
+        # 而与 map_point 的浮点语义不符，导致曲线整体偏移，但计数、非空等断言
+        # 全部照旧通过，只有逐像素列极值比对才暴露。护栏让同类偏离**立刻可见**。
+        if not self._fast_map_checked:
+            self._fast_map_checked = True
+            if not self._fast_map_matches(coord, ax, ay, px, py):
+                self._fast_map_disabled = True
+                return None
+        if self._fast_map_disabled:
+            return None
+        if not as_points:
+            return px, py
+        return [QPointF(float(a), float(b)) for a, b in zip(px, py)]
+
+    def _fast_map_matches(self, coord, ax, ay, px, py) -> bool:
+        """抽样比对矢量映射与逐点映射是否一致（首用自检）。"""
+        n = ax.size
+        if n == 0:
+            return True
+        step = max(1, n // 8)
+        for i in range(0, n, step):
+            try:
+                ref = coord.map_point(float(ax[i]), float(ay[i]))
+            except Exception:  # noqa: BLE001
+                return False
+            if abs(ref.x() - float(px[i])) > 1e-9 \
+                    or abs(ref.y() - float(py[i])) > 1e-9:
+                return False
+        return True
+
     def _animated_points(self, anim_t):
         """旧→新插值：长度一致时逐点 lerp；否则返回当前点列。"""
+        self._ensure_legacy_geometry()
         cur = self._points
+        if anim_t >= 1.0 or not self.chart.anim.is_running():
+            return cur
+        if self.prev_data is not None and len(self.prev_data) != len(self._entries):
+            return cur
         prev_src = self._prev_points
         if self.prev_data is not None and len(self.prev_data) == len(self._entries):
             coord = self.chart.coord_for(self.opt)
@@ -634,10 +957,32 @@ class LineSeriesRenderer(SeriesRenderer):
             return ax.map(v, coord.plot.bottom(), coord.plot.top())
         return None
 
+    def _line_needs_path(self, polar):
+        return bool(
+            polar
+            or self.opt.get("smooth")
+            or str(self.opt.get("step") or "") in ("start", "middle", "end")
+            or self.opt.get("areaStyle")
+        )
+
+    def _draw_symbols(self, painter, valid, color, anim_t):
+        setting = self.opt.get("showSymbol", True)
+        enabled = len(valid) <= 512 if setting == "auto" else bool(setting)
+        if not enabled:
+            return 0
+        radius = max(1.0, _to_float(self.opt.get("symbolSize"), 6.0) / 2)
+        radius *= max(0.2, anim_t)
+        painter.setPen(QPen(color, 1.5))
+        painter.setBrush(QColor(T("color.bg.elevated")))
+        for point in valid:
+            painter.drawEllipse(point, radius, radius)
+        return len(valid)
+
     # -- 绘制 -------------------------------------------------------------
     def paint(self, p: QPainter, anim_t: float) -> None:
         pts = self._animated_points(anim_t)
         valid = [pt for pt in pts if pt is not None]
+        self._last_symbol_count = 0
         if not valid:
             return
         coord = self.chart.coord_for(self.opt)
@@ -709,19 +1054,15 @@ class LineSeriesRenderer(SeriesRenderer):
         for seg_pts in segs:
             if len(seg_pts) < 2:
                 continue
+            if not self._line_needs_path(polar):
+                p.drawPolyline(QPolygonF(seg_pts))
+                continue
             path, _ = self._line_path(seg_pts)
             if polar:
                 path.closeSubpath()
             p.drawPath(path)
 
-        # 数据点
-        if bool(self.opt.get("showSymbol", True)):
-            r = max(1.0, _to_float(self.opt.get("symbolSize"), 6.0) / 2)
-            r *= max(0.2, anim_t)
-            p.setPen(QPen(color, 1.5))
-            p.setBrush(QColor(T("color.bg.elevated")))
-            for pt in valid:
-                p.drawEllipse(pt, r, r)
+        self._last_symbol_count = self._draw_symbols(p, valid, color, anim_t)
         p.restore()
 
     # -- 交互 -------------------------------------------------------------
@@ -769,6 +1110,87 @@ class ScatterSeriesRenderer(SeriesRenderer):
     def __init__(self, chart, opt):
         super().__init__(chart, opt)
         self._dots = []      # [dict(pt=QPointF, r=float, value, index, x)]
+        #: 是否走了 large 像素桶聚合（聚合后每桶一个图元，语义见 sampling.py）
+        self._aggregated = False
+
+    def _large_enabled(self) -> bool:
+        """是否启用 large 像素桶聚合。
+
+        ``large: true`` 显式开启；``large: "auto"``（或未给出但 sampling
+        开启）时按点数与视口宽度自动判定。判定统一走「保真承诺」的阈值：
+        可见点数未超视口像素量级 → 不聚合。
+        """
+        raw = self.opt.get("large", "auto")
+        if raw is False:
+            return False
+        opts = sampling_options(self.opt)
+        return bool(raw) or opts.enabled
+
+    def _large_x_values(self, coord, single):
+        """``large`` 聚合所需的 x 序列；无需显式 x 时返回 ``None``。
+
+        标量数据（``NumericBuffer`` / 数值列表）在数值 x 轴下的 x 即**下标**。
+        若误用「桶中点下标」当 x，下标量级（0..n-1）会远超实际 x 轴范围
+        （标量数据的 x 轴范围是 [0,1]），点会被全部映射到坐标区之外——
+        实测百万散点整幅**空白**。故此处与折线同样按下标取值。
+        """
+        if single:
+            return None
+        data = self.data_view()
+        n = len(data)
+        if n == 0:
+            return None
+        if isinstance(data, NumericBuffer) or (
+                _np is not None and isinstance(data, _np.ndarray)):
+            if _np is not None:
+                return _np.arange(n, dtype=_np.float64)
+            return list(range(n))
+        # 结构型数据（[x, y] 对）：取各点的真实 x
+        out = []
+        for i in range(n):
+            x, _y = parse_data_point(data[i], i)
+            out.append(x if isinstance(x, (int, float))
+                       and not isinstance(x, bool) else i)
+        return out
+
+    def _large_dots(self, coord, rect):
+        """按像素桶聚合散点，返回 ``[dot, ...]`` 或 ``None``（未聚合）。"""
+        if rect is None:
+            return None
+        plot_rect = getattr(coord, "plot", None)
+        px = None
+        getter = getattr(plot_rect, "width", None)
+        if callable(getter):
+            px = getter()
+        if not isinstance(px, (int, float)) or px <= 0:
+            px = rect.width() if callable(getattr(rect, "width", None)) \
+                else rect.width
+        if not isinstance(px, (int, float)) or px <= 0:
+            return None
+        opts = sampling_options(self.opt)
+        data = self.data_view()
+        n = len(data)
+        threshold = visible_threshold(px, opts.safety)
+        if threshold < 2 or n <= threshold:
+            return None
+        single = getattr(coord, "kind", "") == "singleAxis"
+        xs = self._large_x_values(coord, single)
+        buckets, done = column_aggregate(data, bucket_count(px),
+                                         x_values=xs)
+        if not done or not buckets:
+            return None
+        dots = []
+        for b in buckets:
+            try:
+                pt = coord.map_point(b["value"]) if single \
+                    else coord.map_point(b["x"], b["value"])
+            except Exception:
+                continue
+            dots.append({"pt": pt, "r": 3.0, "value": b["value"],
+                         "index": int(b["index"]),
+                         "x": b["x"], "count": b["count"],
+                         "min": b["min"], "max": b["max"]})
+        return dots or None
 
     # -- 布局 -------------------------------------------------------------
     def _third_dim(self, item):
@@ -779,16 +1201,28 @@ class ScatterSeriesRenderer(SeriesRenderer):
 
     def layout(self, rect: QRectF) -> None:
         self._dots = []
+        self._aggregated = False
         coord = self.chart.coord_for(self.opt)
         if coord is None:
             return
         single = getattr(coord, "kind", "") == "singleAxis"
-        fixed = _to_float(self.opt.get("symbolSize"), None)
-        thirds = [self._third_dim(it) for it in self.data()]
+        # symbolSize 允许标量（固定点径）或 [min, max]（第三维映射区间）
+        _sz = self.opt.get("symbolSize")
+        fixed = _to_float(_sz, None) if not isinstance(_sz, (list, tuple)) else _sz
+        # large 模式：百万级散点逐点绘制既不可行也无意义（远超屏幕可分辨
+        # 能力），改为按像素桶聚合，每桶一个图元。阈值与折线同源：可见点数
+        # 未超视口像素量级时不聚合。
+        if self._large_enabled() and not single:
+            agg = self._large_dots(coord, rect)
+            if agg is not None:
+                self._dots = agg
+                self._aggregated = True
+                return
+        thirds = [self._third_dim(it) for it in self.data_view()]
         known = [t for t in thirds if t is not None]
         zmin = min(known) if known else 0.0
         zmax = max(known) if known else 1.0
-        for i, item in enumerate(self.data()):
+        for i, item in enumerate(self.data_view()):
             x, y = parse_data_point(item, i)
             if y is None:
                 continue
@@ -796,7 +1230,15 @@ class ScatterSeriesRenderer(SeriesRenderer):
                 pt = coord.map_point(y) if single else coord.map_point(x, y)
             except Exception:
                 continue
-            if fixed is not None:
+            if isinstance(fixed, (list, tuple)) and len(fixed) >= 2:
+                # symbolSize: [min, max] —— 第三维映射到该区间（ECharts 语义）。
+                # 此前只接受标量，导致「点径」控件在开启第三维映射时完全失效。
+                lo_r = max(1.0, (_to_float(fixed[0], 6.0) or 6.0) / 2)
+                hi_r = max(lo_r, (_to_float(fixed[1], 24.0) or 24.0) / 2)
+                span = zmax - zmin
+                f = 0.5 if span == 0 else (thirds[i] - zmin) / span if thirds[i] is not None else 0.5
+                r = _lerp(lo_r, hi_r, f)
+            elif fixed is not None:
                 r = max(1.0, fixed / 2)
             elif thirds[i] is not None:
                 span = zmax - zmin
@@ -816,6 +1258,23 @@ class ScatterSeriesRenderer(SeriesRenderer):
         if isinstance(coord, GridCoord):
             p.setClipRect(coord.plot)
         color = self.color()
+        if self._aggregated:
+            # 聚合模式：每像素桶一个方块，桶内点数越多越不透明——这是密度
+            # 语义，与逐点绘制大小无关；尺寸取像素级 2px 保证列间不重叠。
+            p.setPen(Qt.NoPen)
+            scale = max(0.0, anim_t)
+            for d in self._dots:
+                # 桶内点数越多越不透明（密度语义），上限 235 留出叠加余地
+                alpha = 90 + min(145, 12 * int(math.log2(max(1, d["count"]))))
+                p.setBrush(_with_alpha(color, alpha))
+                pt = d["pt"]
+                side = 2.0 * scale
+                if side <= 0:
+                    continue
+                p.drawRect(QRectF(pt.x() - side / 2, pt.y() - side / 2,
+                                  side, side))
+            p.restore()
+            return
         p.setPen(QPen(_with_alpha(color, 230), 1))
         p.setBrush(_with_alpha(color, 190))
         scale = max(0.0, anim_t)

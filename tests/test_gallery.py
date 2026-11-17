@@ -96,7 +96,7 @@ def _assert_shot(pm, name):
 
 def grab_current(win):
     """截取当前页完整内容（滚动页取内部内容控件以覆盖全页）。"""
-    page = win._stack.currentWidget()
+    page = win._stack._current
     if page is None:
         raise AssertionError("当前无页面")
     content = page.widget() if isinstance(page, QScrollArea) else page

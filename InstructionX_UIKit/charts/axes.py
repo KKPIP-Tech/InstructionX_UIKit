@@ -29,6 +29,11 @@ from ..theme import T
 from ..tokens import FONT_FAMILY
 from ._utils import to_float as _utils_to_float
 
+try:  # pragma: no cover - 环境相关分支（无 numpy 时走纯 Python 逐点路径）
+    import numpy as _np
+except Exception:  # noqa: BLE001
+    _np = None
+
 __all__ = [
     "nice_ticks",
     "format_value",
@@ -145,10 +150,16 @@ class Coord:
     #: 供 ChartWidget.coord_for 按 series.coordinateSystem 匹配。
     kind = ""
 
+    #: 轴范围重算计数（``set_series`` 每次执行自增）。
+    #: 静态层（坐标轴/网格/刻度文字）的缓存键用它判断「轴相关的东西是否变了」：
+    #: 若沿用 option 版本号，纯数据更新也会让整幅静态位图重建（实测 8.15 ms/帧）。
+    data_extent_version = 0
+
     def __init__(self, chart=None, option: dict = None):
         self.chart = chart
         self.option = dict(option or {})
         self.rect = QRectF()
+        self.data_extent_version = 0
 
     # -- 协议 ------------------------------------------------------------
     def layout(self, rect: QRectF) -> None:
@@ -170,6 +181,7 @@ class Coord:
     # -- 可选 ------------------------------------------------------------
     def set_series(self, series_opts: list) -> None:
         """接收原始系列 option 列表（布局前调用，用于数值范围统计）。"""
+        self.data_extent_version += 1
 
     def invert_x(self, pos: QPointF):
         """像素 → 主轴数据值（默认不支持，返回 None）。"""
@@ -194,6 +206,241 @@ def _iter_data_values(data):
                     yield float(sub)
         elif isinstance(v, (int, float)) and not isinstance(v, bool):
             yield float(v)
+
+
+#: 数据对象标识 → (min, max) 的极值缓存。
+#: 轴范围只取决于 series 数据本身（不含 dataZoom 窗口），而 ``ChartWidget._rebuild``
+#: 在**每次缩放 / 平移 / 数据更新**时都会重算——百万点逐点扫描要 400 ms 以上，
+#: 是缩放卡顿的真正来源。按数据对象身份缓存后，缩放时零成本。
+_EXTENT_CACHE: dict = {}
+_EXTENT_CACHE_LIMIT = 64
+
+
+def _numeric_extent(data):
+    """数值序列的 (min, max)；非数值序列或空序列返回 ``None``。
+
+    快路径：``NumericBuffer`` / ndarray 直接走 numpy 的 min/max（微秒级），
+    避免对百万级数据做 Python 逐点迭代。
+    """
+    n = 0
+    try:
+        n = len(data)
+    except TypeError:
+        return None
+    if n == 0:
+        return None
+    if _np is not None:
+        raw = data.raw if hasattr(data, "raw") else data
+        if isinstance(raw, _np.ndarray):
+            try:
+                arr = _np.asarray(raw, dtype=_np.float64)
+            except (TypeError, ValueError):
+                return None
+            if arr.size == 0 or not _np.isfinite(arr).any():
+                return None
+            return float(_np.nanmin(arr)), float(_np.nanmax(arr))
+    if isinstance(data, (list, tuple)):
+        lo = hi = None
+        for v in data:
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                return None
+            fv = float(v)
+            if lo is None or fv < lo:
+                lo = fv
+            if hi is None or fv > hi:
+                hi = fv
+        return (lo, hi) if lo is not None else None
+    return None
+
+
+#: 类别标签之间的最小净距（px）
+_LABEL_GAP = 4.0
+
+
+def _label_step(cats, plot_w: float, fm) -> int:
+    """类别轴标签抽稀步长：每隔 ``step`` 个类别画一个标签。
+
+    此前每个类别都画标签且不做任何避让，K 线 30 个「10日」这种宽度接近
+    band 宽的标签会连成一片糊成字墙（实测「10日11日12日」完全无缝隙）。
+    这里按「最宽标签 + 净距」算出放得下的密度。
+    """
+    n = len(cats)
+    if n <= 1 or plot_w <= 0:
+        return 1
+    widest = 0.0
+    for c in cats:
+        w = fm.horizontalAdvance(str(c))
+        if w > widest:
+            widest = w
+    band = plot_w / n
+    if widest <= 0 or band <= 0:
+        return 1
+    need = widest + _LABEL_GAP
+    if need <= band:
+        return 1
+    return max(1, int(math.ceil(need / band)))
+
+
+#: 带可见圆点标记的系列类型：绘制时按 coord.plot 裁剪，若轴范围正好贴着
+#: 数据极值，端点上的圆会被切掉一半，故数值轴需要额外留白。
+_MARKER_SERIES = ("scatter", "effectScatter")
+#: 数值轴两端的留白比例（相对数据跨度）。最大点径 24px / 绘图区约 600px
+#: ≈ 4%，取 3% 足够且不会让刻度明显变稀。
+_MARKER_AXIS_PAD = 0.03
+
+
+def _series_extent(data, key):
+    """带缓存的系列极值。
+
+    ``key`` 为目标轴：``"y"`` 取 y 值，``"x"`` 取自带 x 值。**标量数据没有
+    自带 x**（渲染器按下标取值），此时 ``"x"`` 返回 ``None``，由调用方改用
+    ``[0, n-1]`` 的下标范围。
+
+    缓存键用数据对象的 ``id`` 与长度，并**同时持有该对象的强引用**——否则
+    对象被回收后 ``id`` 可能被复用，造成把别的数据的极值当成自己的。
+    """
+    ck = (id(data), len(data) if hasattr(data, "__len__") else 0, key)
+    hit = _EXTENT_CACHE.get(ck)
+    if hit is not None and hit[0] is data:
+        return hit[1]
+    if key == "y":
+        ext = _numeric_extent(data)
+        if ext is None:
+            ext = _structured_extent(data, 1)
+    else:
+        ext = _x_extent(data)
+    if len(_EXTENT_CACHE) >= _EXTENT_CACHE_LIMIT:
+        _EXTENT_CACHE.clear()
+    _EXTENT_CACHE[ck] = (data, ext)
+    return ext
+
+
+def _x_extent(data):
+    """自带 x 值序列的 (min, max)；标量数据返回 ``None``。"""
+    n = 0
+    try:
+        n = len(data)
+    except TypeError:
+        return None
+    if n == 0:
+        return None
+    # 抽样判别：只有 [x, y] 这类结构型数据才自带 x
+    step = max(1, n // 32)
+    probe = list(range(0, min(n, 24))) + list(range(0, n, step)) \
+        + list(range(max(0, n - 24), n))
+    is_pair = False
+    for i in probe:
+        item = data[i]
+        if isinstance(item, dict):
+            v = item.get("value")
+            if isinstance(v, (list, tuple)) and len(v) >= 2:
+                is_pair = True
+                break
+            continue
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            is_pair = True
+            break
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            return None
+    if not is_pair:
+        return None
+    if _np is not None:
+        raw = data.raw if hasattr(data, "raw") else data
+        if isinstance(raw, _np.ndarray) and raw.ndim == 2:
+            try:
+                col = _np.asarray(raw[:, 0], dtype=_np.float64)
+            except (TypeError, ValueError):
+                return None
+            if col.size == 0:
+                return None
+            return float(_np.nanmin(col)), float(_np.nanmax(col))
+    xs = []
+    for item in data:
+        if isinstance(item, dict):
+            item = item.get("value")
+        if isinstance(item, (list, tuple)) and item:
+            x = item[0]
+            if isinstance(x, (int, float)) and not isinstance(x, bool):
+                xs.append(float(x))
+    if not xs:
+        return None
+    return min(xs), max(xs)
+
+
+def _structured_extent(data, idx: int):
+    """``[x, y, ...]`` 结构型数据第 ``idx`` 维的 (min, max)。
+
+    与 :func:`_x_extent` 同源，只是取第 ``idx`` 维（y = 1）。
+
+    此前 y 方向**没有**对应的实现：``_series_extent(data, "y")`` 直接走
+    ``_numeric_extent``，而后者只认扁平标量列表，遇到 ``[x, y]`` / ``[x, y, z]``
+    一律返回 None，于是回退到 ``_iter_data_values`` —— 那会把**所有维度
+    展平**后求极值。散点带第三维（[气温, 湿度, AQI]）时 AQI 的 180 就把 y 轴
+    撑到 0~200，而湿度实际只在 25~95，六成绘图区空着。
+    """
+    n = 0
+    try:
+        n = len(data)
+    except TypeError:
+        return None
+    if n == 0:
+        return None
+    step = max(1, n // 64)
+    probe = list(range(0, min(n, 24))) + list(range(0, n, step)) \
+        + list(range(max(0, n - 24), n))
+    structured = False
+    for i in probe:
+        item = data[i]
+        if isinstance(item, dict):
+            item = item.get("value")
+        if isinstance(item, (list, tuple)) and len(item) > idx:
+            structured = True
+            break
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            return None
+    if not structured:
+        return None
+    if _np is not None:
+        raw = data.raw if hasattr(data, "raw") else data
+        if isinstance(raw, _np.ndarray) and raw.ndim == 2 and raw.shape[1] > idx:
+            try:
+                col = _np.asarray(raw[:, idx], dtype=_np.float64)
+            except (TypeError, ValueError):
+                return None
+            if col.size == 0:
+                return None
+            return float(_np.nanmin(col)), float(_np.nanmax(col))
+    ys = []
+    for item in data:
+        if isinstance(item, dict):
+            item = item.get("value")
+        if isinstance(item, (list, tuple)) and len(item) > idx:
+            y = item[idx]
+            if isinstance(y, (int, float)) and not isinstance(y, bool):
+                ys.append(float(y))
+    if not ys:
+        return None
+    return min(ys), max(ys)
+
+
+def _lines_extent(data, key):
+    """线图 ``coords`` 起终点的 x/y 极值；无有效坐标对时返回 ``None``。"""
+    index = 0 if key == "x" else 1
+    values = []
+    for item in data or []:
+        if not isinstance(item, dict):
+            continue
+        coords = item.get("coords")
+        if not isinstance(coords, (list, tuple)):
+            continue
+        for point in coords:
+            if not isinstance(point, (list, tuple)) or len(point) <= index:
+                continue
+            value = point[index]
+            if isinstance(value, (int, float)) and not isinstance(value, bool) \
+                    and math.isfinite(value):
+                values.append(float(value))
+    return (min(values), max(values)) if values else None
 
 
 class AxisModel:
@@ -287,7 +534,21 @@ class AxisModel:
                 idx = int(value)
             else:
                 idx = self.local_index(value)
-            n = max(1, len(self.categories))
+            n = len(self.categories)
+            if n <= 0:
+                # 空类目兜底：``{"type": "category", "data": []}`` 是流式入图的
+                # 标准写法（见 docs/USAGE.md §8.3）——类目随数据增长，创建图表
+                # 时还是空的。此时不能拿 ``max(1, 0) = 1`` 当 band 数：那会把整幅
+                # 绘图区当成一个 band，每个下标都算成「第 0.5 个类目」，屏幕 x
+                # 变成 idx×(绘图区宽)，200 个点里最后一个落到 x≈165000（绘图区
+                # 右边界才 872），整幅图看起来只剩一条压在边缘的平线。
+                # 故改由 x 轴的隐式下标范围（set_series 按各系列长度推导）定
+                # band 数；轴范围不可用时退回「x 即像素值」的原行为。
+                span = float(self.vmax) - float(self.vmin)
+                if span > 1e-9:
+                    band = (end - start) / span
+                    return start + band * (self.local_index(value) + 0.5)
+                return start + self.local_index(value) - self.vmin
             band = (end - start) / n
             return start + band * (idx + 0.5)
         v = _to_float(value, self.vmin)
@@ -296,10 +557,17 @@ class AxisModel:
         return start + (end - start) * frac
 
     def band_width(self, start: float, end: float) -> float:
-        """category 轴单个 band 的像素宽度（value 轴返回 0）。"""
-        if self.type != "category" or not self.categories:
+        """category 轴单个 band 的像素宽度（value 轴返回 0）。
+
+        空类目时按 x 轴的隐式下标范围折算（理由见 :meth:`map`）；轴范围也
+        不可用时才返回 0。
+        """
+        if self.type != "category":
             return 0.0
-        return abs(end - start) / len(self.categories)
+        if self.categories:
+            return abs(end - start) / len(self.categories)
+        span = float(self.vmax) - float(self.vmin)
+        return abs(end - start) / span if span > 1e-9 else 0.0
 
     def category_index(self, value) -> int:
         """类别值（名字或序号）→ 下标（不 clamp）。
@@ -429,32 +697,100 @@ class GridCoord(Coord):
 
     # -- 数据范围 ---------------------------------------------------------
     def set_series(self, series_opts: list) -> None:
-        ys = []
-        for s in series_opts or []:
-            if not isinstance(s, dict):
-                continue
-            if s.get("coordinateSystem") not in (None, "cartesian2d", "grid"):
-                continue
-            for item in s.get("data") or []:
-                y = _datum_y(item)
-                if y is not None:
-                    ys.append(y)
-        if ys:
-            self.y_axis.set_extent(min(ys), max(ys))
-        else:
-            self.y_axis.set_extent(0.0, 1.0)
-        if self.x_axis.type == "value":
-            xs = []
-            for s in series_opts or []:
-                if not isinstance(s, dict):
+        super().set_series(series_opts)      # 递增 data_extent_version
+        grid_series = [s for s in (series_opts or [])
+                       if isinstance(s, dict)
+                       and s.get("coordinateSystem") in (None, "cartesian2d",
+                                                        "grid")]
+        # y 范围：数值序列走 numpy / 缓存快路径；结构型数据回退逐点迭代。
+        # 轴范围只取决于数据本身（与 dataZoom 窗口无关），而 _rebuild 在每次
+        # 缩放 / 平移时都会调用本方法——百万点逐点扫描要 400 ms 以上，是缩放
+        # 卡顿的真正来源，故必须缓存。
+        y_lo = y_hi = None
+        for s in grid_series:
+            if s.get("type") == "lines":
+                ext = _lines_extent(s.get("data"), "y")
+                if ext is None:
                     continue
-                for item in s.get("data") or []:
-                    x = _datum_x(item)
-                    if isinstance(x, (int, float)) and not isinstance(x, bool):
-                        xs.append(float(x))
-            if xs:
-                self.x_axis.set_extent(min(xs), max(xs))
             else:
+                ext = _series_extent(s.get("data"), "y")
+            if ext is None:
+                vals = list(_iter_data_values(s.get("data")))
+                if not vals:
+                    continue
+                ext = (min(vals), max(vals))
+            if y_lo is None or ext[0] < y_lo:
+                y_lo = ext[0]
+            if y_hi is None or ext[1] > y_hi:
+                y_hi = ext[1]
+        # 带可见圆点标记的系列：极值点若正好压在轴范围端点上，绘制时的
+        # setClipRect(coord.plot) 会把它切掉一半（实测最左 / 最右各缺半个圆）。
+        # 数值轴按跨度的固定比例两端各留一点余量。
+        if any(s.get("type") in _MARKER_SERIES for s in grid_series):
+            if y_lo is not None and y_hi is not None and y_hi > y_lo:
+                pad = (y_hi - y_lo) * _MARKER_AXIS_PAD
+                y_lo -= pad
+                y_hi += pad
+        if y_lo is None:
+            self.y_axis.set_extent(0.0, 1.0)
+        else:
+            self.y_axis.set_extent(y_lo, y_hi)
+        if self.x_axis.type == "value" or not self.x_axis.categories:
+            # 需要补「隐式下标范围」的两种情形：
+            # - value 轴：标量数据（``data: [y, ...]``）没有自带 x，各渲染器按
+            #   下标取值，故坐标范围必须覆盖 [0, n-1]。历史上这里只从 [x, y]
+            #   对里取 x，标量数据在数值 x 轴下会落入 else 分支取 [0, 1]，而点
+            #   的 x 是 0..n-1 → 全部映射到坐标区之外，整幅只剩坐标轴与图例
+            #   （实测百万散点完全空白）。
+            # - **空类目的 category 轴**：``{"type": "category", "data": []}`` 是
+            #   流式入图的标准写法（见 docs/USAGE.md §8.3），类目随数据增长。
+            #   但空类目时 map() 没有 band 数可推，历史上退化成「整幅绘图区
+            #   当一个 band」，屏幕 x 变成 idx×绘图区宽（200 点里最后一个落到
+            #   x≈165000，绘图区右边界才 872），整幅图看起来只剩一条压在边缘
+            #   的平线。故此处同样以隐式下标范围作为 band 依据。
+            # 有类目的 category 轴不走这里：band 数由类目数决定，set_extent 对
+            # category 类型也是空操作。
+            xs = []
+            scalar_max = None
+            for s in grid_series:
+                data = s.get("data")
+                if data is None or not hasattr(data, "__len__"):
+                    continue
+                try:
+                    n = len(data)
+                except TypeError:
+                    continue
+                if n == 0:
+                    continue
+                if s.get("type") == "lines":
+                    ext_x = _lines_extent(data, "x")
+                    if ext_x is None:
+                        continue
+                else:
+                    ext_x = _series_extent(data, "x")
+                if ext_x is not None:
+                    xs.append(ext_x[0])
+                    xs.append(ext_x[1])
+                    continue
+                hi = float(n - 1)
+                scalar_max = hi if scalar_max is None \
+                    else max(scalar_max, hi)
+            if scalar_max is not None:
+                xs.append(0.0)
+                xs.append(scalar_max)
+            if xs:
+                lo_x, hi_x = min(xs), max(xs)
+                if any(s.get("type") in _MARKER_SERIES for s in grid_series) \
+                        and hi_x > lo_x:
+                    pad = (hi_x - lo_x) * _MARKER_AXIS_PAD
+                    lo_x -= pad
+                    hi_x += pad
+                self.x_axis.set_extent(lo_x, hi_x)
+                user_lo = _opt_bound(self.x_axis.min)
+                user_hi = _opt_bound(self.x_axis.max)
+                self.x_axis.vmin = lo_x if user_lo is None else user_lo
+                self.x_axis.vmax = hi_x if user_hi is None else user_hi
+            elif self.x_axis.type == "value":
                 self.x_axis.set_extent(0.0, 1.0)
 
     # -- 协议 -------------------------------------------------------------
@@ -503,11 +839,16 @@ class GridCoord(Coord):
                 Qt.AlignRight | Qt.AlignVCenter, format_value(tv))
         # x 轴：类别标签 / 数值刻度 + 纵向网格线
         if self.x_axis.type == "category":
-            for i, cat in enumerate(self.x_axis.categories):
+            cats = self.x_axis.categories
+            n = len(cats)
+            step = _label_step(cats, self.plot.width(), fm)
+            for i, cat in enumerate(cats):
                 px = self.x_axis.map(i, self.plot.left(), self.plot.right(),
                                      local=True)
                 p.setPen(QPen(c_grid, 1))
                 p.drawLine(QPointF(px, self.plot.top()), QPointF(px, self.plot.bottom()))
+                if i % step:
+                    continue
                 p.setPen(c_text)
                 p.drawText(QRectF(px - 40, self.plot.bottom() + 4, 80, fm.height()),
                            Qt.AlignHCenter | Qt.AlignTop, str(cat))
@@ -602,6 +943,7 @@ class PolarCoord(Coord):
         self.radius = 1.0
 
     def set_series(self, series_opts: list) -> None:
+        super().set_series(series_opts)      # 递增 data_extent_version
         rs = []
         for s in series_opts or []:
             if not isinstance(s, dict) or s.get("coordinateSystem") != "polar":
@@ -742,6 +1084,7 @@ class SingleAxisCoord(Coord):
         self.plot = QRectF()
 
     def set_series(self, series_opts: list) -> None:
+        super().set_series(series_opts)      # 递增 data_extent_version
         vs = []
         for s in series_opts or []:
             if not isinstance(s, dict) or s.get("coordinateSystem") != "singleAxis":
@@ -908,7 +1251,12 @@ class CalendarCoord(Coord):
         # 水平居中
         grid_w = self._cell * self._weeks
         ox = rect.left() + label_left + max(0.0, (avail_w - grid_w) / 2)
-        self._origin = QPointF(ox, rect.top() + label_top)
+        # 纵向同样居中。cellSize="auto" 时格子边长被**宽度**卡住
+        # （53 周摊在约 600px 上 → 约 11.5px），7 行只有 80px 高，而可用高度
+        # 有 300px 以上；不居中的话整块年历死死贴在顶部，下面四分之三全是空白。
+        grid_h = self._cell * 7.0
+        oy = rect.top() + label_top + max(0.0, (avail_h - grid_h) / 2)
+        self._origin = QPointF(ox, oy)
 
     def cell_rect(self, day) -> QRectF:
         """日期 → 单元格矩形（无法解析 / 范围外返回空矩形）。"""
@@ -953,6 +1301,9 @@ class CalendarCoord(Coord):
                               self._cell),
                        Qt.AlignRight | Qt.AlignVCenter, label)
         # 月份标签：每月 1 日所在列（去重，避免相邻列重复绘制；跨年逐月遍历）
+        # 纵向跟着网格走（_origin.y），不能钉在 rect.top()——网格在可用高度里
+        # 居中后，钉在顶部会与网格之间裂开一大片空白。
+        label_y = self._origin.y() - fm.height() - 2
         first = self._first_monday()
         last_col = -1
         for d in self._month_dates():
@@ -962,7 +1313,7 @@ class CalendarCoord(Coord):
                 continue
             last_col = col
             x = self._origin.x() + col * self._cell
-            p.drawText(QRectF(x, self.rect.top(), 40, fm.height()),
+            p.drawText(QRectF(x, label_y, 40, fm.height()),
                        Qt.AlignLeft | Qt.AlignVCenter, _MONTH_LABELS[d.month - 1])
         p.restore()
 

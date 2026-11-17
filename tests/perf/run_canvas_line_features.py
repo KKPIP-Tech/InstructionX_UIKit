@@ -1,0 +1,292 @@
+# -*- coding: utf-8 -*-
+"""Canvas 折线扩展形态的几何、颜色、裁剪与自一致验证。"""
+
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests" / "perf"))
+os.environ.pop("QT_QPA_PLATFORM", None)
+
+import numpy as np
+from PySide6.QtCore import QRectF, Qt, QTimer
+from PySide6.QtGui import QColor, QImage, QPainter
+from PySide6.QtWidgets import QApplication
+from InstructionX_UIKit.charts import ChartWidget
+from InstructionX_UIKit.charts.axes import GridCoord
+from InstructionX_UIKit.charts.canvas_viewport import CanvasLineViewport
+from InstructionX_UIKit.theme import T, ThemeManager
+def series_color_count(image, color):
+    pixels = np.frombuffer(image.constBits(), dtype=np.uint8).reshape(
+        image.height(), image.width(), 4)
+    return int(np.count_nonzero(np.all(pixels == np.array(color, dtype=np.uint8), axis=2)))
+
+
+def series_ink_bbox(image):
+    pixels = np.frombuffer(image.constBits(), dtype=np.uint8).reshape(
+        image.height(), image.width(), 4)
+    background = np.array(QColor(T("color.bg.base")).getRgb()[:3], dtype=np.uint8)
+    if float(np.mean(pixels[:, :, 3])) < 128:
+        ys, xs = np.where(pixels[:, :, 3] != 0)
+    else:
+        ys, xs = np.where(np.any(pixels[:, :, :3] != background, axis=2))
+    if not len(xs):
+        return None
+    return [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
+
+
+def series_clip_ok(image, colors, outer, legend_rects, dpr):
+    pixels = np.frombuffer(image.constBits(), dtype=np.uint8).reshape(
+        image.height(), image.width(), 4)
+    left = max(0, int(outer.left() * dpr))
+    top = max(0, int(outer.top() * dpr))
+    right = min(image.width(), int(np.ceil(outer.right() * dpr)))
+    bottom = min(image.height(), int(np.ceil(outer.bottom() * dpr)))
+    for color in colors:
+        mask = np.all(pixels == np.array(color, dtype=np.uint8), axis=2)
+        mask[top:bottom, left:right] = False
+        for rect in legend_rects:
+            x0 = max(0, int((rect.left() - 2) * dpr))
+            y0 = max(0, int((rect.top() - 2) * dpr))
+            x1 = min(image.width(), int(np.ceil((rect.right() + 2) * dpr)))
+            y1 = min(image.height(), int(np.ceil((rect.bottom() + 2) * dpr)))
+            mask[y0:y1, x0:x1] = False
+        if int(np.count_nonzero(mask)):
+            return False
+    return True
+
+
+def grab_pair(viewport, app, points):
+    result = {}
+
+    def second(image):
+        result["second"] = image
+        app.exit(0)
+
+    def second_requested():
+        viewport.frameSubmitted.disconnect(second_requested)
+        viewport.grab_canvas(second)
+
+    def first(image):
+        result["first"] = image
+        viewport.set_paths(points)
+        viewport.frameSubmitted.connect(second_requested)
+
+    def first_requested():
+        viewport.frameSubmitted.disconnect(first_requested)
+        viewport.grab_canvas(first)
+
+    viewport.frameSubmitted.connect(first_requested)
+    viewport.update()
+    watchdog = QTimer(viewport)
+    watchdog.setSingleShot(True)
+    watchdog.setInterval(6000)
+    watchdog.timeout.connect(lambda: app.exit(2))
+    watchdog.start()
+    result_code = app.exec()
+    watchdog.stop()
+    if result_code != 0 or result.get("first") is None or result.get("second") is None:
+        print("CANVAS_STATE", result.keys(), len(viewport.paint_times),
+              viewport._canvas is None, viewport.windowHandle().isExposed(), flush=True)
+        raise RuntimeError("Canvas 回读失败")
+    return (result["first"].convertToFormat(QImage.Format_RGBA8888),
+            result["second"].convertToFormat(QImage.Format_RGBA8888))
+
+
+def render_case(app, name, series, dark=False):
+    previous_mode = ThemeManager.instance().mode
+    chart = ChartWidget()
+    option = {"animation": False, "xAxis": {"type": "value"},
+              "yAxis": {"type": "value", "min": -2, "max": 2},
+              "series": [series]}
+    if name in ("polar", "polar_area"):
+        option["polar"] = {"shape": "polygon"}
+        option["angleAxis"] = {"type": "category",
+                                "data": ["速", "力", "防", "敏", "智", "运"]}
+        option["radiusAxis"] = {"type": "value"}
+    elif name == "singleAxis":
+        option["singleAxis"] = {"left": 40, "right": 40, "name": "分"}
+    chart.set_option(option)
+    chart.anim.stop()
+    chart.anim.set_progress(1.0)
+    chart.resize(800, 500)
+    chart.show()
+    app.processEvents()
+    chart._layout_all(force=True)
+    chart.hide()
+    chart._viewport._view.hide()
+    renderer = chart.series_renderers[0]
+    coord = chart.coord_for(renderer.opt)
+    viewport = CanvasLineViewport(renderer, coord)
+    viewport.resize(chart.width(), chart.height())
+    if dark:
+        ThemeManager.instance().set_mode("dark")
+    viewport.show()
+    actual, repeated = grab_pair(viewport, app, renderer._points)
+    repeat_changed = int(actual != repeated)
+    expected = QImage(round(chart.width() * viewport.devicePixelRatioF()),
+                      round(chart.height() * viewport.devicePixelRatioF()),
+                      QImage.Format_ARGB32_Premultiplied)
+    expected.setDevicePixelRatio(viewport.devicePixelRatioF())
+    expected.fill(Qt.transparent)
+    chart._static_pixmap_cache = None
+    chart._series_pixmap_cache = None
+    painter = QPainter(expected)
+    painter.setRenderHint(QPainter.Antialiasing)
+    if getattr(viewport, "_static_scene", None) is not None:
+        chart._paint_contents(painter)
+    else:
+        for item in chart.series_renderers:
+            item.paint(painter, 1.0)
+    painter.end()
+    expected = expected.convertToFormat(QImage.Format_RGBA8888)
+    actual_bbox = series_ink_bbox(actual)
+    expected_bbox = series_ink_bbox(expected)
+    geometry_ok = actual_bbox is not None and expected_bbox is not None and all(
+        abs(a - b) <= 2 for a, b in zip(actual_bbox, expected_bbox))
+    commands = sum(path.commandsSize() for path in viewport._paths)
+    data_size = sum(path.commandsDataSize() for path in viewport._paths)
+    if name == "smooth":
+        structure_ok = commands == len(renderer._points) \
+            and data_size == 2 + 6 * (len(renderer._points) - 1)
+    elif name == "step":
+        structure_ok = commands == 3 * len(renderer._points) - 2 \
+            and data_size == 2 * commands
+    elif name == "area":
+        structure_ok = bool(getattr(viewport, "_areas", []))
+    elif name in ("polar", "polar_area"):
+        structure_ok = coord.kind == "polar" and bool(viewport._paths)
+        if name == "polar_area":
+            expected_area, _ = renderer._line_path(renderer._points)
+            expected_area.lineTo(coord.center)
+            expected_area.closeSubpath()
+            structure_ok = structure_ok and bool(getattr(viewport, "_areas", [])) \
+                and viewport._areas[0][0].commandsDataSize() == expected_area.elementCount() * 2
+    elif name == "singleAxis":
+        structure_ok = coord.kind == "singleAxis" and commands > 0
+    elif name == "none":
+        structure_ok = len(viewport._paths) == 2
+    elif name == "nonmonotonic":
+        structure_ok = [(point.x(), point.y()) for point in viewport._points] == [
+            (point.x(), point.y()) for point in renderer._points]
+    elif name in ("dash", "dot"):
+        structure_ok = bool(getattr(viewport, "_dashes", []))
+    elif name in ("symbols", "symbols_dark"):
+        expected_count = renderer._last_symbol_count
+        structure_ok = 0 < getattr(viewport, "_last_symbol_count", 0) == expected_count
+    else:
+        structure_ok = True
+    dpr = viewport.devicePixelRatioF()
+    pixels = np.frombuffer(actual.constBits(), dtype=np.uint8).reshape(
+        actual.height(), actual.width(), 4)
+    expected_pixels = np.frombuffer(expected.constBits(), dtype=np.uint8).reshape(
+        expected.height(), expected.width(), 4)
+    expected_color = list(renderer.color().getRgb())
+    actual_ink = series_color_count(actual, expected_color)
+    expected_ink = series_color_count(expected, expected_color)
+    ink_ratio = actual_ink / expected_ink if expected_ink else 0.0
+    ink_ratio_ok = ink_ratio >= 0.55 if name in ("area", "polar_area") else True
+    if isinstance(coord, GridCoord):
+        outer = QRectF(coord.plot)
+    else:
+        outer = QRectF(0, 0, chart.width(), chart.height())
+    outer = outer.adjusted(-8, -8, 8, 8)
+    clip_ok = series_clip_ok(actual, [expected_color], outer,
+                             chart.legend._item_rects, dpr)
+    actual_color = expected_color if actual_ink else None
+    color_ok = actual_color == expected_color
+    if name in ("symbols", "symbols_dark"):
+        fill_color = list(QColor(T("color.bg.elevated")).getRgb())
+        color_ok = color_ok and series_color_count(actual, fill_color) > 0
+    delta = pixels.astype(np.int16) - expected_pixels.astype(np.int16)
+    backend = getattr(viewport.api(), "name", str(viewport.api()))
+    report = {
+        "backend": backend,
+        "geometry_pass": geometry_ok, "clip_pass": clip_ok,
+        "color_pass": color_ok, "repeat_changed": repeat_changed,
+        "structure_pass": structure_ok, "path_commands": commands,
+        "actual_ink": actual_ink, "expected_ink": expected_ink,
+        "ink_ratio": ink_ratio, "ink_ratio_pass": ink_ratio_ok,
+        "actual_bbox": actual_bbox, "expected_bbox": expected_bbox,
+        "expected_color": expected_color, "actual_color": actual_color,
+        "viewport_color": list(viewport._color.getRgb()),
+        "qpainter_changed_pixels": int(np.any(delta.reshape(-1, 4), axis=1).sum()),
+        "qpainter_max_delta": int(np.abs(delta).max()),
+        "command_max_ms": max(viewport.paint_times, default=0.0),
+        "pass": bool(backend == "Direct3D11" and geometry_ok and clip_ok and color_ok
+                     and not repeat_changed and structure_ok and ink_ratio_ok),
+    }
+    viewport.close()
+    chart.close()
+    ThemeManager.instance().set_mode(previous_mode)
+    app.processEvents()
+    return report, actual, expected
+
+
+def main():
+    app = QApplication.instance() or QApplication(sys.argv)
+    ThemeManager.instance().apply(app)
+    values = np.sin(np.arange(80) / 7) + np.cos(np.arange(80) / 13) * 0.3
+    cases = {
+        "smooth": {"type": "line", "data": values, "smooth": True, "showSymbol": False},
+        "step": {"type": "line", "data": values, "step": "middle", "showSymbol": False},
+        "area": {"type": "line", "data": values,
+                 "areaStyle": {"opacity": 0.22}, "showSymbol": False},
+        "dash": {"type": "line", "data": values,
+                 "lineStyle": {"type": "dashed"}, "showSymbol": False},
+        "dot": {"type": "line", "data": values,
+                "lineStyle": {"type": "dotted"}, "showSymbol": False},
+        "symbols": {"type": "line", "data": values, "showSymbol": True},
+        "symbols_dark": {"type": "line", "data": values, "showSymbol": True},
+        "polar": {"type": "line", "coordinateSystem": "polar",
+                  "data": [["速", 80], ["力", 60], ["防", 70],
+                            ["敏", 90], ["智", 65], ["运", 75]], "showSymbol": False},
+        "polar_area": {"type": "line", "coordinateSystem": "polar",
+                       "data": [["速", 80], ["力", 60], ["防", 70],
+                                 ["敏", 90], ["智", 65], ["运", 75]],
+                       "areaStyle": {"opacity": 0.22}, "showSymbol": False},
+        "singleAxis": {"type": "line", "coordinateSystem": "singleAxis",
+                       "data": [10, 40, 25, 70, 55], "showSymbol": False},
+        "none": {"type": "line", "data": [1, 2, None, 1.5, 0.5],
+                 "showSymbol": False},
+        "nonmonotonic": {"type": "line", "data": [[3, 1], [1, 1.5], [2, -1], [0, 0.5]],
+                         "showSymbol": False},
+    }
+    source_sha = subprocess.check_output(["git", "rev-parse", "uniform_style"],
+                                         cwd=ROOT, text=True).strip()
+    destination = ROOT / "temp" / "performance" / source_sha / "canvas-line-features"
+    destination.mkdir(parents=True, exist_ok=True)
+    report = {"source_sha": source_sha,
+              "test_sha": subprocess.check_output(["git", "rev-parse", "HEAD"],
+                                                   cwd=ROOT, text=True).strip(),
+              "source_dirty": subprocess.run(
+                  ["git", "diff", "--quiet", source_sha, "--", "InstructionX_UIKit", "demo"],
+                  cwd=ROOT).returncode != 0,
+              "time_utc": datetime.now(timezone.utc).isoformat(),
+              "qpainter_pixel_equality_required": False,
+              "cases": {}}
+    for name, series in cases.items():
+        try:
+            case, actual, expected = render_case(app, name, series, dark=name == "symbols_dark")
+            actual.save(str(destination / f"{name}_actual.png"))
+            expected.save(str(destination / f"{name}_reference.png"))
+        except Exception as exc:
+            case = {"pass": False, "error": repr(exc)}
+        case["backend"] = case.get("backend", "unknown")
+        report["cases"][name] = case
+        print(name, case, flush=True)
+    report["pass"] = all(case.get("pass", False) for case in report["cases"].values())
+    (destination / "report.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps({"pass": report["pass"], "report": str(destination / "report.json")},
+                     ensure_ascii=False), flush=True)
+    return 0 if report["pass"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

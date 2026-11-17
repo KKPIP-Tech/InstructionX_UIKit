@@ -26,20 +26,39 @@ C4 组件协议（components.py / interact.py）：
 """
 
 import copy
+import os
+import time
 
 from PySide6.QtCore import (
     QObject,
     QPointF,
+    QRect,
     QRectF,
     Qt,
     QVariantAnimation,
 )
-from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPainterPath, QPen
+from PySide6.QtGui import (
+    QColor,
+    QFontMetricsF,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import QWidget
 
 from ..theme import T, ThemeManager
 from ..tokens import DURATION, EASING
+from .._metrics import MetricRing
+from .._resize_preview import ResizePreview
 from ._utils import warn_once
+from .data import NumericBuffer, is_array_like as _is_array_like, to_buffer
+from .sampling import (
+    bucket_count,
+    sample_entries,
+    sampling_options,
+    visible_threshold,
+)
 from .axes import (
     CalendarCoord,
     Coord,
@@ -50,6 +69,7 @@ from .axes import (
     format_value,
     nice_ticks,
 )
+from .viewport import create_viewport
 
 __all__ = [
     "SERIES_REGISTRY",
@@ -69,6 +89,8 @@ __all__ = [
     "ChartWidget",
     "SimpleLineSeriesRenderer",
 ]
+
+_MAX_GEOMETRY_POINTS = 4_000_000
 
 # ---------------------------------------------------------------------------
 # 注册表（CHART_SPEC §3）
@@ -99,8 +121,8 @@ def register_component(name: str, cls) -> None:
 
 
 #: 默认调色板令牌键（CHART_SPEC §2）。每项 (主键, 回退键)：
-#: tokens 当前未定义 "color.warning.hover"（亮/暗均缺），缺失时回退主色，
-#: 不回退会 KeyError；若后续 tokens 补齐该键，自动优先取用。
+#: 回退机制保留给旧版令牌集（如早期 LIGHT/DARK 缺 "color.warning.hover"）；
+#: 当前 tokens 已补齐该键，正常路径直接取主键，不再触发回退。
 _PALETTE_KEYS = (
     ("color.primary", None),
     ("color.success", None),
@@ -178,13 +200,135 @@ def _needs_grid_coord(series_opts) -> bool:
 
 
 def _deep_merge(dst: dict, src: dict) -> dict:
-    """递归合并 src 到 dst（dict 深合并，list / 标量整体替换），返回 dst。"""
+    """递归合并 src 到 dst（dict 深合并，list / 标量整体替换），返回 dst。
+
+    大数组特例：``src`` 中已是紧凑缓冲区的值按**引用**替换（不深拷贝），
+    并在替换前尝试就地包装 ``dst`` 中同位置的旧大数组——把「每帧 deepcopy
+    百万点」的成本降为零。是否包装只由长度与数值性决定，不改语义。
+
+    **list 值必须整体替换，不要逐项融合其中的 dict**。``series`` 是
+    「dict 组成的 list」，看起来很适合按项合并，但那是错的：``update_option``
+    把旧渲染器的数据视图作为 ``prev_data`` 注入新渲染器用于动画插值，而
+    ``dst`` 里的旧项是**同一个对象**——逐项融合会原地改写它，``prev_data``
+    于是变成新值（实测 gauge 的插值起点从 66 变成 30，动画直接从终点开始）。
+    整体替换 + ``copy.deepcopy`` 保证了新旧彻底分离。
+    """
     for k, v in (src or {}).items():
+        if isinstance(v, NumericBuffer):
+            dst[k] = v
+            continue
         if isinstance(v, dict) and isinstance(dst.get(k), dict):
             _deep_merge(dst[k], v)
         else:
+            if to_buffer(v) is not None:
+                # 紧凑数组（numpy 数组 / array('d')）：按引用持有。
+                # 缺了这条分支，ndarray 既不是 list/tuple/dict 也不是
+                # NumericBuffer，会落到下面的标量兜底被原样塞进 option，
+                # 下游 data_view() 判定为「数据缺失」——表现为
+                # ``update_option({"series": [{"data": ndarray}]})`` 后整条
+                # 曲线消失（流式入图曾因此一个点都不画）。
+                dst[k] = to_buffer(v)
+                continue
+            if not isinstance(v, (dict, list, tuple)):
+                dst[k] = v
+                continue
+            if isinstance(v, list):
+                buf = to_buffer(v)
+                if buf is not None:
+                    # 就地包装：避免 deepcopy(v)，也避免拷贝旧值
+                    dst[k] = buf
+                    continue
+                # 小列表/含结构项：旧值若已是缓冲区，先还原再整体替换
+                if isinstance(dst.get(k), NumericBuffer):
+                    dst[k] = dst[k].to_list()
+                dst[k] = copy.deepcopy(v)
+                continue
             dst[k] = copy.deepcopy(v)
     return dst
+
+
+def _unwrap_option(value):
+    """递归把 option 中的紧凑缓冲区还原为 list（``option()`` 输出用）。"""
+    if isinstance(value, NumericBuffer):
+        return value.to_list()
+    if isinstance(value, dict):
+        return {k: _unwrap_option(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_unwrap_option(v) for v in value]
+    return copy.deepcopy(value)
+
+
+def _prev_view(renderer):
+    """取渲染器当前数据的只读视图，供 ``prev_data`` 注入。
+
+    大数组下**不得**调用 ``data()``——那是 O(n) 还原；返回缓冲区即可，
+    渲染器的插值分支会自行判断 ``isinstance(prev_data, list)`` 并跳过
+    百万点级别的逐点插值（那本就不现实）。
+    """
+    view = renderer.data_view()
+    return list(view) if not isinstance(view, NumericBuffer) else view
+
+
+class _StrippedData:
+    """大数组被摘出后的占位类型。
+
+    用**类型身份**而非实例身份判别：``copy.deepcopy`` 对普通 ``object()``
+    会创建新实例（``is`` 与 ``==`` 双双失配），而深拷贝后的对象仍是同一个
+    类，``isinstance`` 恒定成立。这是本机制唯一可靠的判别方式。
+    """
+
+    __slots__ = ()
+
+
+#: 摘除大数组时的占位实例（判别只看类型，不看实例）
+_STRIPPED = _StrippedData()
+
+
+def _strip_big_data(option: dict):
+    """拆出 option 中的大数组。
+
+    返回 ``(浅拷贝的 option, {series 下标: 缓冲区})``：
+
+    - 浅拷贝只重建 series 列表与含大数组的元素 dict，其余键保持引用——
+      随即交给 ``copy.deepcopy``，因此不会修改调用方传入的 option；
+    - 判定与包装**只做一次**，结果随返回值传递，避免「摘除」与「回填」两处
+      各自判定导致条件不一致时占位符残留（那会让下游拿到不可迭代对象）。
+    """
+    series = option.get("series")
+    if not isinstance(series, list):
+        return option, {}
+    buffers = {}
+    new_series = None
+    for i, s in enumerate(series):
+        if not isinstance(s, dict) or "data" not in s:
+            continue
+        buf = to_buffer(s.get("data"))
+        if buf is None:
+            continue
+        buffers[i] = buf
+        if new_series is None:
+            new_series = list(series)
+        s2 = dict(s)
+        s2["data"] = _STRIPPED
+        new_series[i] = s2
+    if new_series is None:
+        return option, {}
+    out = dict(option)
+    out["series"] = new_series
+    return out, buffers
+
+
+def _reattach_big_data(dst: dict, buffers: dict) -> None:
+    """把 ``_strip_big_data`` 拆出的缓冲区按引用回填到已深拷贝的 option。"""
+    dst_series = dst.get("series")
+    if not isinstance(dst_series, list):
+        return
+    for i, buf in buffers.items():
+        if i >= len(dst_series):
+            continue
+        d = dst_series[i]
+        if isinstance(d, dict) and isinstance(d.get("data"), _StrippedData):
+            d["data"] = buf
 
 
 # ---------------------------------------------------------------------------
@@ -228,9 +372,61 @@ class SeriesRenderer:
 
     # -- 辅助 ------------------------------------------------------------
     def data(self) -> list:
-        """系列原始 data 列表（None 容灾）。"""
+        """系列原始 data 列表（None 容灾）。
+
+        大数组在内部以紧凑缓冲区持有（见 data.py），此处统一还原为 list，
+        对外语义与历史一致。**这是 O(n) 操作**：百万点量级约 50~100 ms，
+        因此内部热路径请改用 ``data_view()``。
+        """
         d = self.opt.get("data")
+        if isinstance(d, NumericBuffer):
+            return d.to_list()
+        if _is_array_like(d):
+            return [float(x) for x in d]
         return d if isinstance(d, list) else []
+
+    def data_view(self):
+        """系列数据的**只读视图**（内部热路径专用，无拷贝）。
+
+        返回 ``NumericBuffer`` / 原始 list / 紧凑数组（短于缓冲阈值时按引用
+        持有 ndarray，见 data.py 的 ``_BUFFER_MIN_LEN``）。三者都支持 ``len()``
+        / 下标 / 迭代，因此渲染器无需关心底层承载形式。
+        """
+        d = self.opt.get("data")
+        if isinstance(d, NumericBuffer) or isinstance(d, list):
+            return d
+        if _is_array_like(d):
+            # 短数组不做缓冲包装（阈值见 data.py）：仍要作为数据视图返回，
+            # 否则 3~255 点的 ndarray 会被判成「数据缺失」而整条曲线消失。
+            return d
+        return []
+
+    def sampled_entries(self, data_length: int, viewport_px):
+        """按当前视口宽度对该系列做运行时降采样，返回 ``[(x, y), ...]``。
+
+        ``None`` 表示**未采样**（点数未超阈值、或数据形态不适合采样），
+        调用方应继续逐点走原始数据——这正是「保真承诺」的落点：可见点数
+        不超过视口像素量级时不做任何降采样。
+
+        阈值与桶数都由 ``viewport_px``（当前坐标区像素宽）实时推导，因此
+        渲染器无需预知轴范围或控件尺寸。注意 ``sampling: None`` **不再**能
+        绕过阈值（像素级分辨率下限不可关闭，理由见
+        :func:`sampling.sampling_options`）。
+
+        返回的 x 是各点**原始**的 x（数值数据通常即数据下标），故
+        ``value_at_index`` 与 tooltip 仍能对应到正确的原始数据项。
+        """
+        opts = sampling_options(self.opt)
+        if not opts.enabled or not viewport_px:
+            return None
+        threshold = visible_threshold(viewport_px, opts.safety)
+        if threshold < 2 or data_length <= threshold:
+            return None
+        entries, sampled = sample_entries(
+            self.data_view(), threshold, bucket_count(viewport_px))
+        if not sampled or not entries:
+            return None
+        return entries
 
     def color(self) -> QColor:
         """系列主色（option color 覆盖 → 全局调色板）。"""
@@ -652,6 +848,7 @@ class ChartWidget(QWidget):
         super().__init__(parent)
         self.setMouseTracking(True)
         self.setMinimumSize(200, 150)
+        self._perf = MetricRing()
         self._option = {}
         self._series = []        # [SeriesRenderer]
         self._coords = []        # [Coord]
@@ -659,11 +856,39 @@ class ChartWidget(QWidget):
         self._series_state = {}  # name -> bool（legend 显隐状态）
         self._opt_version = 0    # option 版本号（set_option/update_option 递增）
         self._layout_key = None  # 布局缓存键（脏标记，见 invalidate_layout）
+        #: 流式入口记录的各系列数据长度（仅在长度变化时重算轴范围）
+        self._stream_len = {}
         self.title = Title()
         self.legend = Legend(self)
         self.tooltip = Tooltip(self)
         self.legend.on_toggle = self.set_series_visible
         self.anim = ChartAnimation(self.update, self)
+        # 静态层缓存（底色/坐标轴/图例/标题）：键为 option 版本 + 尺寸 + 主题，
+        # 命中时整段以位图贴回，避免悬停与动画帧重复排版绘制轴刻度文字。
+        self._static_key = None
+        self._static_pixmap_cache = None
+        self._static_dpr = 1.0
+        # 系列层缓存（同上思路，覆盖最贵的折线/柱体路径重建）。
+        self._series_key = None
+        self._series_pixmap_cache = None
+        self._series_dpr = 1.0
+        self._series_was_running = False
+        self._ui_active = True
+        self._animation_was_running = False
+        #: 数据/主题变更后置位：下一帧直接绘制、不为建缓存多渲染一帧
+        self._paint_only_dirty = False
+        #: GL 后端因点数超安全上限而暂停绘制（由视口置位，见 viewport.py）
+        self._overload_limited = False
+        self._preview_capturing = False
+        self._resize_preview = ResizePreview(
+            self, on_settle=self._finish_resize_preview)
+        self._preview_animation = None
+        # 真实窗口由 RHI 子视口承载；离屏测试使用同一绘制体的软件视口。
+        # 本控件自身只铺底色，避免与子视口重复绘制。
+        self._viewport = create_viewport(self)
+        self._viewport.setGeometry(self.rect())
+        self._viewport.show()
+        self._viewport.raise_()
         # 主题连接：接收者为本控件（PySide 以接收者销毁自动断连）；另在
         # destroyed 时显式 disconnect（保守双保险，防单例信号强引用滞留）
         self._theme_slot = self._on_theme_changed
@@ -677,14 +902,48 @@ class ChartWidget(QWidget):
         except (RuntimeError, TypeError):
             pass
 
+    def _perf_snapshot(self):
+        """返回有界诊断指标，不用于替代系统实际呈现统计。"""
+        result = self._perf.snapshot()
+        viewport = self._viewport
+        dpr = float(viewport.devicePixelRatioF())
+        result.update({
+            "backend": type(viewport).__name__,
+            "dpr": dpr,
+            "physical_width": round(viewport.width() * dpr),
+            "physical_height": round(viewport.height() * dpr),
+            "raw_points": sum(len(r.data_view()) for r in self._series),
+            "screen_points": sum(
+                len(r._gpu_geometry[0]) if getattr(r, "_gpu_geometry", None) is not None
+                else len(r._points) for r in self._series),
+        })
+        return result
+
     # ------------------------------------------------------------------ API
     def set_option(self, option: dict) -> None:
-        """全量设置 option（dict，schema 见 CHART_SPEC §4）并播放入场动画。"""
-        self._option = copy.deepcopy(option) if isinstance(option, dict) else {}
+        """全量设置 option（dict，schema 见 CHART_SPEC §4）并播放入场动画。
+
+        大数组优化：先把 series 中达到阈值的数值 ``data`` **摘出**（置为
+        占位），再深拷贝剩余的小结构，最后把紧凑缓冲区按引用挂回原位。
+        这样 ``copy.deepcopy`` 永远不会遍历百万级数组——实测 150 万点由
+        约 2.1 s 降至毫秒级。其余结构照旧深拷贝，语义与历史一致。
+        """
+        started = time.perf_counter()
+        if not isinstance(option, dict):
+            self._option = {}
+        else:
+            stripped, buffers = _strip_big_data(option)
+            self._option = copy.deepcopy(stripped)
+            _reattach_big_data(self._option, buffers)
         self._opt_version += 1
         self._rebuild()
-        self.anim.start()
+        if self._option.get("animation", True):
+            self.anim.start()
+        else:
+            self.anim.stop()
+            self.anim.set_progress(1.0)
         self.update()
+        self._perf.add("option_update_ms", time.perf_counter() - started)
 
     def update_option(self, option: dict) -> None:
         """合并更新 option 并播放旧→新数据插值动画。
@@ -695,10 +954,14 @@ class ChartWidget(QWidget):
         匹配**（增删 / 重排后不错位）；名字缺省或匹配不到时**按渲染器
         序号回退**取同位旧系列数据（series 整体替换语义下典型调用不带
         name，序号对位是常态路径），序号越界（系列数变少）才不插值。
+
+        大数组优化：新数据在合并时就地包装为缓冲区（``_deep_merge``），
+        旧数据以只读视图注入 ``prev_data``，均不复制。
         """
+        started = time.perf_counter()
         if not isinstance(option, dict):
             return
-        prev_list = [list(r.data()) for r in self._series]
+        prev_list = [_prev_view(r) for r in self._series]
         # 仅非空 name 参与名字匹配：空名是缺省态，入字典会互相覆盖错配
         prev_by_name = {r.name: prev_list[i]
                         for i, r in enumerate(self._series) if r.name}
@@ -711,15 +974,24 @@ class ChartWidget(QWidget):
             if prev is None and i < len(prev_list):
                 prev = prev_list[i]
             r.prev_data = prev
-        self.anim.start()
+        if self._option.get("animation", True):
+            self.anim.start()
+        else:
+            self.anim.stop()
+            self.anim.set_progress(1.0)
         self.update()
+        self._perf.add("option_update_ms", time.perf_counter() - started)
 
     def option(self) -> dict:
-        """当前 option（拷贝，公共 API 契约）。
+        """当前 option（深拷贝快照，公共 API 契约）。
 
         内部每帧热路径请用 ``_option_ref()``（无拷贝），避免逐帧 deepcopy。
+        紧凑缓冲区在此统一还原为 list，调用方观察不到内部承载形式。
+
+        注意：大数组的还原是 O(n)（150 万点约 50~100 ms），因此**不要在
+        高频路径调用本方法**；它面向「取一份当前配置」的常规用法。
         """
-        return copy.deepcopy(self._option)
+        return _unwrap_option(self._option)
 
     def _option_ref(self) -> dict:
         """当前 option 的内部引用（无拷贝；仅 charts 包内部热路径使用）。"""
@@ -748,13 +1020,29 @@ class ChartWidget(QWidget):
         return default_palette()
 
     def color_for_series(self, series) -> QColor:
-        """系列主色：series opt 的 "color" → 全局调色板按序号取色。"""
-        if isinstance(series, SeriesRenderer):
-            idx = self._series.index(series) if series in self._series else 0
-            own = series.opt.get("color")
+        """系列主色：series opt 的 "color" → 全局调色板按序号取色。
+
+        ``series`` 可以是渲染器实例，也可以是调色板序号。判别优先用
+        **协议特征**（有 ``opt`` 字典）而非 ``isinstance``——渲染器类可能
+        因模块重载等原因与当前 ``SeriesRenderer`` 不是同一对象，此时
+        ``isinstance`` 失配会让 ``int(series)`` 抛出 TypeError 并中断整幅
+        绘制。序号分支同样做兜底，任何无法解析的输入回落到 0 号色。
+        """
+        own = None
+        opt = getattr(series, "opt", None)
+        if isinstance(opt, dict):
+            self_idx = None
+            for i, r in enumerate(self._series):
+                if r is series:
+                    self_idx = i
+                    break
+            idx = self_idx if self_idx is not None else 0
+            own = opt.get("color")
         else:
-            idx = int(series)
-            own = None
+            try:
+                idx = int(series)
+            except (TypeError, ValueError):
+                idx = 0
         if isinstance(own, str) and own:
             return QColor(own)
         pal = self.palette()
@@ -763,6 +1051,15 @@ class ChartWidget(QWidget):
     def primary_coord(self):
         """主坐标系（coords[0]，无则 None）。"""
         return self._coords[0] if self._coords else None
+
+    def gpu_claims(self, renderer) -> bool:
+        """返回系列是否已由 RHI 几何层接管，防止与纹理层重复绘制。"""
+        owner = getattr(self, "_rhi_owner", None)
+        return owner is not None and renderer in owner
+
+    def set_gpu_owner(self, renderers) -> None:
+        """记录由 RHI 几何层接管的系列；完整纹理快照中为空。"""
+        self._rhi_owner = list(renderers) if renderers else None
 
     def coord_for(self, series_opt: dict = None):
         """按 series 的 coordinateSystem 匹配坐标系（默认首个）。"""
@@ -808,9 +1105,48 @@ class ChartWidget(QWidget):
         self._components.append(comp)
         self.update()
 
+    def stream(self, series=0, window: int = 20000,
+               interval: float = 1.0 / 90.0, auto_scale: bool = True):
+        """把本图表接到实时数据源，返回 :class:`StreamSession`。
+
+        加法式扩展：既有 ``set_option`` / ``update_option`` 语义完全不变；
+        本方法只是把「高频数据 → 合并 → 定期 ``update_option``」这套样板
+        封装起来，并保证写侧线程安全（任意线程可调用 ``session.write``）。
+
+        典型用法::
+
+            chart.set_option({"xAxis": {"type": "category", "data": [...]},
+                              "series": [{"type": "line", "name": "信号"}]})
+            sess = chart.stream(series="信号", window=20000)
+            sess.write(value)        # 采集线程里高频调用
+
+        参数见 :class:`~InstructionX_UIKit.charts.stream.StreamSession`。
+        """
+        from .stream import StreamSession
+        sess = StreamSession(self, series=series, window=window,
+                             interval=interval, auto_scale=auto_scale)
+        # 图表销毁时自动停掉会话定时器，避免悬空定时器继续回调
+        self._streams = getattr(self, "_streams", None) or []
+        self._streams.append(sess)
+        sess.set_active(self._ui_active and self.isVisible())
+        if not getattr(self, "_stream_cleanup_hooked", False):
+            self._stream_cleanup_hooked = True
+            self.destroyed.connect(self._close_streams)
+        return sess
+
+    def _close_streams(self, *_args) -> None:
+        """关闭全部实时会话（图表销毁路径，保守清理）。"""
+        for s in list(getattr(self, "_streams", None) or []):
+            try:
+                s.close()
+            except Exception:  # noqa: BLE001 - 清理路径不得抛异常
+                pass
+        self._streams = []
+
     # ------------------------------------------------------------- 内部构建
     def _rebuild(self) -> None:
         """按当前 option 重建组件 / 坐标系 / 系列渲染器（并使布局缓存失效）。"""
+        started = time.perf_counter()
         opt = self._option
         self._layout_key = None
         self.title.set_option(opt.get("title") or {})
@@ -884,6 +1220,7 @@ class ChartWidget(QWidget):
             items.append((r.name, self.color_for_series(r)))
         self.legend.set_items(items)
         self._layout_all(force=True)
+        self._perf.add("_rebuild_ms", time.perf_counter() - started)
 
     def _make_coord(self, cls, kind: str):
         """构造单个坐标系：失败降级为 None 并记录一次（不拖垮整图）。"""
@@ -931,6 +1268,22 @@ class ChartWidget(QWidget):
                                   lw, content.height())
                     content.setRight(content.right() - lw)
             self.legend.layout(band)
+        # 组件让位：visualMap 等组件要在内容区边上占一条带子，若不让出，
+        # 色带会直接压在绘图区上（heatmap 最右一列被盖住）。
+        for comp in self._components:
+            reserve = getattr(comp, "content_reserve", None)
+            if not callable(reserve):
+                continue
+            try:
+                r, b = reserve(content)
+            except Exception as exc:
+                warn_once(f"component-reserve:{comp.__class__.__name__}",
+                          f"组件让位计算异常（{comp.__class__.__name__}）: {exc!r}")
+                continue
+            if r:
+                content.setRight(content.right() - max(0.0, r))
+            if b:
+                content.setBottom(content.bottom() - max(0.0, b))
         return content
 
     def invalidate_layout(self) -> None:
@@ -940,8 +1293,24 @@ class ChartWidget(QWidget):
         （option 版本）、resizeEvent（视口尺寸）、主题切换、dataZoom 窗口
         交互（滚轮 / 拖拽 / restore，见 interact.py）、系列显隐（堆叠基线）。
         动画进行中不缓存（每帧重算，与历史行为一致）。
+
+        静态层与系列层缓存与布局同源（option / 尺寸 / 主题 / dataZoom 窗口），
+        故一并失效——否则会出现「布局已重排、贴的却仍是旧位图」的错位。
+        同时置脏标记：下一帧直接绘制，避免「为建缓存多渲染一帧」的重复开销。
         """
+        self._paint_only_dirty = True
         self._layout_key = None
+        self._static_key = None
+        self._static_pixmap_cache = None
+        self._series_key = None
+        self._series_pixmap_cache = None
+
+    def _series_layer_key(self):
+        """系列层缓存键：沿用布局缓存键（option/尺寸/主题/dataZoom 窗口）。
+
+        系列几何完全由布局决定，因此键与布局缓存同构即为充分条件。
+        """
+        return self._layout_cache_key()
 
     def _layout_cache_key(self):
         """布局缓存键：option 版本 / 视口尺寸 / 主题 / dataZoom 窗口状态。
@@ -957,7 +1326,101 @@ class ChartWidget(QWidget):
         dz = tuple((getattr(c, "start", 0.0), getattr(c, "end", 100.0))
                    for c in self._components
                    if getattr(c, "option_key", "") == "dataZoom")
-        return (self._opt_version, self.width(), self.height(), theme, dz)
+        # 系列显隐必须计入：set_series_visible 不改 option 版本号，但它会改变
+        # 系列可见性（并影响堆叠基线）。静态层/系列层缓存的键都复用本函数，
+        # 漏掉该项会导致「隐藏系列后画面不变」的错位。
+        sel = tuple(sorted((str(k), bool(v))
+                           for k, v in self._series_state.items()))
+        return (self._opt_version, self.width(), self.height(), theme, dz, sel)
+
+    def set_stream_data(self, values, series=0) -> bool:
+        """**流式数据专用入口**：只把新数据交给某个系列并请求重绘。
+
+        与 ``update_option({"series": [{"data": ...}]})`` 的区别在于**不做
+        option 级的重建**：``set_option`` 要深拷贝 option、``update_option``
+        要合并再 ``_rebuild()`` 重建全部渲染器与坐标系。实时流每帧都在换数据，
+        那套开销是纯浪费——实测 1400x500 / DPR 1.5 / 2 万点：每帧 ``_rebuild``
+        6.83 ms + layout 11.40 ms（3 次，其中 1 次强制），而其中只有「把新数据
+        交给渲染器」是必须的。
+
+        本方法的行为：
+
+        - 数据按引用持有（``NumericBuffer``，零拷贝），与 ``set_option`` 一致；
+        - 只失效**布局缓存**（数据变了要重新采样映射），不动静态层缓存
+          ——坐标轴范围未变时静态层照旧命中；
+        - 不启动入场动画（动画会让新点延迟可见，且会禁用布局缓存）；
+        - 不重建渲染器实例，故调用方持有的 ``opt`` 增量（如 ``gpuDirect``）
+          与 RHI 资源身份都保持稳定。
+
+        返回是否成功写入（系列序号越界 / 数据不可用时为 ``False``）。
+        """
+        return self._apply_stream_data(values, series)
+
+    def _apply_stream_data(self, values, series=0, y_range=None,
+                           refresh_axes=None) -> bool:
+        """原子提交流式数据与可选轴范围，保留原渲染器和静态缓存。"""
+        renderers = self._series
+        try:
+            idx = int(series)
+        except (TypeError, ValueError):
+            idx = 0
+        if idx < 0 or idx >= len(renderers) or values is None:
+            return False
+        buffer = to_buffer(values)
+        data = buffer if buffer is not None else values
+        try:
+            length = len(data)
+            series_option = self._option["series"][idx]
+            if not isinstance(series_option, dict):
+                return False
+        except (TypeError, KeyError, IndexError):
+            return False
+        renderers[idx].opt["data"] = data
+        series_option["data"] = data
+        length_changed = self._stream_len.get(idx) != length
+        self._stream_len[idx] = length
+        if length_changed or refresh_axes is True or y_range is not None:
+            if y_range is not None:
+                low, high = y_range
+                axis_option = self._option.get("yAxis")
+                if not isinstance(axis_option, dict):
+                    axis_option = self._option["yAxis"] = {}
+                axis_option["min"] = low
+                axis_option["max"] = high
+                for coord in self._coords:
+                    axis = getattr(coord, "y_axis", None)
+                    if axis is not None:
+                        axis.opt["min"] = low
+                        axis.opt["max"] = high
+                        axis.min = low
+                        axis.max = high
+            self._refresh_axes_extent()
+            self._static_key = None
+            self._series_key = None
+        self._layout_key = None
+        self._paint_only_dirty = True
+        self.anim.stop()
+        self.anim.set_progress(1.0)
+        self.update()
+        return True
+
+    def _refresh_axes_extent(self) -> None:
+        """让各坐标系按当前 option 重算轴范围（流式入口在数据长度变化时调用）。
+
+        复用 ``set_series`` 的既有实现，避免两处范围推导逻辑分叉；坐标系
+        各自已对数据形态做容灾，异常只记录不抛出（与布局路径一致）。
+        """
+        opts = [s for s in (self._option.get("series") or [])
+                if isinstance(s, dict)]
+        for c in self._coords:
+            fn = getattr(c, "set_series", None)
+            if not callable(fn):
+                continue
+            try:
+                fn(opts)
+            except Exception as exc:  # noqa: BLE001
+                warn_once(f"stream-extent:{c.__class__.__name__}",
+                          f"流式轴范围重算异常（{c.__class__.__name__}）: {exc!r}")
 
     def _layout_all(self, force: bool = False) -> None:
         """全量布局：坐标系 / 系列 / 组件几何。
@@ -965,11 +1428,13 @@ class ChartWidget(QWidget):
         布局缓存：键命中直接返回（悬停 / 无动画重绘零成本）；动画进行中
         不缓存（每帧重算，ChartAnimation 视觉行为与历史一致）。
         """
+        started = time.perf_counter()
         if force:
             self._layout_key = None
         elif not self.anim.is_running():
             key = self._layout_cache_key()
             if key == self._layout_key:
+                self._perf.count("layout_cache_hit")
                 return
             self._layout_key = key
         content = self._content_rect()
@@ -989,36 +1454,296 @@ class ChartWidget(QWidget):
                 except Exception as exc:
                     warn_once(f"component-layout:{comp.__class__.__name__}",
                               f"组件布局异常（{comp.__class__.__name__}）: {exc!r}")
+        self._perf.add("layout_ms", time.perf_counter() - started)
 
     # ------------------------------------------------------------- Qt 事件
+    def update(self, *args) -> None:
+        """重绘请求转发到内部绘制视口（保持外部 ``chart.update()`` 习惯）。
+
+        完整内容由 RHI 子视口承载；离屏平台使用软件视口。
+        构造期视口尚未创建时回落基类。
+        """
+        if not getattr(self, "_ui_active", True):
+            self._perf.count("hidden_update")
+            return
+        vp = getattr(self, "_viewport", None)
+        if vp is not None:
+            vp.update(*args)
+            return
+        super().update(*args)
+
+    def _preview_enabled(self):
+        return os.environ.get("UIKIT_RESIZE_PREVIEW", "on").lower() not in (
+            "off", "0", "false", "no")
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        self._layout_all()
+        vp = getattr(self, "_viewport", None)
+        enabled = self._preview_enabled()
+        if vp is not None and getattr(vp, "supports_direct_resize", False):
+            if self._resize_preview.active:
+                self._finish_resize_preview()
+            self._resize_preview.cancel()
+            self._preview_capturing = False
+            self._preview_animation = None
+            vp.setGeometry(self.rect())
+            self._layout_all()
+            self.update()
+            return
+        if self._preview_capturing:
+            if vp is not None:
+                vp.setGeometry(self.rect())
+            return
+        started = False
+        has_content = any(getattr(renderer, "_points", None)
+                          for renderer in self._series)
+        if vp is not None and enabled and not self._resize_preview.active \
+                and has_content:
+            self._preview_capturing = True
+            try:
+                snapshot = vp.grab()
+                vp.setGeometry(self.rect())
+                started = self._resize_preview.begin(snapshot)
+            finally:
+                self._preview_capturing = False
+        elif vp is not None:
+            vp.setGeometry(self.rect())
+        if started:
+            self._preview_animation = (self.anim.is_running(), self.anim.t)
+            self.anim.stop()
+            for session in getattr(self, "_streams", []):
+                session.set_active(False)
+        elif enabled and self._resize_preview.active:
+            self._resize_preview.touch()
+        else:
+            self._layout_all()
         self.update()
+
+    def _finish_resize_preview(self):
+        running, progress = self._preview_animation or (False, 1.0)
+        self._preview_animation = None
+        self.anim.set_progress(progress)
+        self._layout_all(force=True)
+        self._static_key = None
+        self._series_key = None
+        for session in getattr(self, "_streams", []):
+            session.set_active(self._ui_active)
+        if running:
+            self.anim.start()
+            self.anim.set_progress(progress)
+        self.update()
+
+    def on_ui_deactivated(self) -> None:
+        self._ui_active = False
+        self._animation_was_running = self.anim.is_running()
+        self._animation_progress = self.anim.t
+        if self._animation_was_running:
+            self.anim._anim.pause()
+        for session in getattr(self, "_streams", []):
+            session.set_active(False)
+        self._resize_preview.cancel()
+        self._preview_animation = None
+
+    def on_ui_activated(self) -> None:
+        self._ui_active = True
+        for session in getattr(self, "_streams", []):
+            session.set_active(True)
+        if self._animation_was_running:
+            if self.anim._anim.state() == QVariantAnimation.Paused:
+                self.anim._anim.resume()
+            else:
+                self.anim.start()
+            self.anim.set_progress(self._animation_progress)
+        self._animation_was_running = False
+        self._layout_all(force=True)
+        self.update()
+
+    def hideEvent(self, event) -> None:
+        self.on_ui_deactivated()
+        super().hideEvent(event)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        vp = getattr(self, "_viewport", None)
+        if vp is not None:
+            vp.setGeometry(self.rect())
+            vp.raise_()
+        self.on_ui_activated()
 
     def _on_theme_changed(self, _mode) -> None:
+        if self._resize_preview.active:
+            self._resize_preview.finish()
         # 配色全部经 T() 实时取，重绘即生效；主题可能影响字体度量等布局
-        # 输入，保守失效布局缓存（下一次绘制全量重排一次）
+        # 输入，保守失效布局缓存与静态层缓存（下一次绘制全量重排一次）
         self._layout_key = None
+        self._static_key = None
+        self._static_pixmap_cache = None
+        self._series_key = None
+        self._series_pixmap_cache = None
+        self._paint_only_dirty = False
         self.update()
 
+    def invalidate_all_caches(self) -> None:
+        """使全部图层缓存失效，并标记「下一帧必须重建系列层」。
+
+        与 :meth:`invalidate_static_layer` / :meth:`invalidate_series_layer`
+        的区别：本方法同时置脏标记，使下一帧**不**走「为建缓存而多渲染一帧」
+        的路径——数据变更时直接绘制到目标设备即可，省掉一次全额重画。
+        """
+        self._layout_key = None
+        self._static_key = None
+        self._static_pixmap_cache = None
+        self._series_key = None
+        self._series_pixmap_cache = None
+        self._paint_only_dirty = True
+
+    # ------------------------------------------------------- 性能测量
+    def benchmark(self, frames: int = 8, force_layout: bool = True) -> dict:
+        """测量参考绘制的单帧耗时；这不是 RHI 实际呈现帧率。
+
+        保留原返回字段以兼容调用方，并新增 ``rhi`` 报告实际平台后端。
+        ``cpu_ms`` 是 QPainter 参考绘制耗时；真实性能须使用窗口交换帧测量。
+        """
+        from PySide6.QtGui import QImage
+
+        viewport = getattr(self, "_viewport", None)
+        get_api = getattr(viewport, "rhi_api", None)
+        api = get_api() if callable(get_api) else "software"
+        info = {
+            "points": max((len(r._points) for r in self._series), default=0),
+            "series": len(self._series),
+            "cpu_ms": None,
+            "gpu_ms": None,
+            "gpu_active": api not in ("software", "pending"),
+            "gl": False,
+            "rhi": api,
+            "budget_ms": 1000.0 / 90.0,
+            "ok": False,
+            "overload": self.overload_limited(),
+        }
+        image = QImage(max(1, self.width()), max(1, self.height()),
+                       QImage.Format.Format_RGB32)
+        reps = max(1, int(frames))
+        best = None
+        for index in range(reps + 1):
+            if force_layout:
+                self._layout_all(force=True)
+            started = time.perf_counter()
+            painter = QPainter(image)
+            try:
+                self._paint_contents(painter)
+            finally:
+                painter.end()
+            elapsed = (time.perf_counter() - started) * 1000.0
+            if index > 0:
+                best = elapsed if best is None else min(best, elapsed)
+        info["cpu_ms"] = best
+        info["ok"] = bool(best is not None and best <= info["budget_ms"])
+        return info
+
+    def grab(self, rectangle=QRect()):
+        pixmap = self._viewport.grab()
+        if rectangle.isNull():
+            return pixmap
+        dpr = self.devicePixelRatioF()
+        x, y, width, height = rectangle.getRect()
+        return pixmap.copy(QRect(round(x * dpr), round(y * dpr),
+                                 round(width * dpr), round(height * dpr)))
+
     def paintEvent(self, event) -> None:
+        """父控件只铺底色，完整内容由重合的子视口绘制，避免整窗更新时画两遍。"""
         p = QPainter(self)
+        try:
+            p.fillRect(self.rect(), QColor(T("color.bg.base")))
+        finally:
+            p.end()
+
+    def _paint_contents(self, p: QPainter) -> None:
+        """图表内容的唯一绘制体，RHI 快照与离屏软件视口共用。
+
+        绘制顺序（不可调换，画家算法）：
+
+        1. **静态前缀**：底色 → 坐标轴/网格 → 图例 → 标题。该段只依赖
+           option / 尺寸 / 主题，且位于所有系列之下，因此可整体缓存为位图
+           （见 ``_paint_static_prefix`` 与 ``static_layer_valid``）。
+        2. **动态层**：系列与组件（tooltip 例外），逐帧变化，必须重画。
+        3. **覆盖层**：tooltip 永远最后，压在一切之上。
+
+        分层依据：轴的刻度文字是每帧最贵的部分（典型图 21 次 drawText），
+        而鼠标移动、动画帧都会触发整控件重绘；缓存静态前缀后，悬停与动画
+        帧不再重复排版与绘制文字。
+        """
         p.setRenderHint(QPainter.Antialiasing)
-        p.fillRect(self.rect(), QColor(T("color.bg.base")))
-        self._layout_all()
-        t = self.anim.t
-        for c in self._coords:
-            c.paint_axes(p)
-        for r in self._series:
-            if not r.visible:
+        if self.overload_limited():
+            # 兜底护栏（见 overload_limited）：放这里而不是只放视口，因为
+            # benchmark 等路径会直接调用本方法而绕过视口。
+            self._overload_limited = True
+            self._paint_overload_notice(p)
+            return
+        self._overload_limited = False
+        pixmap = self._static_pixmap(p)
+        if pixmap is not None:
+            p.drawPixmap(0, 0, pixmap)
+        else:
+            self._paint_static_prefix(p)
+        self._paint_dynamic(p)
+
+    def overload_limited(self) -> bool:
+        """阻止异常输入生成无界几何；常规输入始终执行像素级采样。"""
+        for renderer in self._series:
+            if not renderer.visible:
                 continue
             try:
-                r.paint(p, t)
-            except Exception as exc:
-                # 单系列绘制异常不影响整图，但至少可见一次
-                warn_once(f"series-paint:{r.__class__.__name__}",
-                          f"系列绘制异常（{r.name}）: {exc!r}")
+                if len(renderer._points) > _MAX_GEOMETRY_POINTS:
+                    return True
+            except (AttributeError, TypeError):
+                continue
+        return False
+
+    def _paint_overload_notice(self, p: QPainter) -> None:
+        """绘制「已暂停绘制」提示（说明原因与可行的做法）。"""
+        p.fillRect(self.rect(), QColor(T("color.bg.base")))
+        p.setPen(QColor(T("color.text.tertiary")))
+        p.drawText(
+            self.rect().adjusted(24, 24, -24, -24),
+            Qt.AlignCenter | Qt.TextWordWrap,
+            f"已暂停绘制：单系列几何点数超过 {_MAX_GEOMETRY_POINTS:,}。\n"
+            f"请去掉 ``sampling: None`` 之类的设置——引擎默认按视口像素宽"
+            f"逐桶保留极值，逐像素列极值与全量直绘一致，画质不变而单帧回到"
+            f"毫秒级。")
+
+    def _paint_dynamic(self, p: QPainter) -> None:
+        """动态层 + 覆盖层：系列与组件 → tooltip。
+
+        绘制顺序与历史一致（画家算法不可调换）；调用方需已完成静态前缀
+        （缓存贴图或直接绘制）与抗锯齿设置。
+
+        系列层同样可缓存：其几何只随 option / 尺寸 / 主题 / dataZoom 窗口 /
+        动画进度变化，而鼠标移动、tooltip 跟随并不改变系列。命中缓存时整幅
+        系列位图直接贴回，避免逐帧重建折线路径（大数据量下这是主要开销）。
+        动画运行期间不缓存（每帧都在变）。
+        """
+        self._layout_all()
+        t = self.anim.t
+        if self.overload_limited():
+            # 兜底护栏：静态层命中时走的正是本方法，只守 _paint_contents
+            # 会漏掉这条路径。
+            self._overload_limited = True
+            self._paint_overload_notice(p)
+            return
+        series_pm = self._series_pixmap(p, t) if self._series_cacheable(t) else None
+        if series_pm is not None:
+            p.drawPixmap(0, 0, series_pm)
+        else:
+            for r in self._series:
+                if not r.visible or self.gpu_claims(r):
+                    continue                       # GPU 接管的系列留给视口直绘
+                try:
+                    r.paint(p, t)
+                except Exception as exc:
+                    # 单系列绘制异常不影响整图，但至少可见一次
+                    warn_once(f"series-paint:{r.__class__.__name__}",
+                              f"系列绘制异常（{r.name}）: {exc!r}")
         for comp in self._components:
             paint = getattr(comp, "paint", None)
             if callable(paint):
@@ -1033,11 +1758,190 @@ class ChartWidget(QWidget):
                 except Exception as exc:
                     warn_once(f"component-paint:{comp.__class__.__name__}",
                               f"组件绘制异常（{comp.__class__.__name__}）: {exc!r}")
+        # 覆盖层：tooltip 压在最上（历史绘制顺序的最后一步）
+        self.tooltip.paint(p)
+
+    def _series_cacheable(self, t) -> bool:
+        """静态系列可缓存；RHI 数据帧沿用原有缓存光栅路径保持像素一致。"""
+        if self.anim.is_running():
+            self._series_was_running = True
+            return False
+        if self._series_was_running:
+            self._series_was_running = False
+            self.invalidate_series_layer()
+        if self._paint_only_dirty:
+            self._paint_only_dirty = False
+            self._series_key = None
+            self._series_pixmap_cache = None
+            return bool(getattr(self, "prefer_raster_series", False))
+        del t
+        return True
+
+    def invalidate_series_layer(self) -> None:
+        """使系列层缓存失效。"""
+        self._series_key = None
+        self._series_pixmap_cache = None
+
+    def _series_pixmap(self, p: QPainter, t):
+        """系列层位图：缓存无效时离屏重建（可能较贵，仅数据/尺寸/主题变化时发生）。"""
+        dpr = 1.0
+        try:
+            dev = p.device()
+            if dev is not None:
+                dpr = float(dev.devicePixelRatio())
+        except Exception:
+            dpr = 1.0
+        key = (self._series_layer_key(), round(t, 6))
+        if (self._series_pixmap_cache is not None and self._series_key == key
+                and abs(dpr - self._series_dpr) <= 1e-6):
+            return self._series_pixmap_cache
+        w, h = self.width(), self.height()
+        if w <= 0 or h <= 0:
+            return None
+        try:
+            pm = QPixmap(int(round(w * dpr)), int(round(h * dpr)))
+            pm.setDevicePixelRatio(dpr)
+            pm.fill(Qt.transparent)
+            p2 = QPainter(pm)
+            try:
+                p2.setRenderHint(QPainter.Antialiasing)
+                for r in self._series:
+                    if not r.visible:
+                        continue
+                    try:
+                        r.paint(p2, t)
+                    except Exception as exc:
+                        warn_once(f"series-paint:{r.__class__.__name__}",
+                                  f"系列绘制异常（{r.name}）: {exc!r}")
+            finally:
+                p2.end()
+        except Exception as exc:
+            warn_once("series-layer",
+                      f"系列层缓存构建失败，退回逐帧绘制: {exc!r}")
+            self._series_pixmap_cache = None
+            self._series_key = None
+            return None
+        self._series_pixmap_cache = pm
+        self._series_key = key
+        self._series_dpr = dpr
+        return pm
+
+    # ------------------------------------------------------------ 静态层缓存
+    def _static_layer_key(self):
+        """静态层缓存键：**轴的解析结果** / 视口尺寸 / 主题 / 系列显隐。
+
+        为什么不用 ``_opt_version``：那个版本号在**每次数据更新时都会自增**，
+        于是每帧都判定「静态层失效」并重建整幅位图——实测 1400x500 / DPR 1.5
+        下重建一次 8.15 ms，而静态前缀（底色、坐标轴、网格、刻度文字、图例、
+        标题）**与数据值根本无关**。流式入图每帧都在改数据，这笔开销纯属浪费。
+
+        改用「轴解析结果」作键：轴的种类/名称/范围与刻度值一变，键就变，静态
+        层照旧重建；纯数据更新（轴范围未变）则命中缓存。刻度值本身就是静态层
+        画的东西，所以以它为键不会漏掉任何可见变化；``_data_extent_version``
+        在轴范围重算时自增，覆盖「刻度恰好不变但范围变了」的边界情形。
+        """
+        try:
+            theme = ThemeManager.instance().mode
+        except Exception:
+            theme = None
+        axes = []
+        for c in self._coords:
+            for ax in (getattr(c, "x_axis", None), getattr(c, "y_axis", None),
+                       getattr(c, "angle_axis", None),
+                       getattr(c, "radius_axis", None),
+                       getattr(c, "axis", None)):
+                if ax is None:
+                    continue
+                try:
+                    ticks = ax.ticks()
+                except Exception:  # noqa: BLE001
+                    ticks = None
+                try:
+                    ticks = tuple(ticks) if ticks is not None else None
+                except TypeError:
+                    ticks = None
+                axes.append((getattr(ax, "type", None), getattr(ax, "name", ""),
+                             getattr(ax, "vmin", None), getattr(ax, "vmax", None),
+                             ticks))
+        sel = tuple(sorted((str(k), bool(v))
+                           for k, v in self._series_state.items()))
+        dz = tuple((getattr(c, "start", 0.0), getattr(c, "end", 100.0))
+                   for c in self._components
+                   if getattr(c, "option_key", "") == "dataZoom")
+        return (self.width(), self.height(), theme, sel, dz, tuple(axes),
+                tuple(getattr(c, "data_extent_version", 0)
+                      for c in self._coords))
+
+    def invalidate_static_layer(self) -> None:
+        """使静态层缓存失效（option / 尺寸 / 主题变化时调用）。"""
+        self._static_key = None
+        self._static_pixmap_cache = None
+
+    def static_layer_valid(self, p: QPainter = None) -> bool:
+        """静态层缓存是否仍然有效（含目标设备像素比一致性检查）。"""
+        if self._static_pixmap_cache is None:
+            return False
+        if p is not None:
+            dpr = p.device().devicePixelRatio() if p.device() is not None else 1.0
+            if abs(dpr - self._static_dpr) > 1e-6:
+                return False
+        return self._static_key == self._static_layer_key()
+
+    def _static_pixmap(self, p: QPainter):
+        """返回静态前缀位图；缓存无效时离屏重建一次。
+
+        离屏绘制使用与目标设备相同的 devicePixelRatio，保证高 DPI 下
+        文字与线条的清晰度和直接绘制一致。
+        """
+        dpr = 1.0
+        try:
+            dev = p.device()
+            if dev is not None:
+                dpr = float(dev.devicePixelRatio())
+        except Exception:
+            dpr = 1.0
+        key = self._static_layer_key()
+        if (self._static_pixmap_cache is not None and self._static_key == key
+                and abs(dpr - self._static_dpr) <= 1e-6):
+            return self._static_pixmap_cache
+        w, h = self.width(), self.height()
+        if w <= 0 or h <= 0:
+            return None
+        try:
+            pm = QPixmap(int(round(w * dpr)), int(round(h * dpr)))
+            pm.setDevicePixelRatio(dpr)
+            p2 = QPainter(pm)
+            try:
+                self._paint_static_prefix(p2)
+            finally:
+                p2.end()
+        except Exception as exc:
+            # 缓存失败不得影响出图：退回直接绘制
+            warn_once("static-layer",
+                      f"静态层缓存构建失败，退回逐帧绘制: {exc!r}")
+            self._static_pixmap_cache = None
+            self._static_key = None
+            return None
+        self._static_pixmap_cache = pm
+        self._static_key = key
+        self._static_dpr = dpr
+        return pm
+
+    def _paint_static_prefix(self, p: QPainter) -> None:
+        """静态前缀：底色 + 坐标轴/网格 + 图例 + 标题。
+
+        调用方需已设置好抗锯齿（缓存路径在自己构造的 QPainter 上设置，
+        直接绘制路径由 ``_paint_contents`` 设置）。
+        """
+        if not p.testRenderHint(QPainter.Antialiasing):
+            p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor(T("color.bg.base")))
+        self._layout_all()
+        for c in self._coords:
+            c.paint_axes(p)
         self.legend.paint(p)
         title_rect = QRectF(0, 0, self.width(), self.title.height())
         self.title.paint(p, title_rect)
-        self.tooltip.paint(p)
-        p.end()
 
     # -- 鼠标：legend 点击 / tooltip 跟随 / C4 组件钩子 --------------------
     def mousePressEvent(self, event) -> None:

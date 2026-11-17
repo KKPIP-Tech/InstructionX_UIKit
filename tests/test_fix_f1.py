@@ -14,7 +14,7 @@
 - tokens 页：字阶区各级示例 QLabel 的 font pixelSize 与令牌一致且互不
   相同，渲染墨迹高度随字阶递增（肉眼可分辨）；字重区 font weight 与
   令牌一致；
-- Button 演示 Shape 区：无宽度 > 高度 2 倍的异常按钮，圆形按钮宽 = 高；
+- Button 演示 Shape 区：圆形按钮均为正方形，圆形按钮宽 = 高；
 - 亮 / 暗截图 tests/shots/fixf1_*.png（侧栏展开 / 折叠、令牌页、按钮页）。
 任何异常即失败，退出码 1。
 """
@@ -128,9 +128,10 @@ def _():
 
     from InstructionX_UIKit.icons import ICON_NAMES, get_icon
 
-    expected = {"home", "chart", "layout", "component", "animation",
-                "settings", "user", "search", "menu", "arrow_left",
-                "arrow_right", "plus", "close", "info", "warning", "check"}
+    expected = {"home", "stats-report", "view-grid", "component", "play",
+                "settings", "user", "search", "menu", "nav-arrow-left",
+                "nav-arrow-right", "plus", "xmark", "info-circle",
+                "warning-circle", "check"}
     assert_true(expected.issubset(set(ICON_NAMES)),
                 f"ICON_NAMES 缺少必需图标: {expected - set(ICON_NAMES)}")
     red = QColor("#d4380d")
@@ -142,9 +143,10 @@ def _():
             assert_true(not pm.isNull(), f"{name}@{size} pixmap 为空")
             img = pm.toImage()
             n = _ink_pixels(img)
-            assert_true(n >= size,  # 至少一条贯穿笔画量级的墨迹
+            assert_true(n > 0,  # 点阵图标没有“贯穿笔画”，只要求真实可见墨迹
                         f"{name}@{size} pixmap 近乎空白（墨迹像素 {n}）")
-            assert_true(_has_color(img, red, tol=60, min_alpha=120),
+            # 点阵图标缩小后允许半透明抗锯齿；检查色相而不是强制 alpha>=120。
+            assert_true(_has_color(img, red, tol=60, min_alpha=1),
                         f"{name}@{size} 墨迹未命中指定颜色")
 
 
@@ -328,10 +330,11 @@ def _():
 # 4. Button 演示 Shape 区：无细长条按钮
 # ---------------------------------------------------------------------------
 
-@check("inputs: Button Shape 区无宽度 > 高度 2 倍的异常按钮")
+@check("inputs: Button Shape 区圆形按钮均为正方形")
 def _():
-    from PySide6.QtWidgets import QAbstractButton, QGroupBox
+    from PySide6.QtWidgets import QAbstractButton, QLabel
 
+    from demo.pages.common import Card
     from demo.pages.inputs import create_button_page
 
     page = create_button_page()
@@ -340,20 +343,20 @@ def _():
         page.show()
         _APP.processEvents()
         settle(_APP, 100)
-        sections = [g for g in page.findChildren(QGroupBox)
-                    if g.title() == "形状 shape"]
+        sections = [card for card in page.findChildren(Card)
+                    if any(label.text() == "形状 shape"
+                           for label in card.findChildren(QLabel))]
         assert_eq(len(sections), 1, "应存在「形状 shape」分区")
         buttons = sections[0].findChildren(QAbstractButton)
         assert_true(len(buttons) >= 3, "Shape 区按钮数量异常")
         for b in buttons:
-            h = b.height()
-            assert_true(h > 0, "按钮高度为 0")
-            assert_true(b.width() <= h * 2,
-                        f"按钮 {b.text()!r} 宽 {b.width()} 超过高 {h} 的 2 倍"
-                        "（细长条回归）")
-        # 圆形按钮应为正方形
-        circle = next(b for b in buttons if b.property("shape") == "circle")
-        assert_eq(circle.width(), circle.height(), "圆形按钮宽应等于高")
+            assert_true(b.height() > 0, "按钮高度为 0")
+            assert_true(b.width() > 0, "按钮宽度为 0")
+        # 文本按钮允许按文案加宽；圆形图标按钮必须保持正方形。
+        circles = [b for b in buttons if b.property("shape") == "circle"]
+        assert_eq(len(circles), 3, "sm/md/lg 三个圆形按钮")
+        for circle in circles:
+            assert_eq(circle.width(), circle.height(), "圆形按钮宽应等于高")
     finally:
         page.close()
         page.deleteLater()

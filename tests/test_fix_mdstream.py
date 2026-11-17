@@ -326,6 +326,66 @@ def _():
         conv.deleteLater()
 
 
+@check("完整加粗分片局部追加且亮暗最终像素一致")
+def _():
+    tm = ThemeManager.instance()
+    source = "前置 **加粗**"
+    chunks = [f" 第 {index} 个 **Markdown 分片**" for index in range(8)]
+    try:
+        for mode in ("light", "dark"):
+            tm.set_mode(mode)
+            pump(50)
+            streamed = MarkdownView(variant="plain")
+            streamed.append_markdown(source)
+            original = streamed._render_paragraph
+            original_parse = streamed._parse_html
+            original_viewport_update = streamed.viewport().update
+            calls = []
+            parse_calls = []
+            paint_calls = []
+
+            def counted(*args, **kwargs):
+                calls.append(args)
+                return original(*args, **kwargs)
+
+            def counted_parse(*args, **kwargs):
+                parse_calls.append(args)
+                return original_parse(*args, **kwargs)
+
+            def counted_viewport_update(*args, **kwargs):
+                paint_calls.append(args)
+                return original_viewport_update(*args, **kwargs)
+
+            streamed._render_paragraph = counted
+            streamed._parse_html = counted_parse
+            streamed.viewport().update = counted_viewport_update
+            for chunk in chunks:
+                streamed.append_markdown(chunk)
+            assert_eq(len(calls), 0, f"{mode} 完整加粗分片不应重排整个段落")
+            assert_eq(len(parse_calls), 0, f"{mode} 完整加粗分片不应重复导入 HTML")
+            assert_eq(len(paint_calls), 0, f"{mode} 增量文档应由 Qt 局部失效而非整幅重绘")
+            reference = MarkdownView(source + "".join(chunks), variant="plain")
+            assert_eq(streamed.toPlainText(), reference.toPlainText(), f"{mode} 纯文本不一致")
+            assert_eq(streamed.document().blockCount(), reference.document().blockCount(),
+                      f"{mode} 块数不一致")
+            streamed.resize(760, 180)
+            reference.resize(760, 180)
+            streamed.show()
+            reference.show()
+            pump(80)
+            actual = streamed.grab().toImage()
+            expected = reference.grab().toImage()
+            if actual != expected:
+                actual.save(str(ROOT / "temp" / f"md_inline_{mode}_actual.png"))
+                expected.save(str(ROOT / "temp" / f"md_inline_{mode}_expected.png"))
+                raise AssertionError(f"{mode} 局部追加与一次性渲染存在像素差异")
+            streamed.close()
+            reference.close()
+    finally:
+        tm.set_mode("light")
+        pump(50)
+
+
 print("\n==== test_fix_mdstream ====")
 
 if _FAILURES:

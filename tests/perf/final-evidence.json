@@ -1,0 +1,219 @@
+{
+  "source_sha": "399af40109b2bf320294b6ba5fd10049bb0d65c7",
+  "measured_code_sha": "5c58fdf6933b85d5e4996e83a82c294c0a268e69",
+  "source_branch": "uniform_style",
+  "test_branch": "uniform_test（以最终清单提交为准）",
+  "generated_at_utc": "2026-11-15T06:17:27.601167+00:00",
+  "source_matches_uniform_style": true,
+  "overall_acceptance": "未通过：4K 性能红线未满足，原生窗口与 PresentMon 验收受权限阻塞，不能视为验收成品",
+  "current_evidence": [
+    {
+      "path": "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\5c58fdf6933b85d5e4996e83a82c294c0a268e69\\component-tests\\summary.json",
+      "result": "通过",
+      "note": "当前源码离屏独立脚本 55/55",
+      "sha256": "0ab97abd2ac74c02b14457196a7148fc20f9718be818c0a991124b3d73f8dc56"
+    },
+    {
+      "path": "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\5c58fdf6933b85d5e4996e83a82c294c0a268e69\\formal-cross-screen\\report.json",
+      "result": "通过（仅系统跨屏功能）",
+      "note": "系统跨屏完成 5×30 秒、每轮 120 次往返；不含帧率通过结论，手动长测未完成",
+      "sha256": "c3a1de9f273c0f13ddfcc3749415a429aea5967bf94c8b82c6dd514cab89df02"
+    },
+    {
+      "path": "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\5c58fdf6933b85d5e4996e83a82c294c0a268e69\\native-maximize-green\\report.json",
+      "result": "通过（功能短测）",
+      "note": "真实双击最大化与还原，Qt 与 Win32 状态一致；未完成 5×30 秒和帧率验收",
+      "sha256": "ee32e6bac9d69ad1df6d3958891b1c92b04dd7a51f2400bb9fca1a64b2df132a"
+    }
+  ],
+  "blocked_evidence": {
+    "native_input": {
+      "path": "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\399af40109b2bf320294b6ba5fd10049bb0d65c7\\native-input\\preflight.json",
+      "result": "阻塞",
+      "note": "测试窗口无法取得前台；原生窗口正式长测不能继续，不能以合成事件替代",
+      "sha256": "ad22cfc8422ecf17d57eab3298f2d1a3a0a8882aa5af8814b8a1a3c743be9eed"
+    },
+    "presentmon": {
+      "path": "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\399af40109b2bf320294b6ba5fd10049bb0d65c7\\presentmon\\preflight.json",
+      "result": "阻塞",
+      "note": "需要管理员权限或 Performance Log Users 用户组；未提权，未生成帧数据",
+      "sha256": "2362d83c8af1ee16ff1fd35ef03f99d6c5c2d61566b667cfe366c3f477e8201a"
+    }
+  },
+  "failed_or_unverified": {
+    "realtime_4k": {
+      "current": "当前代码正式 5×60 秒测量完成",
+      "current_files": [
+        {
+          "path": "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\5c58fdf6933b85d5e4996e83a82c294c0a268e69\\realtime\\formal\\summary.json",
+          "result": "失败",
+          "note": "当前代码 5×60 秒正式测量；逐轮原始指标以 JSON 为准",
+          "sha256": "6e44a958e35da05f1ce52d591b58d96c9a9db0537f7dd33cbb44bffa5169229d"
+        }
+      ],
+      "metrics": {
+        "chart_left": {
+          "average_fps": [
+            1.2281982714121364,
+            1.2383192317148142,
+            1.6620041127893228,
+            1.6413310443771039,
+            1.6760313381344731
+          ],
+          "p95_ms": [
+            930.7117600925267,
+            888.8836900703609,
+            630.1208300283179,
+            630.3277100203557,
+            619.1120950039476
+          ],
+          "p99_ms": [
+            1008.2672761287542,
+            1021.4211290329679,
+            653.5810159798704,
+            1188.172244054731,
+            633.6543448432349
+          ],
+          "all_pass": false
+        },
+        "chart_right": {
+          "average_fps": [
+            0.7330144289867,
+            0.7289981139852947,
+            1.004270838355721,
+            1.1223345647129934,
+            1.0559021675459956
+          ],
+          "p95_ms": [
+            1851.022639987059,
+            1741.5222000447102,
+            1225.6262049078941,
+            1226.0252999840304,
+            1219.9940099846572
+          ],
+          "p99_ms": [
+            1932.5641400041056,
+            1760.9843040048145,
+            1349.5160831115209,
+            1247.866161991842,
+            1241.4664660114795
+          ],
+          "all_pass": false
+        },
+        "blueprint": {
+          "average_fps": [
+            0.920363450912946,
+            1.0043301073262951,
+            1.2541685426949427,
+            1.189215743419918,
+            1.357414132644739
+          ],
+          "p95_ms": [
+            1754.980424896348,
+            1754.6256349305622,
+            1224.8866200330667,
+            1233.588850009255,
+            1216.6693999897689
+          ],
+          "p99_ms": [
+            1805.521203984972,
+            2222.555993935093,
+            1393.4140029782411,
+            1767.2779600601643,
+            1785.7219999656081
+          ],
+          "all_pass": false
+        }
+      },
+      "historical_files": [
+        {
+          "path": "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\ae3f59d2121c0318718ea588831a4851b4ba8ab3\\realtime\\formal\\summary.json",
+          "result": "历史参考（ae3f59d）",
+          "note": "历史 5×60 秒测量五轮均未通过，不能替代当前复验",
+          "sha256": "4b2bde67411efead806abb8921db24f8a1f40099ca68c32b03e81edbb10fd55c"
+        }
+      ],
+      "required": "平均 FPS≥60、P95≤16.67ms、P99≤33.33ms、无应用自身≥100ms 长任务"
+    },
+    "native_window_matrix": "跨屏系统功能长测已完成；其余手势、最大化、帧率与资源长测未完成",
+    "presentmon": "权限不足，无外部呈现数据"
+  },
+  "historical_evidence": [
+    {
+      "path": "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\d3bcfdcc49139d8618fe2dbf9d5c4763fbbb478e\\native-window-border-green\\report.json",
+      "result": "历史参考（d3bc 源码）",
+      "note": "客户区八方向、系统 API 与手动回退真实鼠标验证",
+      "sha256": "98775a6ad45f90a83db65a46eceb7d78378798cdf81be46fd8445cf68e89bfcf"
+    },
+    {
+      "path": "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\ae3f59d2121c0318718ea588831a4851b4ba8ab3\\visual-ab\\final\\result\\comparison.json",
+      "result": "历史参考（ae3f59d）",
+      "note": "原始与候选亮暗 160 状态零像素差异",
+      "sha256": "10993fc7aeb2e30ade57b52c82af6108946036c7a60b92715a758c541afff11a"
+    },
+    {
+      "path": "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\ae3f59d2121c0318718ea588831a4851b4ba8ab3\\rhi-chart\\report.json",
+      "result": "历史参考（ae3f59d）",
+      "note": "真实 D3D11 Chart 8 项零像素差异",
+      "sha256": "47e0ef6e2f66e0d89d1be41d944c06fe4289d0ee38d9fde43166447e91af0aea"
+    },
+    {
+      "path": "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\ae3f59d2121c0318718ea588831a4851b4ba8ab3\\rhi-blueprint\\report.json",
+      "result": "历史参考（ae3f59d）",
+      "note": "真实 D3D11 Blueprint 7 项零像素差异",
+      "sha256": "0e00e586d97bdc0bb0985d2b32fe2d43c4ac8310480a9b5a049393957829c62f"
+    },
+    {
+      "path": "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\ae3f59d2121c0318718ea588831a4851b4ba8ab3\\rhi-direct.json",
+      "result": "历史参考（ae3f59d）",
+      "note": "gpuDirect option 的 RHI 兼容、样式、像素与缓存",
+      "sha256": "9238e3a0eac780843731052aec23d9553c4a56c6b16c8b7e8f199ce3a4c6ce02"
+    },
+    {
+      "path": "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\ae3f59d2121c0318718ea588831a4851b4ba8ab3\\texture-resources.json",
+      "result": "历史参考（ae3f59d）",
+      "note": "47 次纹理创建均有释放去向，关闭后无剩余帧引用",
+      "sha256": "707fb994f73750ccd995049c37871f6305c83340104238cee624aa68415e2746"
+    },
+    {
+      "path": "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\ae3f59d2121c0318718ea588831a4851b4ba8ab3\\popups\\result\\comparison.json",
+      "result": "历史参考（ae3f59d）",
+      "note": "真实透明弹窗亮暗 16 状态零像素差异",
+      "sha256": "54e5bab936547235fd3cf1804fb911264d6c9d558add5e49c836542ca4d5bb90"
+    },
+    {
+      "path": "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\ae3f59d2121c0318718ea588831a4851b4ba8ab3\\main-startup.json",
+      "result": "历史参考（ae3f59d）",
+      "note": "main.py 真实启动、D3D11 页面进入与退出码 0",
+      "sha256": "98c9c878eff5989890004b3ff2860e2350400167be1c5d03b159097313008915"
+    },
+    {
+      "path": "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\ae3f59d2121c0318718ea588831a4851b4ba8ab3\\realtime\\formal\\resource-analysis.json",
+      "result": "历史参考（ae3f59d）",
+      "note": "5×60 秒资源采样稳定，私有字节约 1.49GB",
+      "sha256": "b0f510a8aee904ee85e2747bf76b408a61f11881dfc9bb6a933b588e4ff4aa1a"
+    },
+    {
+      "path": "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\ae3f59d2121c0318718ea588831a4851b4ba8ab3\\window-matrix\\final-audio\\report.json",
+      "result": "历史参考（ae3f59d）",
+      "note": "4×30 秒复杂场景音频 ActiveState / NoError",
+      "sha256": "f667c39251d7de542fc0858acd5c8a23ceef0ceade8977f170ebd7fc3d1ae0de"
+    }
+  ],
+  "historical_notice": "历史通过记录只作参考；不能代替当前 SHA 的最终视觉、资源、真实窗口和性能复验",
+  "raw_data_directories": [
+    "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\5c58fdf6933b85d5e4996e83a82c294c0a268e69\\component-tests",
+    "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\5c58fdf6933b85d5e4996e83a82c294c0a268e69\\formal-cross-screen",
+    "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\5c58fdf6933b85d5e4996e83a82c294c0a268e69\\native-input",
+    "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\5c58fdf6933b85d5e4996e83a82c294c0a268e69\\presentmon",
+    "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\ae3f59d2121c0318718ea588831a4851b4ba8ab3\\realtime\\formal",
+    "C:\\Users\\fuwa1\\Documents\\Project\\InstructionX_UIKit\\temp\\performance\\ae3f59d2121c0318718ea588831a4851b4ba8ab3\\visual-ab\\final"
+  ],
+  "rollback": {
+    "automatic_action": "不执行",
+    "source": "uniform_style 保持当前候选；不自动合并 dev、不发布、不修改 InstructionX 主仓库",
+    "test": "uniform_test 保持测试与证据；原 test 分支不修改",
+    "reference": "原始 uniform_style@949b728 仅作 A/B 与回退参考，是否回退或合并由所有者决定",
+    "software_viewport": "仅用于 offscreen/minimal 或 RHI 初始化失败，不恢复旧 OpenGL 后端"
+  }
+}

@@ -23,6 +23,8 @@
 import math
 import random
 
+from shiboken6 import isValid as _shiboken_is_valid
+
 from PySide6.QtCore import (
     QAbstractAnimation,
     QEasingCurve,
@@ -60,6 +62,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .._draw import draw_arc
 from ..theme import T, ThemeManager
 from ..tokens import DURATION, EASING
 from .property import _SnapshotOverlay, _grab_pixmap
@@ -469,10 +472,10 @@ class SpinnerArc(_HiddenPauseMixin, QWidget):
         pen.setWidthF(float(self._lw))
         pen.setCapStyle(Qt.RoundCap)
         p.setPen(pen)
-        p.drawArc(rect, 0, 360 * 16)
+        draw_arc(p, rect, 0.0, 360.0)
         pen.setColor(_qcolor("primary"))
         p.setPen(pen)
-        p.drawArc(rect, int(-self._angle * 16), 110 * 16)
+        draw_arc(p, rect, -self._angle, 110.0)
         p.end()
 
 
@@ -622,7 +625,7 @@ class CheckDraw(_HiddenPauseMixin, QWidget):
             pen.setCapStyle(Qt.RoundCap)
             p.setPen(pen)
             p.setBrush(Qt.NoBrush)
-            p.drawArc(rect, 90 * 16, int(-360 * 16 * circle_phase))
+            draw_arc(p, rect, 90.0, -360.0 * circle_phase)
 
         if check_phase > 0.0:
             # 对勾两点折线：p1 -> p2 -> p3（相对坐标）
@@ -1793,7 +1796,7 @@ class ScrollReveal(QScrollArea):
     说明：渐显通过「隐藏子控件（保留布局占位）+ 快照叠加层淡入」实现，
     **不使用 QGraphicsOpacityEffect**（真机 Windows + QSS + 高 DPI 下
     效果常驻 / 整片不绘制的平台坑）；结束后摘除叠加层并显示原控件，
-    最终渲染与平台无关。扫描在控件尚未 show / 视口未就绪时会自动
+    最终渲染与平台无关。显示时安排扫描，可见但视口高度未就绪时
     重试，避免演示卡「先构建后显示」时序下块被错误预隐藏。
     示例::
 
@@ -1809,6 +1812,9 @@ class ScrollReveal(QScrollArea):
         self._revealed = set()
         self._pre_hidden = {}   # 被预隐藏的子控件 → 原 QSizePolicy
         self._scan_retries = 0
+        self._scan_timer = QTimer(self)
+        self._scan_timer.setSingleShot(True)
+        self._scan_timer.timeout.connect(self._scan)
         if content is not None:
             self.setContent(content)
         self.verticalScrollBar().valueChanged.connect(lambda *_: self._scan())
@@ -1825,7 +1831,7 @@ class ScrollReveal(QScrollArea):
         self._pre_hidden.clear()
         self._scan_retries = 0
         self.setWidget(content)
-        QTimer.singleShot(0, self._scan)
+        self._scan_timer.start(0)
 
     def refresh(self):
         """手动触发一次扫描（内容增删后调用）。"""
@@ -1838,19 +1844,24 @@ class ScrollReveal(QScrollArea):
     def showEvent(self, event):
         super().showEvent(event)
         self._scan_retries = 0
-        QTimer.singleShot(0, self._scan)
+        self._scan_timer.start(0)
+
+    def hideEvent(self, event):
+        self._scan_timer.stop()
+        super().hideEvent(event)
 
     def _scan(self):
+        if not _shiboken_is_valid(self):
+            return
         content = self.widget()
-        if content is None:
+        if content is None or not self.isVisible():
             return
         viewport = self.viewport()
-        # 视口未就绪（未 show / 高度异常）时延迟重试——此时 mapTo 坐标
-        # 不可信，预隐藏会把块错误地卡成不可见
-        if not self.isVisible() or viewport.height() < 8:
+        # 可见但高度未就绪时延迟重试，不预隐藏位置不可信的子控件。
+        if viewport.height() < 8:
             if self._scan_retries < 60:
                 self._scan_retries += 1
-                QTimer.singleShot(30, self._scan)
+                self._scan_timer.start(30)
             return
         self._scan_retries = 0
         vh = max(1, viewport.height())
@@ -1972,6 +1983,9 @@ class HorizontalScrollStrip(_HiddenPauseMixin, QScrollArea):
         self._layout.setContentsMargins(12, 6, 12, 6)
         self._layout.setSpacing(int(T("space.3")))
         self.setWidget(self._container)
+        self._measure_timer = QTimer(self)
+        self._measure_timer.setSingleShot(True)
+        self._measure_timer.timeout.connect(self._measure)
         self._ticker = _Ticker(self, self._advance, interval)
         sb = self.horizontalScrollBar()
         sb.valueChanged.connect(self._wrap)
@@ -2025,7 +2039,7 @@ class HorizontalScrollStrip(_HiddenPauseMixin, QScrollArea):
                     if _copy == 0:
                         self._layout.addWidget(entry)
         self._container.adjustSize()
-        QTimer.singleShot(0, self._measure)
+        self._measure_timer.start(0)
 
     def _measure(self):
         margins = self._layout.contentsMargins()
@@ -2291,6 +2305,9 @@ class _StoryStepPanel(QFrame):
         self._cache = None          # 全不透明内容缓存位图（paintEvent 外抓取）
         self._capture_pending = False
         self._capturing = False     # 缓存抓取触发的离屏重入戳记
+        self._capture_timer = QTimer(self)
+        self._capture_timer.setSingleShot(True)
+        self._capture_timer.timeout.connect(self._capture)
         # 主题切换后 QSS 颜色变化，缓存需失效重抓；绑定方法随控件销毁
         # 自动断连（与 _theme_refresh 同一机制）
         ThemeManager.instance().theme_changed.connect(self._invalidate_cache)
@@ -2309,6 +2326,16 @@ class _StoryStepPanel(QFrame):
         super().resizeEvent(event)
         self._invalidate_cache()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._alpha < 0.999 and self._cache is None:
+            self._schedule_capture()
+
+    def hideEvent(self, event):
+        self._capture_timer.stop()
+        self._capture_pending = False
+        super().hideEvent(event)
+
     def _invalidate_cache(self):
         """尺寸 / 主题变化后丢弃缓存并按需安排重抓。"""
         self._cache = None
@@ -2316,15 +2343,15 @@ class _StoryStepPanel(QFrame):
             self._schedule_capture()
 
     def _schedule_capture(self):
-        if self._capture_pending:
+        if self._capture_pending or not self.isVisible():
             return
         self._capture_pending = True
-        QTimer.singleShot(0, self._capture)
+        self._capture_timer.start(0)
 
     def _capture(self):
         """在 paintEvent 外把自身（含 QSS 与子控件）渲染进缓存位图。"""
         self._capture_pending = False
-        if self.width() < 2 or self.height() < 2:
+        if not self.isVisible() or self.width() < 2 or self.height() < 2:
             return
         dpr = max(1.0, float(self.devicePixelRatioF()))
         pm = QPixmap(max(2, int(math.ceil(self.width() * dpr))),
@@ -2387,6 +2414,9 @@ class ScrollStoryArea(QScrollArea):
         self._layout.setSpacing(int(T("space.6")))
         self.setWidget(self._container)
         self._overlay = _StoryOverlay(self)
+        self._update_timer = QTimer(self)
+        self._update_timer.setSingleShot(True)
+        self._update_timer.timeout.connect(self._update_story)
         self.verticalScrollBar().valueChanged.connect(lambda _v: self._update_story())
         _theme_refresh(self)
 
@@ -2408,7 +2438,7 @@ class ScrollStoryArea(QScrollArea):
         lay.addWidget(body_label)
         self._layout.addWidget(panel)
         self._steps.append(panel)
-        QTimer.singleShot(0, self._update_story)
+        self._update_timer.start(0)
         return panel
 
     def stepCount(self) -> int:
@@ -2531,6 +2561,7 @@ class CardTilt(_HiddenPauseMixin, QWidget):
         if self._content is not None:
             self._content.resize(self.size())
         self._snap_cache = {}
+        self._margin_cache = {}
 
     def mouseMoveEvent(self, event):
         w, h = max(1, self.width()), max(1, self.height())

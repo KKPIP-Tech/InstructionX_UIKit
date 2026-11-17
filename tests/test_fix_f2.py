@@ -6,7 +6,7 @@
     QT_QPA_PLATFORM=offscreen python tests/test_fix_f2.py
 
 覆盖：
-- LineEdit：sm/md/lg（24/32/40）三档下文本墨迹中心与控件中心偏差 <= 1px；
+- LineEdit：sm/md/lg（22/28/34）三档下文本墨迹中心与控件中心偏差 <= 1px；
   右侧槽位视觉顺序 [后缀][清除 ×][眼睛]，各槽位墨迹 bbox 互不相交；
   多字符后缀文本（".com"）按真实字宽绘制（不再压入正方形图标），
   超长后缀时 textMargins 为正文预留空间，正文墨迹与后缀墨迹不相交；
@@ -117,7 +117,7 @@ def _slot_ink_bbox(img, tert, x_range, y_range, tol=24, min_alpha=120):
 # 1. LineEdit：三档文本垂直居中
 # ---------------------------------------------------------------------------
 
-_HEIGHTS = {"sm": 24, "md": 32, "lg": 40}
+_HEIGHTS = {"sm": 22, "md": 28, "lg": 34}
 
 
 @check("line_edit: sm/md/lg 三档文本墨迹精确垂直居中（±1px）")
@@ -136,7 +136,7 @@ def _():
             e.show()
             _APP.processEvents()
             e.clearFocus()  # 去掉光标竖线，避免污染墨迹盒
-            _APP.processEvents()
+            settle(_APP, 30)
             img = e.grab().toImage()
             bb = _ink_bbox(img, dark, range(2, img.width() - 2),
                            range(2, img.height() - 2), tol=60, min_alpha=100)
@@ -186,7 +186,10 @@ def _():
 
         # 各槽位墨迹（同取 text.tertiary，按几何区域分离，蓝灰判据）
         y_all = range(1, h - 1)
-        suf = _slot_ink_bbox(img, tert, range(0, clear_btn.x()), y_all)
+        # 后缀区域只覆盖其真实文本延伸范围，排除左侧焦点边框与正文。
+        suffix_left = max(0, int(suffix_btn.x()
+                                 - e._symbol_ink(".com").width() - 8))
+        suf = _slot_ink_bbox(img, tert, range(suffix_left, clear_btn.x()), y_all)
         clr = _slot_ink_bbox(img, tert, range(clear_btn.x(), eye_btn.x()),
                              y_all)
         eye = _slot_ink_bbox(img, tert, range(eye_btn.x(), w), y_all)
@@ -219,9 +222,9 @@ def _():
     tert = QColor(T("color.text.tertiary"))
     e = LineEdit("a-very-long-user-name@some-mail-provider", clearable=True)
     e.set_suffix_icon("@gmail.com")
-    e.resize(240, 32)
+    e.resize(240, 28)
     e.show()
-    _APP.processEvents()
+    settle(_APP, 100)
     e.clearFocus()
     _APP.processEvents()
     assert_true(e.textMargins().right() > 0,
@@ -230,30 +233,18 @@ def _():
     suffix_btn = e._slot_button(e._suffix_action)
     clear_btn = e._slot_button(e._clear_action())
     assert_true(suffix_btn is not None and clear_btn is not None, "槽位按钮缺失")
-    # 后缀墨迹定位：正文抗锯齿产生的蓝灰像素与 text.tertiary 色距 <24，
-    # 直接全图匹配会把正文笔画误判为后缀（本机实测 x≈17 处假阳性）。
-    # 后缀 "@gmail.com" 是紧贴清除按钮左侧的连续长墨迹带（实测 x≈141..204、
-    # 宽 ~60px），正文误判像素则稀疏孤立；故取最宽连续簇（间隙 <=2px 合并）
-    # 作为后缀墨迹带。
-    xs = set()
-    for y in range(1, 31):
-        for x in range(0, clear_btn.x()):
-            c = img.pixelColor(x, y)
-            if (_near(c, tert, 24) and c.alpha() >= 120
-                    and c.blue() - c.red() >= 10):
-                xs.add(x)
-    assert_true(xs, "未找到后缀墨迹")
-    clusters = []
-    for x in sorted(xs):
-        if clusters and x - clusters[-1][1] <= 3:
-            clusters[-1][1] = x
-        else:
-            clusters.append([x, x])
-    suf_x0, suf_x1 = max(clusters, key=lambda cl: cl[1] - cl[0])
+    # 用槽位几何和实际字宽定位后缀，避免正文抗锯齿或焦点边框误命中。
+    suffix_left = max(0, int(suffix_btn.x()
+                             - e._symbol_ink("@gmail.com").width() - 8))
+    suf = _slot_ink_bbox(img, tert, range(suffix_left, clear_btn.x()),
+                         range(1, e.height() - 1), tol=8, min_alpha=220)
+    assert_true(suf is not None, "未找到后缀墨迹")
+    suf_x0, suf_x1 = suf[0], suf[1]
     assert_true(suf_x1 - suf_x0 + 1 >= 30,
                 f"后缀墨迹簇过窄（疑似正文误判）: {suf_x1 - suf_x0 + 1}px")
-    # 正文墨迹右缘不得进入后缀墨迹带
-    txt = _ink_bbox(img, dark, range(0, suf_x1 + 1), range(1, 31), tol=60)
+    # 正文墨迹右缘不得进入后缀墨迹带。
+    txt = _ink_bbox(img, dark, range(0, suf_x1 + 1),
+                    range(1, e.height() - 1), tol=60)
     if txt is not None:
         assert_true(txt[1] < suf_x0,
                     f"正文与后缀墨迹相交: text_x1={txt[1]} suffix_x0={suf_x0}")
@@ -291,6 +282,8 @@ def build_lineedit_page():
 def _():
     from PySide6.QtGui import QColor
 
+    from InstructionX_UIKit.components.line_edit import LineEdit
+
     tm = ThemeManager.instance()
     SHOTS.mkdir(parents=True, exist_ok=True)
     page = build_lineedit_page()
@@ -315,8 +308,15 @@ def _():
     # 修复后：md 行（第 2 行）后缀 ".com" 墨迹宽度应接近真实字宽（>20px）
     tert = QColor(T("color.text.tertiary"))
     img = after["light"]
-    md_row_y = range(50, 82)  # 布局：margins16 + 24 + spacing10 → md 行 y≈50..82
-    suf = _ink_bbox(img, tert, range(240, 296), md_row_y)
+    md_edit = page.findChildren(LineEdit)[1]
+    suffix_btn = md_edit._slot_button(md_edit._suffix_action)
+    clear_btn = md_edit._slot_button(md_edit._clear_action())
+    suffix_left = (md_edit.x() + suffix_btn.x()
+                   - int(md_edit._symbol_ink(".com").width()) - 8)
+    suffix_right = md_edit.x() + clear_btn.x()
+    md_row_y = range(md_edit.y() + 1,
+                     md_edit.y() + md_edit.height() - 1)
+    suf = _ink_bbox(img, tert, range(suffix_left, suffix_right), md_row_y)
     assert_true(suf is not None, "md 行后缀墨迹缺失")
     after_w = suf[1] - suf[0] + 1
     assert_true(after_w > 20, f"修复后后缀墨迹宽 {after_w}px，疑似仍被压缩")
@@ -328,7 +328,7 @@ def _():
     if before_path.exists():
         from PySide6.QtGui import QImage
         before = QImage(str(before_path))
-        suf_b = _ink_bbox(before, tert, range(240, 296), md_row_y)
+        suf_b = _ink_bbox(before, tert, range(suffix_left, suffix_right), md_row_y)
         if suf_b is not None:
             before_w = suf_b[1] - suf_b[0] + 1
             assert_true(after_w > before_w,

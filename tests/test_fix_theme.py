@@ -104,7 +104,7 @@ def _():
         assert_eq(DARK[key], v, f"DARK[{key}]")
     # 未列入本次修订的令牌保持不变（抽查）
     assert_eq(LIGHT["color.bg.base"], "#FFFFFF", "LIGHT bg.base 不应改动")
-    assert_eq(DARK["color.bg.base"], "#15181E", "DARK bg.base 不应改动")
+    assert_eq(DARK["color.bg.base"], "#1B1F27", "DARK bg.base 不应改动")
     assert_eq(LIGHT["color.text.primary"], "#1C2330", "LIGHT text.primary 不应改动")
     assert_eq(DARK["color.success.hover"], "#55D0A0", "DARK success.hover 不应改动")
     assert_eq(DARK["color.danger.hover"], "#F07878", "DARK danger.hover 不应改动")

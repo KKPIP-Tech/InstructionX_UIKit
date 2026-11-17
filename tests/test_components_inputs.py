@@ -92,13 +92,13 @@ def _():
     assert_eq(btn.property("variant"), "primary", "variant 属性")
     assert_eq(btn.property("uiksize"), "lg", "size 应映射为 uiksize")
     btn.ensurePolished()
-    assert_eq(btn.sizeHint().height(), 40, "lg 高度")
+    assert_eq(btn.sizeHint().height(), 34, "lg 高度")
     for v in ("default", "dashed", "text", "link", "danger"):
         b = Button("x", variant=v)
         assert_eq(b.property("variant"), v, f"variant={v}")
     b2 = Button("x", size="sm")
     b2.ensurePolished()
-    assert_eq(b2.sizeHint().height(), 24, "sm 高度")
+    assert_eq(b2.sizeHint().height(), 22, "sm 高度")
     b2.set_shape("circle")
     assert_eq(b2.property("shape"), "circle", "shape 属性")
     # loading：屏蔽鼠标 + 状态可读 + 可复原
@@ -125,9 +125,9 @@ def _():
     b = IconButton(text="+", variant="primary", shape="circle", size="md")
     assert_eq(b.text(), "+", "文本符号")
     assert_eq(b.property("variant"), "primary", "variant 属性")
-    assert_eq((b.width(), b.height()), (32, 32), "circle 固定正圆")
+    assert_eq((b.width(), b.height()), (28, 28), "circle 固定正圆")
     b.set_size("sm")
-    assert_eq((b.width(), b.height()), (24, 24), "circle sm 边长")
+    assert_eq((b.width(), b.height()), (22, 22), "circle sm 边长")
     b.set_shape(None)
     b.set_symbol("×")
     assert_eq(b.text(), "×", "切换文本符号")
@@ -181,9 +181,9 @@ def _():
 
     sw = Switch(checked=True)
     assert_true(sw.isChecked(), "初始开")
-    assert_eq((sw.width(), sw.height()), (44, 22), "md 固定尺寸")
+    assert_eq((sw.width(), sw.height()), (52, 28), "md 固定尺寸")
     sw.set_size("sm")
-    assert_eq((sw.width(), sw.height()), (32, 16), "sm 固定尺寸")
+    assert_eq((sw.width(), sw.height()), (40, 22), "sm 固定尺寸")
     assert_eq(sw.property("uiksize"), "sm", "size 属性映射")
     sw.setChecked(False)
     settle(QApplication.instance(), 350)  # 等待过渡动画
@@ -219,7 +219,7 @@ def _():
     assert_eq(pwd.echoMode(), QLineEdit.Password, "切回密文")
     sm = LineEdit(size="sm")
     sm.ensurePolished()
-    assert_eq(sm.sizeHint().height(), 24, "sm 高度")
+    assert_eq(sm.sizeHint().height(), 22, "sm 高度")
     edit.setEnabled(False)
 
 
@@ -241,8 +241,9 @@ def _():
     row = ta._row_height()
     doc_margin_h = 2 * ta.document().documentMargin()
     assert_true(ta.maximumHeight()
-                <= 4 * row + doc_margin_h + ta._frame_padding() + 2,
-                "高度受 max_rows 约束")
+                <= 4 * row + doc_margin_h + ta._frame_padding()
+                + ta._count_reserve(),
+                "高度受 max_rows 约束（含统计条预留）")
     ta2 = TextArea()
     ta2.setEnabled(False)
 
@@ -281,7 +282,7 @@ def _():
     assert_eq(cb.count(), 2, "set_items")
     cb2 = ComboBox(["x"], size="sm")
     cb2.ensurePolished()
-    assert_eq(cb2.sizeHint().height(), 24, "sm 高度")
+    assert_eq(cb2.sizeHint().height(), 22, "sm 高度")
     cb.setEnabled(False)
 
 
@@ -355,7 +356,7 @@ def _():
     assert_eq(len(seen), 1, "colorChanged 信号")
     assert_eq(cp._label.text(), "#1E9E6A", "十六进制文本")
     cp.set_size("sm")
-    assert_eq((cp._swatch.width(), cp._swatch.height()), (24, 24), "sm 色块")
+    assert_eq((cp._swatch.width(), cp._swatch.height()), (22, 22), "sm 色块")
     cp.set_show_text(False)
     cp.setEnabled(False)
 

@@ -9,17 +9,21 @@ from PySide6.QtCore import QPointF, QSize, Qt
 from PySide6.QtGui import QFontMetricsF, QIcon, QPainter
 from PySide6.QtWidgets import QStyle, QStyleOptionToolButton, QToolButton
 
-from ..theme import set_property
+from ..theme import T, _INPUT_HEIGHTS, set_property
 from ._mixin import QWIDGETSIZE_MAX, SizeMixin
 
 __all__ = ["IconButton"]
 
 _VARIANTS = (None, "default", "primary", "danger")
 _SHAPES = (None, "circle", "round")
-#: 各尺寸档的控件边长（px）
-_EDGE = {"sm": 24, "md": 32, "lg": 40}
-#: 各尺寸档的图标边长（px）
-_ICON = {"sm": 14, "md": 16, "lg": 20}
+#: 各尺寸档的控件边长（px）：**必须等于该档控件高度**，否则
+#: ``shape="circle"`` 会被全局 QSS 的 ``max-height`` 压扁成椭圆
+#: （原表 24/32/40 与密度刻度 22/28/34 脱节，圆形实际渲染成 32x28）。
+#: 同时用作非圆形形状的最小宽度，保证图标按钮近似方形、便于点按。
+_EDGE = dict(_INPUT_HEIGHTS)
+#: 各尺寸档的图标 / 文本符号边长（px）：约为边长的 0.55，
+#: 留出舒适的呼吸位；三档 12 / 14 / 16 等差递进。
+_ICON = {"sm": 12, "md": 14, "lg": 16}
 
 #: 实例级 QSS：图标按钮无文本，清零内边距使总高严格等于尺寸档边长。
 #: 全局 QSS 的 ``padding: 4px`` / ``padding: 0 12px`` 会让 min-height（内容盒）
@@ -44,7 +48,7 @@ class IconButton(SizeMixin, QToolButton):
         icon: QIcon 实例；为 None 时使用 ``text`` 作为文本符号。
         text: 文本符号（未提供 icon 时显示）。
         variant: ``None``（透明底）/ ``default`` / ``primary`` / ``danger``。
-        size: ``sm`` / ``md`` / ``lg``，对应边长 24 / 32 / 40。
+        size: ``sm`` / ``md`` / ``lg``，对应边长 22 / 28 / 34。
         shape: ``None`` / ``"circle"``（正圆，宽 = 高）/ ``"round"``。
         parent: 父控件。
 
@@ -53,6 +57,10 @@ class IconButton(SizeMixin, QToolButton):
         add = IconButton(text="+", variant="primary", shape="circle")
         gear = IconButton(icon=QIcon(":/icons/gear.svg"), size="sm")
         close = IconButton(text="×", variant="danger")
+
+    备注:
+        边长取 ``theme._INPUT_HEIGHTS``，与 Button / Switch / 分段控制器
+        同一刻度，因此图标按钮与同档位按钮并排时高度严格相等。
     """
 
     #: 合法尺寸档（SizeMixin 校验用）

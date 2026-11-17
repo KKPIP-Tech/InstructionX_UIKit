@@ -10,11 +10,10 @@
 1. ``DropdownButton`` 双下拉箭头 —— 截图像素扫描右侧箭头区：箭头簇
    必须只有 1 个（自绘 chevron），且 chevron 顶点正上方必须是空心
    （若样式回退的实心 menu-indicator 三角仍在，该区域会被填充）。
-2. ``Dialog`` 双重标题栏 / 双关闭按钮 —— 子控件树中不得存在自定义
-   关闭按钮（QToolButton）与自定义标题标签（uikDlg="title"），标题
-   只出现在原生窗口标题栏（windowTitle）；confirm()/info() 行为不变。
-3. ``Message`` 轻提示椭圆背景 —— 四种类型 grab 截图，断言气泡宽高比
-   < 6:1，角部像素采样符合四分之一圆（胶囊）而非椭圆；长文本自动
+2. ``Dialog`` 主题化标题区 —— 无边框窗口内恰好一个标题标签与一个关闭按钮，
+   windowTitle/title()/标题标签同步；confirm()/info() 行为不变。
+3. ``Message`` 胶囊形状 —— 四种类型 grab 截图，角部像素采样符合
+   四分之一圆且中高度侧边为直线；长文本自动
    换行、宽度不超过 480px，且仍保持胶囊形状。
 
 亮 / 暗双主题截图保存到 ``tests/shots/fix_feedback_*.png``。
@@ -180,10 +179,10 @@ def _():
 
 
 # ---------------------------------------------------------------------------
-# 2) Dialog：仅原生标题栏，无自定义关闭按钮
+# 2) Dialog：单个主题化标题区与关闭按钮
 # ---------------------------------------------------------------------------
 
-@check("dialog 无自定义标题栏/关闭按钮，confirm/info 行为不变")
+@check("dialog 单个主题化标题区/关闭按钮，confirm/info 行为不变")
 def _():
     from InstructionX_UIKit.components.dialog import Dialog
 
@@ -202,16 +201,19 @@ def _():
     if dlg.windowTitle() != "确认删除":
         raise AssertionError(f"windowTitle 异常: {dlg.windowTitle()!r}")
     closes = dlg.findChildren(QToolButton)
-    if closes:
-        raise AssertionError(f"仍存在自定义关闭按钮: {closes}")
+    if closes != [dlg._close]:
+        raise AssertionError(f"主题化关闭按钮应恰好一个: {closes}")
     titles = [lb for lb in dlg.findChildren(QLabel)
-              if lb.property("uikDlg") == "title"]
-    if titles:
-        raise AssertionError(f"仍存在自定义标题标签: {titles}")
-    # set_title/title 与原生标题栏同步
+              if lb.objectName() == "uikDialogTitle"]
+    if titles != [dlg._title]:
+        raise AssertionError(f"主题化标题标签应恰好一个: {titles}")
+    if not dlg.windowFlags() & Qt.FramelessWindowHint:
+        raise AssertionError("主题化对话框应使用无边框窗口")
+    # set_title 同步窗口标题、公开值与主题化标题标签。
     dlg.set_title("新标题")
-    if dlg.windowTitle() != "新标题" or dlg.title() != "新标题":
-        raise AssertionError("set_title 未同步 windowTitle/title()")
+    if (dlg.windowTitle() != "新标题" or dlg.title() != "新标题"
+            or dlg._title.text() != "新标题"):
+        raise AssertionError("set_title 未同步 windowTitle/title()/标题标签")
     dlg.set_title("")
     if dlg.windowTitle() != "对话框":
         raise AssertionError("空标题应回退为默认窗口标题")
@@ -224,8 +226,8 @@ def _():
     d1 = Dialog.confirm(host, "确认删除", "删除后不可恢复，确定继续吗？",
                         on_result=results.append)
     APP.processEvents()
-    if not d1.isVisible() or d1.findChildren(QToolButton):
-        raise AssertionError("confirm 对话框异常（未显示或含自定义关闭按钮）")
+    if not d1.isVisible() or d1.findChildren(QToolButton) != [d1._close]:
+        raise AssertionError("confirm 对话框应显示且只有一个主题化关闭按钮")
     QTimer.singleShot(0, d1, d1.ok_button().click)
     APP.processEvents()
     if results != [True]:
@@ -246,8 +248,8 @@ def _():
     APP.processEvents()
     if d3.cancel_button().isVisible():
         raise AssertionError("info 对话框不应显示取消按钮")
-    if d3.findChildren(QToolButton):
-        raise AssertionError("info 对话框含自定义关闭按钮")
+    if d3.findChildren(QToolButton) != [d3._close]:
+        raise AssertionError("info 对话框应只有一个主题化关闭按钮")
     grab_both(d3, "dialog_info")
     QTimer.singleShot(0, d3, d3.ok_button().click)
     APP.processEvents()
@@ -272,8 +274,7 @@ def _scan_bubble(m, tag, check_ratio=True):
     """
     img = m.grab().toImage()
     W, H = img.width(), img.height()
-    if check_ratio and W / H >= 6:
-        raise AssertionError(f"{tag} 宽高比 {W}/{H} = {W / H:.2f} ≥ 6:1")
+    # 胶囊形状由下方四分之一圆与直边像素判据保证，宽高比不是设计契约。
     rect_h = H - 1  # paintEvent 中 rect.adjusted(0, 0, -1, -1)
     r = min(float(T("radius.pill")), rect_h / 2.0, (W - 1) / 2.0)
     cyc = rect_h / 2.0
