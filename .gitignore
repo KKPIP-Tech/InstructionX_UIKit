@@ -223,4 +223,8 @@ ShowDoc/
 private_docs/
 tests/shots/
 
+# 运行时生成的 QSS 图标与 Mermaid 临时页面
+ui_kit_qss_assets/
+uik_mermaid/
+
 AGENTS.md
