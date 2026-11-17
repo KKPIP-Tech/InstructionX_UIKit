@@ -46,7 +46,7 @@ from .icons import (
     ICONOIR_VERSION,
 )
 
-__version__ = "alpha-v1.0.3"
+__version__ = "alpha-v1.0.4"
 
 __all__ = [
     "__version__",
