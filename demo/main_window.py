@@ -432,6 +432,10 @@ def _prepare_rhi_surface(window):
     app = QGuiApplication.instance()
     if app is None or app.platformName() in ("offscreen", "minimal", "minimalegl"):
         return
+    # Qt 6.11/macOS 把 QWidget 顶层强制设为 MetalSurface 后，QRhiWidget 与
+    # WebEngine 离屏帧会在 beginOffscreenFrame 崩溃；Cocoa 顶层交给 Qt 自管理。
+    if app.platformName() == "cocoa":
+        return
     api = QQuickWindow.graphicsApi()
     surface = {
         QSGRendererInterface.GraphicsApi.Direct3D11: QSurface.Direct3DSurface,
