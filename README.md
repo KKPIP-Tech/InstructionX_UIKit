@@ -159,6 +159,12 @@ python tests\test_core.py
 
 测试为独立可执行脚本（无 pytest 依赖），退出码 0 即通过。真实性能脚本位于 `tests/perf/`，用法见 `docs/USAGE.md` 与 `docs/superpowers/plans/`；离屏结果不能替代真实窗口验收。
 
+## 许可证
+
+InstructionX_UIKit 依据 **GNU General Public License v3.0**（SPDX：`GPL-3.0-only`）发布。完整许可证全文见根目录 [LICENSE](LICENSE)。
+
+本许可证允许商业使用与收费分发；分发本项目或包含本项目的相关组合作品时，必须遵守 GPLv3 的对应源码、许可声明和下游授权义务。第三方组件仍分别遵循其原始许可证，详见 [THIRD-PARTY.md](THIRD-PARTY.md)。
+
 ## 致谢与第三方
 
 感谢以下开源项目与社区的工作：

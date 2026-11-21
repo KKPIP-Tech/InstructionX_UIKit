@@ -62,7 +62,7 @@ SOFTWARE.
 - 项目：Qt Canvas Painter（`PySide6.QtCanvasPainter`）
 - 来源：<https://doc.qt.io/qt-6/qtcanvaspainter-module.html>，由公开 PySide6 安装包提供，本项目不编写或分发额外原生插件。
 - 当前验证版本：**PySide6 6.11.1**；该模块仍声明为开发中，升级必须重新验证。
-- 许可证：**GPL-3.0-only 或 Qt 商业许可**，本项目按所有者确认选择 **GPLv3**，不得误写为 LGPL。许可说明见 <https://doc.qt.io/qt-6/zh/licensing.html>。
+- 许可证：**GPL-3.0-only 或 Qt 商业许可**，本项目按所有者确认选择 **GPL-3.0-only**，不得误写为 LGPL。项目许可证全文见根目录 `LICENSE`；Qt 许可说明见 <https://doc.qt.io/qt-6/zh/licensing.html>。
 - 用途：`QCanvasPainterWidget`、`QCanvasPainter`、`QCanvasPath` 与 QRhi 原生图元绘制，用于替代真实窗口中逐帧 QPainter 全帧快照。
 - 内部依赖：Qt 该模块使用 NanoVG；Qt 官方第三方清单见 <https://doc.qt.io/qt-6/licenses-used-in-qt.html>。本项目不单独引入 NanoVG 包。
 
